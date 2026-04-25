@@ -1,0 +1,32 @@
+[
+  {
+    "id": "job-1",
+    "title": "Weekly mowing for corner lot",
+    "address": "1201 Mockingbird Ln",
+    "city": "North Little Rock",
+    "state": "AR",
+    "zip": "72116",
+    "regionId": "central",
+    "budget": 58,
+    "serviceType": "mowing_edging",
+    "preferredDate": "2026-04-25",
+    "details": "Front and back, gate on left side, moderate edging.",
+    "postedAt": "2026-04-21T12:15:00.000Z",
+    "status": "open"
+  },
+  {
+    "id": "job-2",
+    "title": "Vacation rental cleanup + mow",
+    "address": "42 Lakeview Dr",
+    "city": "Hot Springs",
+    "state": "AR",
+    "zip": "71913",
+    "regionId": "hot_springs",
+    "budget": 135,
+    "serviceType": "full_service",
+    "preferredDate": "2026-04-26",
+    "details": "Fast turnover, blow driveway and tidy entry beds.",
+    "postedAt": "2026-04-21T12:20:00.000Z",
+    "status": "open"
+  }
+]

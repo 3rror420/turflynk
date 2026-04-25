@@ -1,0 +1,32 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node -e \"require\\('./server/index.js'\\)\")",
+      "Bash(curl -s http://localhost:3000/api/config)",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('OK' if d else 'FAIL'\\)\")",
+      "Bash(PGPASSWORD=dbpassword420 psql -U postgres -h localhost -d postgres -c \"\\\\dt\")",
+      "Bash(curl -s http://localhost:3000/api/jobs/open)",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('ok' if d.get\\('ok'\\) else d\\)\")",
+      "Bash(pkill -f \"node.*server/index\")",
+      "Bash(node server/index.js)",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('GET /api/jobs/open →', 'ok' if d.get\\('ok'\\) else d\\)\")",
+      "Bash(pm2 restart *)",
+      "Bash(systemctl restart *)",
+      "Bash(curl -s -X POST http://localhost:3000/api/auth/login -H 'Content-Type: application/json' -d '{\"email\":\"test@test.com\",\"password\":\"test123\"}')",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('POST /api/jobs/accept →', d\\)\")",
+      "Bash(curl -s -X POST http://localhost:3000/api/auth/register -H 'Content-Type: application/json' -d '{\"email\":\"testprov@turflynk.com\",\"password\":\"test1234\",\"fullName\":\"Test Provider\",\"role\":\"provider\"}')",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('register →', 'ok' if d.get\\('ok'\\) else d\\)\")",
+      "Bash(curl -s -X POST http://localhost:3000/api/auth/login -H 'Content-Type: application/json' -d '{\"email\":\"testprov@turflynk.com\",\"password\":\"test1234\"}')",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('accept →', 'ok status:', d.get\\('job',{}\\).get\\('status'\\) if d.get\\('ok'\\) else d\\)\")",
+      "Bash(node -e ' *)",
+      "Bash(curl -s http://localhost:3000/)",
+      "Bash(curl -s -X POST http://localhost:3000/api/estimate -H 'Content-Type: application/json' -d '{\"mowAreaSqft\":5500,\"serviceType\":\"mowing\"}')",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('estimate \\(no auth\\):', d.get\\('estimate'\\)\\)\")",
+      "Bash(curl -s \"http://localhost:3000/api/parcel/lookup?lat=36.37&lng=-94.20\")",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('parcel lookup \\(no auth\\): ok=%s reason=%s' % \\(d.get\\('ok'\\), d.get\\('reason','n/a'\\)\\)\\)\")",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('open jobs \\(no auth\\):', 'ok' if d.get\\('ok'\\) else d\\)\")",
+      "Bash(curl -s http://localhost:3000/api/admin/overview)",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('admin \\(no auth\\):', d\\)\")"
+    ]
+  }
+}

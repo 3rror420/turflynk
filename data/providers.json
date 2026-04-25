@@ -1,0 +1,105 @@
+[
+  {
+    "id": "7ymfagkumM",
+    "userId": "oRH4AwXFkr",
+    "businessName": "MowNWA Test Provider",
+    "ownerName": "Provider One",
+    "email": "provider1@test.com",
+    "phone": "555-111-2222",
+    "regions": [
+      "nwa"
+    ],
+    "cities": [
+      "Fayetteville",
+      "Rogers"
+    ],
+    "services": [
+      "mowing"
+    ],
+    "bio": "Local mowing provider",
+    "equipment": "Mower, trimmer, blower",
+    "pricing": {
+      "baseFee": 45,
+      "ratePer1000Sqft": 12,
+      "minimumPrice": 45
+    },
+    "rating": 4.8,
+    "createdAt": "2026-04-23T04:37:42.593Z"
+  },
+  {
+    "id": "prov-nwa-1",
+    "businessName": "Ozark Turf Crew",
+    "ownerName": "Mason Reed",
+    "email": "mason@ozarkturf.test",
+    "phone": "(479) 555-0133",
+    "regions": [
+      "nwa"
+    ],
+    "cities": [
+      "Bentonville",
+      "Rogers",
+      "Springdale"
+    ],
+    "services": [
+      "mowing",
+      "mowing_edging",
+      "cleanup"
+    ],
+    "bio": "Weekly route crew for Northwest Arkansas with edging and cleanup add-ons.",
+    "equipment": "52in zero turn, trimmers, blower, trailer",
+    "rating": 4.9,
+    "createdAt": "2026-04-21T12:00:00.000Z"
+  },
+  {
+    "id": "prov-central-1",
+    "businessName": "Capital Cut & Clean",
+    "ownerName": "Avery Stone",
+    "email": "avery@capitalcut.test",
+    "phone": "(501) 555-0192",
+    "regions": [
+      "central"
+    ],
+    "cities": [
+      "Little Rock",
+      "North Little Rock",
+      "Sherwood",
+      "Conway"
+    ],
+    "services": [
+      "mowing",
+      "mowing_edging",
+      "full_service",
+      "mulch_refresh"
+    ],
+    "bio": "Great for HOA routes, standard weekly service, and curb appeal packages.",
+    "equipment": "Stand-on mower, 52in zero turn, trailer, mulch tools",
+    "rating": 4.8,
+    "createdAt": "2026-04-21T12:05:00.000Z"
+  },
+  {
+    "id": "prov-hot-1",
+    "businessName": "Spa City Slopes & Lawns",
+    "ownerName": "Jordan Hale",
+    "email": "jordan@spacity.test",
+    "phone": "(501) 555-0177",
+    "regions": [
+      "hot_springs",
+      "eureka"
+    ],
+    "cities": [
+      "Hot Springs",
+      "Hot Springs Village",
+      "Eureka Springs"
+    ],
+    "services": [
+      "mowing",
+      "full_service",
+      "cleanup",
+      "leaf_cleanup"
+    ],
+    "bio": "Built for irregular lots, hills, lake properties, and harder access jobs.",
+    "equipment": "Commercial mower, hillside trimmers, brush tools, blowers",
+    "rating": 4.7,
+    "createdAt": "2026-04-21T12:10:00.000Z"
+  }
+]
