@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "start": "node server/index.js",
-    "dev": "node server/index.js"
+    "dev": "node server/index.js",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "cors": "^2.8.5",
@@ -15,5 +16,8 @@
     "nanoid": "^5.0.9",
     "node-fetch": "^3.3.2",
     "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.59.1"
   }
 }

@@ -10,6 +10,7 @@ import fetch from "node-fetch";
 import uploadRoutes from "../routes/upload.js";
 import { fileURLToPath } from "url";
 import { createRequire } from "module";
+import { readFileSync, writeFileSync, renameSync, existsSync } from "fs";
 
 const require = createRequire(import.meta.url);
 
@@ -30,6 +31,54 @@ const AR_GIS_FEATURE_LAYER =
   "https://gis.arkansas.gov/arcgis/rest/services/FEATURESERVICES/Planning_Cadastre/FeatureServer";
 const ENABLE_LIVE_PARCEL_LOOKUP =
   String(process.env.ENABLE_LIVE_PARCEL_LOOKUP || "true").toLowerCase() === "true";
+const SITE_MODE = process.env.SITE_MODE || "company";
+const SITE_BRAND = process.env.SITE_BRAND || "MowNWA";
+const PUBLIC_DOMAIN = process.env.PUBLIC_DOMAIN || "mownwa.com";
+const PRIMARY_REGION = process.env.PRIMARY_REGION || "nwa";
+const ADMIN_API_KEY = process.env.ADMIN_API_KEY || "";
+
+// Load JSON settings as fallback when DB is unavailable
+const SETTINGS_FILE = path.join(__dirname, "..", "data", "settings.json");
+const LEADS_FILE = path.join(__dirname, "..", "data", "leads.json");
+const BID_REQUESTS_FILE = path.join(__dirname, "..", "data", "bid_requests.json");
+const JOB_PHOTOS_FILE = path.join(__dirname, "..", "data", "job_photos.json");
+const PROVIDER_SERVICE_AREAS_FILE = path.join(__dirname, "..", "data", "provider_service_areas.json");
+const PAYMENTS_FILE = path.join(__dirname, "..", "data", "payments.json");
+
+let localSettings = { services: [], regions: [] };
+try {
+  localSettings = JSON.parse(readFileSync(SETTINGS_FILE, "utf8"));
+} catch {
+  console.warn("Could not load data/settings.json — using empty defaults");
+}
+
+function readLeads() {
+  try {
+    return JSON.parse(readFileSync(LEADS_FILE, "utf8"));
+  } catch {
+    return [];
+  }
+}
+
+function writeLeads(leads) {
+  const tmp = LEADS_FILE + ".tmp";
+  writeFileSync(tmp, JSON.stringify(leads, null, 2));
+  renameSync(tmp, LEADS_FILE);
+}
+
+function readJsonArray(file) {
+  try {
+    return JSON.parse(readFileSync(file, "utf8"));
+  } catch {
+    return [];
+  }
+}
+
+function writeJsonArray(file, rows) {
+  const tmp = file + ".tmp";
+  writeFileSync(tmp, JSON.stringify(rows, null, 2));
+  renameSync(tmp, file);
+}
 
 // Middleware MUST come before API routes
 app.use(cors());
@@ -161,6 +210,13 @@ async function requireAuth(req, res, next) {
       return res.status(401).json({ ok: false, error: "Missing auth token" });
     }
 
+    // Simple API key bypass for admin (works without PostgreSQL)
+    if (ADMIN_API_KEY && token === ADMIN_API_KEY) {
+      req.user = { id: "admin-key", email: "admin", role: "admin" };
+      req.authToken = token;
+      return next();
+    }
+
     const result = await pgdb.query(
       `
       SELECT users.*
@@ -205,45 +261,60 @@ function findService(settings, serviceId) {
 }
 
 async function loadSettingsFromDb() {
-  const settingsResult = await pgdb.query(
-    "SELECT * FROM app_settings WHERE id = 1 LIMIT 1"
-  );
-  const servicesResult = await pgdb.query(
-    "SELECT * FROM services WHERE active = true ORDER BY sort_order ASC, name ASC"
-  );
-  const regionsResult = await pgdb.query(
-    "SELECT * FROM regions WHERE active = true ORDER BY sort_order ASC, name ASC"
-  );
+  try {
+    const settingsResult = await pgdb.query(
+      "SELECT * FROM app_settings WHERE id = 1 LIMIT 1"
+    );
+    const servicesResult = await pgdb.query(
+      "SELECT * FROM services WHERE active = true ORDER BY sort_order ASC, name ASC"
+    );
+    const regionsResult = await pgdb.query(
+      "SELECT * FROM regions WHERE active = true ORDER BY sort_order ASC, name ASC"
+    );
 
-  const row = settingsResult.rows[0] || {};
+    const row = settingsResult.rows[0] || {};
 
-  return {
-    appName: row.app_name || APP_NAME,
-    defaultState: row.default_state || DEFAULT_STATE,
-    parcelMode: row.parcel_mode || "arkansas-live-plus-manual-fallback",
-    mapsMode: row.maps_mode || "google-address + arkansas-gis-parcel + manual-adjust",
-    minimumCutPrice: Number(row.minimum_cut_price || 38),
-    complexityRules: row.complexity_rules || defaultSettings.complexityRules,
-    services: servicesResult.rows.map((s) => ({
+    const dbServices = servicesResult.rows.map((s) => ({
       id: s.id,
       name: s.name || "",
+      label: s.name || "",
       baseFee: Number(s.base_fee || 0),
       ratePer1000Sqft: Number(s.rate_per_1000_sqft || 0),
       minimumPrice: Number(s.minimum_price || 0),
       active: Boolean(s.active),
       sortOrder: Number(s.sort_order || 0)
-    })),
-    regions: regionsResult.rows.map((r) => ({
+    }));
+
+    const dbRegions = regionsResult.rows.map((r) => ({
       id: r.id,
       name: r.name || "",
+      label: r.name || "",
       state: r.state || DEFAULT_STATE,
       marketMultiplier: Number(r.market_multiplier || 1),
       travelFee: Number(r.travel_fee || 0),
       minimumJob: Number(r.minimum_job || 0),
       active: Boolean(r.active),
       sortOrder: Number(r.sort_order || 0)
-    }))
-  };
+    }));
+
+    return {
+      appName: row.app_name || APP_NAME,
+      defaultState: row.default_state || DEFAULT_STATE,
+      parcelMode: row.parcel_mode || "arkansas-live-plus-manual-fallback",
+      mapsMode: row.maps_mode || "google-address + arkansas-gis-parcel + manual-adjust",
+      minimumCutPrice: Number(row.minimum_cut_price || 38),
+      complexityRules: row.complexity_rules || defaultSettings.complexityRules,
+      services: dbServices.length ? dbServices : (localSettings.services || []),
+      regions: dbRegions.length ? dbRegions : (localSettings.regions || [])
+    };
+  } catch (err) {
+    console.warn("DB unavailable, using local settings.json fallback:", err.message);
+    return {
+      ...defaultSettings,
+      services: localSettings.services || [],
+      regions: localSettings.regions || []
+    };
+  }
 }
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = 5000) {
@@ -264,7 +335,9 @@ function estimateQuote(payload, settings) {
   const service = findService(settings, payload.serviceType) || settings.services[0];
   const region = findRegion(settings, payload.regionId);
   const rules = settings.complexityRules || {};
-  const mowAreaSqft = Number(payload.mowAreaSqft || payload.lotAreaSqft || 0);
+  const mowAreaSqft = Number(payload.mowAreaSqft || 0);
+  if (mowAreaSqft <= 0) return 0;
+
   const areaUnits = mowAreaSqft > 0 ? mowAreaSqft / 1000 : 0;
 
   let estimate = Math.max(
@@ -296,6 +369,103 @@ function estimateQuote(payload, settings) {
   if (payload.denseVegetation) estimate *= Number(rules.denseVegetationMultiplier || 1);
 
   return Math.round(estimate * 100) / 100;
+}
+
+function numberField(body, name) {
+  const n = Number(body?.[name] || 0);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function mowableEstimateFields(body = {}) {
+  return {
+    parcelAreaSqft: numberField(body, "parcelAreaSqft"),
+    buildingFootprintSqft: numberField(body, "buildingFootprintSqft"),
+    buildingAdjustedSqft: numberField(body, "buildingAdjustedSqft"),
+    estimatedNonMowableSqft: numberField(body, "estimatedNonMowableSqft"),
+    autoEstimatedMowableSqft: numberField(body, "autoEstimatedMowableSqft"),
+    mowableEstimateConfidence: body.mowableEstimateConfidence || "",
+    buildingFootprintsSource: body.buildingFootprintsSource || "",
+    customerAdjustedMowableSqft: numberField(body, "customerAdjustedMowableSqft")
+  };
+}
+
+function mowableEstimateDetails(body = {}) {
+  const fields = mowableEstimateFields(body);
+  return [
+    fields.parcelAreaSqft > 0 ? `Parcel area sqft: ${fields.parcelAreaSqft}` : "",
+    fields.buildingFootprintSqft > 0 ? `Building footprint sqft: ${fields.buildingFootprintSqft}` : "",
+    fields.buildingAdjustedSqft > 0 ? `Building adjusted sqft: ${fields.buildingAdjustedSqft}` : "",
+    fields.estimatedNonMowableSqft > 0 ? `Estimated non-mowable sqft: ${fields.estimatedNonMowableSqft}` : "",
+    fields.autoEstimatedMowableSqft > 0 ? `Auto estimated mowable sqft: ${fields.autoEstimatedMowableSqft}` : "",
+    fields.customerAdjustedMowableSqft > 0 ? `Customer adjusted mowable sqft: ${fields.customerAdjustedMowableSqft}` : "",
+    fields.mowableEstimateConfidence ? `Mowable estimate confidence: ${fields.mowableEstimateConfidence}` : "",
+    fields.buildingFootprintsSource ? `Building footprints source: ${fields.buildingFootprintsSource}` : ""
+  ].filter(Boolean);
+}
+
+function listField(value) {
+  if (Array.isArray(value)) return value.filter(Boolean);
+  if (typeof value === "string" && value.trim()) {
+    try {
+      const parsed = JSON.parse(value);
+      if (Array.isArray(parsed)) return parsed.filter(Boolean);
+    } catch {}
+    return value.split(",").map((item) => item.trim()).filter(Boolean);
+  }
+  return [];
+}
+
+function aiPhotoAnalysisPlaceholder(body = {}) {
+  return {
+    photo_type: body.photo_type || "customer_scope",
+    ai_analysis_json: body.ai_analysis_json || null,
+    detected_services: listField(body.detected_services || body.service_types || body.requested_tasks),
+    difficulty: body.difficulty || "unknown",
+    access_concerns: listField(body.access_concerns),
+    equipment_recommendation: body.equipment_recommendation || "",
+    instant_quote_safe: body.instant_quote_safe == null ? false : Boolean(body.instant_quote_safe),
+    rough_price_low: body.rough_price_low == null ? null : Number(body.rough_price_low),
+    rough_price_high: body.rough_price_high == null ? null : Number(body.rough_price_high),
+    customer_questions: listField(body.customer_questions),
+    live_bid_recommended: body.live_bid_recommended == null ? true : Boolean(body.live_bid_recommended),
+    provider_notes: body.provider_notes || "",
+    customer_summary: body.customer_summary || "Based on your photos, this may require a live bid. The range shown is only a rough expectation. A provider will confirm final pricing."
+  };
+}
+
+function servicePayloadFields(body = {}) {
+  return {
+    quote_type: body.quote_type || body.quoteType || "instant_mow",
+    selected_yard_areas: listField(body.selected_yard_areas || body.selectedYardAreas),
+    gate_size_category: body.gate_size_category || body.gate_access_type || "",
+    gate_access_type: body.gate_access_type || body.gate_size_category || "",
+    gate_width_inches: body.gate_width_inches ? Number(body.gate_width_inches) : null,
+    mower_access: body.mower_access || "",
+    gate_locked: body.gate_locked || "",
+    yard_access_notes: body.yard_access_notes || body.access_notes || "",
+    access_notes: body.access_notes || body.yard_access_notes || "",
+    community_access_type: body.community_access_type || "no",
+    community_access_instructions_encrypted: body.community_access_instructions_encrypted || body.community_access_instructions || "",
+    grass_height_range: body.grass_height_range || "",
+    service_frequency: body.service_frequency || "",
+    pets: body.pets || "",
+    pet_waste_level: body.pet_waste_level || "",
+    obstacles_list: listField(body.obstacles_list),
+    requested_tasks: listField(body.requested_tasks || body.requestedTasks),
+    customer_notes: body.customer_notes || body.notes || "",
+    available_days_json: listField(body.available_days_json || body.availableDays),
+    time_preference: body.time_preference || "",
+    schedule_flexibility: body.schedule_flexibility || "",
+    available_date_start: body.available_date_start || null,
+    available_date_end: body.available_date_end || null,
+    specific_service_date: body.specific_service_date || null,
+    estimated_price_low: body.estimated_price_low ? Number(body.estimated_price_low) : null,
+    estimated_price_high: body.estimated_price_high ? Number(body.estimated_price_high) : null,
+    final_price: body.final_price ? Number(body.final_price) : null,
+    scope_locked: Boolean(body.scope_locked),
+    included_tasks_json: listField(body.included_tasks_json),
+    excluded_tasks_json: listField(body.excluded_tasks_json)
+  };
 }
 
 async function fetchLayerQuery(layerId, params) {
@@ -534,10 +704,14 @@ app.get("/api/config", async (_req, res) => {
     res.json({
       ok: true,
       appName: settings.appName,
+      siteBrand: SITE_BRAND,
+      siteMode: SITE_MODE,
+      publicDomain: PUBLIC_DOMAIN,
+      primaryRegion: PRIMARY_REGION,
       settings,
-        maps: {
-          googleApiKey: process.env.GOOGLE_MAPS_API_KEY || ""
-        },
+      maps: {
+        googleApiKey: process.env.GOOGLE_MAPS_API_KEY || ""
+      },
       mapsEnabled: Boolean(process.env.GOOGLE_MAPS_API_KEY),
       parcelProvider: ENABLE_LIVE_PARCEL_LOOKUP ? "arkansas-gis-live" : "manual",
       regionCount: (settings.regions || []).length,
@@ -725,6 +899,147 @@ app.post("/api/estimate", async (req, res) => {
   }
 });
 
+app.post("/api/checkout/instant-mow", requireAuth, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const amount = Math.round(Number(body.amount || body.final_price || body.estimate || 0) * 100);
+    if (amount <= 0) {
+      return res.status(400).json({ ok: false, error: "Checkout amount is required" });
+    }
+
+    if (!process.env.STRIPE_SECRET_KEY) {
+      return res.json({
+        ok: true,
+        paymentStatus: "checkout_pending",
+        checkoutUrl: null,
+        message: "Stripe is not configured in this environment."
+      });
+    }
+
+    const origin = process.env.PUBLIC_APP_URL || `http://localhost:${PORT}`;
+    const params = new URLSearchParams();
+    params.set("mode", "payment");
+    params.set("success_url", `${origin}/?checkout=success`);
+    params.set("cancel_url", `${origin}/?checkout=cancel`);
+    params.set("line_items[0][quantity]", "1");
+    params.set("line_items[0][price_data][currency]", "usd");
+    params.set("line_items[0][price_data][unit_amount]", String(amount));
+    params.set("line_items[0][price_data][product_data][name]", "Instant standard lawn mowing");
+    params.set("metadata[quote_id]", body.quote_id || "");
+    params.set("metadata[service_type]", body.service_type || body.serviceType || "mowing");
+    params.set("metadata[scope]", "standard_mowing_only");
+
+    const stripeRes = await fetch("https://api.stripe.com/v1/checkout/sessions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.STRIPE_SECRET_KEY}`,
+        "Content-Type": "application/x-www-form-urlencoded"
+      },
+      body: params
+    });
+    const session = await stripeRes.json();
+    if (!stripeRes.ok) {
+      return res.status(502).json({ ok: false, error: session.error?.message || "Stripe checkout failed" });
+    }
+
+    res.json({
+      ok: true,
+      paymentStatus: "checkout_created",
+      checkoutUrl: session.url,
+      checkoutSessionId: session.id
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.post("/api/payments/create-checkout-session", requireAuth, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const amount = Math.round(Number(body.amount || body.final_price || body.estimate || 0) * 100);
+    if (amount <= 0) return res.status(400).json({ ok: false, error: "Checkout amount is required" });
+
+    if (!process.env.STRIPE_SECRET_KEY) {
+      const payment = {
+        id: nanoid(10),
+        job_id: body.job_id || null,
+        bid_request_id: body.bid_request_id || null,
+        stripe_checkout_session_id: null,
+        stripe_payment_intent_id: null,
+        amount: amount / 100,
+        status: "checkout_pending",
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      };
+      const payments = readJsonArray(PAYMENTS_FILE);
+      payments.push(payment);
+      writeJsonArray(PAYMENTS_FILE, payments);
+      return res.json({ ok: true, paymentStatus: payment.status, checkoutUrl: null, payment });
+    }
+
+    const origin = process.env.PUBLIC_APP_URL || `http://localhost:${PORT}`;
+    const params = new URLSearchParams();
+    params.set("mode", "payment");
+    params.set("success_url", `${origin}/?checkout=success`);
+    params.set("cancel_url", `${origin}/?checkout=cancel`);
+    params.set("line_items[0][quantity]", "1");
+    params.set("line_items[0][price_data][currency]", "usd");
+    params.set("line_items[0][price_data][unit_amount]", String(amount));
+    params.set("line_items[0][price_data][product_data][name]", body.description || "TurfLynk service payment");
+    params.set("metadata[job_id]", body.job_id || "");
+    params.set("metadata[bid_request_id]", body.bid_request_id || "");
+
+    const stripeRes = await fetch("https://api.stripe.com/v1/checkout/sessions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.STRIPE_SECRET_KEY}`,
+        "Content-Type": "application/x-www-form-urlencoded"
+      },
+      body: params
+    });
+    const session = await stripeRes.json();
+    if (!stripeRes.ok) return res.status(502).json({ ok: false, error: session.error?.message || "Stripe checkout failed" });
+
+    const payment = {
+      id: nanoid(10),
+      job_id: body.job_id || null,
+      bid_request_id: body.bid_request_id || null,
+      stripe_checkout_session_id: session.id,
+      stripe_payment_intent_id: session.payment_intent || null,
+      amount: amount / 100,
+      status: "checkout_created",
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    };
+    const payments = readJsonArray(PAYMENTS_FILE);
+    payments.push(payment);
+    writeJsonArray(PAYMENTS_FILE, payments);
+    res.json({ ok: true, paymentStatus: payment.status, checkoutUrl: session.url, checkoutSessionId: session.id, payment });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.post("/api/stripe/webhook", async (req, res) => {
+  try {
+    const event = req.body || {};
+    const session = event.data?.object || {};
+    if (event.type === "checkout.session.completed" && session.id) {
+      const payments = readJsonArray(PAYMENTS_FILE);
+      const payment = payments.find((item) => item.stripe_checkout_session_id === session.id);
+      if (payment) {
+        payment.status = "paid";
+        payment.stripe_payment_intent_id = session.payment_intent || payment.stripe_payment_intent_id || null;
+        payment.updated_at = new Date().toISOString();
+        writeJsonArray(PAYMENTS_FILE, payments);
+      }
+    }
+    res.json({ ok: true, received: true });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 app.get("/api/parcel/lookup", async (req, res) => {
   try {
     const lat = Number(req.query.lat || 0);
@@ -866,6 +1181,10 @@ app.get("/api/providers", async (_req, res) => {
       phone: row.phone || "",
       rating: Number(row.rating_avg || 5),
       ratingCount: Number(row.rating_count || 0),
+      mowerDeckSizeInches: Number(row.mower_deck_size_inches || 0) || null,
+      hasSmallGateMower: Boolean(row.has_small_gate_mower),
+      servicesOffered: parseJsonArray(row.services_offered),
+      onboardingStatus: row.onboarding_status || "",
       pricing: {
         baseFee: Number(row.base_fee || 0),
         ratePer1000Sqft: Number(row.rate_per_1000_sqft || 0),
@@ -940,6 +1259,38 @@ app.post("/api/providers", requireAuth, requireRole("provider"), async (req, res
       ]
     );
 
+    const serviceAreas = readJsonArray(PROVIDER_SERVICE_AREAS_FILE);
+    const providerArea = {
+      provider_user_id: req.user.id,
+      provider_profile_id: providerId,
+      cities: listField(body.serviceAreaCities || body.cities).map((city) => ({
+        id: nanoid(10),
+        city,
+        state: DEFAULT_STATE,
+        region_id: PRIMARY_REGION,
+        radius_miles: body.radius_miles == null ? null : Number(body.radius_miles),
+        enabled: true,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      })),
+      zones: [],
+      preferences: {
+        accepts_nearby_jobs: Boolean(body.accepts_nearby_jobs),
+        max_extra_travel_miles: body.max_extra_travel_miles == null ? null : Number(body.max_extra_travel_miles),
+        service_areas_paused: false
+      },
+      equipment: {
+        mower_deck_size_inches: body.mower_deck_size_inches == null ? null : Number(body.mower_deck_size_inches),
+        has_small_gate_mower: Boolean(body.has_small_gate_mower)
+      },
+      services_offered: listField(body.servicesOffered || body.services),
+      updated_at: new Date().toISOString()
+    };
+    const existingAreaIndex = serviceAreas.findIndex((item) => item.provider_user_id === req.user.id);
+    if (existingAreaIndex >= 0) serviceAreas[existingAreaIndex] = providerArea;
+    else serviceAreas.push(providerArea);
+    writeJsonArray(PROVIDER_SERVICE_AREAS_FILE, serviceAreas);
+
     res.status(201).json({
       ok: true,
       provider: {
@@ -949,6 +1300,9 @@ app.post("/api/providers", requireAuth, requireRole("provider"), async (req, res
         bio: providerResult.rows[0].bio,
         equipment: providerResult.rows[0].equipment,
         phone: providerResult.rows[0].phone,
+        mowerDeckSizeInches: providerArea.equipment.mower_deck_size_inches,
+        hasSmallGateMower: providerArea.equipment.has_small_gate_mower,
+        servicesOffered: providerArea.services_offered,
         pricing: {
           baseFee: Number(body.pricing?.baseFee || 0),
           ratePer1000Sqft: Number(body.pricing?.ratePer1000Sqft || 0),
@@ -962,9 +1316,211 @@ app.post("/api/providers", requireAuth, requireRole("provider"), async (req, res
   }
 });
 
+function currentProviderArea(userId) {
+  const rows = readJsonArray(PROVIDER_SERVICE_AREAS_FILE);
+  return rows.find((row) => row.provider_user_id === userId) || {
+    provider_user_id: userId,
+    cities: [],
+    zones: [],
+    preferences: {
+      accepts_nearby_jobs: false,
+      max_extra_travel_miles: null,
+      service_areas_paused: false
+    },
+    equipment: {
+      mower_deck_size_inches: null,
+      has_small_gate_mower: false
+    },
+    services_offered: [],
+    updated_at: null
+  };
+}
+
+function saveProviderArea(area) {
+  const rows = readJsonArray(PROVIDER_SERVICE_AREAS_FILE);
+  const idx = rows.findIndex((row) => row.provider_user_id === area.provider_user_id);
+  area.updated_at = new Date().toISOString();
+  if (idx >= 0) rows[idx] = area;
+  else rows.push(area);
+  writeJsonArray(PROVIDER_SERVICE_AREAS_FILE, rows);
+  return area;
+}
+
+app.get("/api/provider/profile", requireAuth, requireRole("provider"), async (req, res) => {
+  try {
+    const area = currentProviderArea(req.user.id);
+    res.json({ ok: true, profile: { user: sanitizeUser(req.user), ...area } });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.put("/api/provider/equipment", requireAuth, requireRole("provider"), (req, res) => {
+  try {
+    const body = req.body || {};
+    const area = currentProviderArea(req.user.id);
+    area.equipment = {
+      mower_deck_size_inches: body.mower_deck_size_inches == null ? null : Number(body.mower_deck_size_inches),
+      has_small_gate_mower: Boolean(body.has_small_gate_mower)
+    };
+    res.json({ ok: true, profile: saveProviderArea(area) });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.put("/api/provider/services-offered", requireAuth, requireRole("provider"), (req, res) => {
+  try {
+    const area = currentProviderArea(req.user.id);
+    area.services_offered = listField(req.body?.services_offered || req.body?.servicesOffered || req.body?.services);
+    res.json({ ok: true, profile: saveProviderArea(area) });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.get("/api/provider/service-areas", requireAuth, requireRole("provider"), (req, res) => {
+  try {
+    const area = currentProviderArea(req.user.id);
+    res.json({ ok: true, ...area });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.put("/api/provider/service-areas/preferences", requireAuth, requireRole("provider"), (req, res) => {
+  try {
+    const body = req.body || {};
+    const area = currentProviderArea(req.user.id);
+    const radius = body.radius_miles == null || body.radius_miles === "" ? null : Number(body.radius_miles);
+    area.cities = listField(body.cities).map((city) => ({
+      id: nanoid(10),
+      city,
+      state: DEFAULT_STATE,
+      region_id: PRIMARY_REGION,
+      radius_miles: radius,
+      enabled: true,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    }));
+    area.preferences = {
+      accepts_nearby_jobs: Boolean(body.accepts_nearby_jobs),
+      max_extra_travel_miles: body.max_extra_travel_miles == null ? area.preferences?.max_extra_travel_miles || null : Number(body.max_extra_travel_miles),
+      service_areas_paused: Boolean(body.service_areas_paused)
+    };
+    if (body.zone_geojson) {
+      area.zones = [{
+        id: area.zones?.[0]?.id || nanoid(10),
+        name: "Custom service zone",
+        geojson: body.zone_geojson,
+        enabled: true,
+        created_at: area.zones?.[0]?.created_at || new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      }];
+    }
+    res.json({ ok: true, ...saveProviderArea(area) });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.post("/api/provider/service-areas/cities", requireAuth, requireRole("provider"), (req, res) => {
+  try {
+    const body = req.body || {};
+    const area = currentProviderArea(req.user.id);
+    const city = {
+      id: nanoid(10),
+      city: body.city || "",
+      state: body.state || DEFAULT_STATE,
+      region_id: body.region_id || PRIMARY_REGION,
+      radius_miles: body.radius_miles == null ? null : Number(body.radius_miles),
+      enabled: body.enabled == null ? true : Boolean(body.enabled),
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    };
+    area.cities.push(city);
+    saveProviderArea(area);
+    res.status(201).json({ ok: true, city });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.put("/api/provider/service-areas/cities/:id", requireAuth, requireRole("provider"), (req, res) => {
+  try {
+    const area = currentProviderArea(req.user.id);
+    const city = area.cities.find((item) => item.id === req.params.id);
+    if (!city) return res.status(404).json({ ok: false, error: "City not found" });
+    Object.assign(city, req.body || {}, { updated_at: new Date().toISOString() });
+    saveProviderArea(area);
+    res.json({ ok: true, city });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.delete("/api/provider/service-areas/cities/:id", requireAuth, requireRole("provider"), (req, res) => {
+  try {
+    const area = currentProviderArea(req.user.id);
+    area.cities = area.cities.filter((item) => item.id !== req.params.id);
+    saveProviderArea(area);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.post("/api/provider/service-areas/zones", requireAuth, requireRole("provider"), (req, res) => {
+  try {
+    const area = currentProviderArea(req.user.id);
+    const zone = {
+      id: nanoid(10),
+      name: req.body?.name || "Custom service zone",
+      geojson: req.body?.geojson || req.body?.zone_geojson || null,
+      enabled: req.body?.enabled == null ? true : Boolean(req.body.enabled),
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    };
+    area.zones.push(zone);
+    saveProviderArea(area);
+    res.status(201).json({ ok: true, zone });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.put("/api/provider/service-areas/zones/:id", requireAuth, requireRole("provider"), (req, res) => {
+  try {
+    const area = currentProviderArea(req.user.id);
+    const zone = area.zones.find((item) => item.id === req.params.id);
+    if (!zone) return res.status(404).json({ ok: false, error: "Zone not found" });
+    Object.assign(zone, req.body || {}, { updated_at: new Date().toISOString() });
+    saveProviderArea(area);
+    res.json({ ok: true, zone });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.delete("/api/provider/service-areas/zones/:id", requireAuth, requireRole("provider"), (req, res) => {
+  try {
+    const area = currentProviderArea(req.user.id);
+    area.zones = area.zones.filter((item) => item.id !== req.params.id);
+    saveProviderArea(area);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 /* -------------------- JOBS (PostgreSQL-backed) -------------------- */
 
 function mapJobRow(row) {
+  const details = row.details || "";
+  const detailValue = (label) => {
+    const line = details.split(/\n/).find((item) => item.toLowerCase().startsWith(label.toLowerCase() + ":"));
+    return line ? line.slice(line.indexOf(":") + 1).trim() : "";
+  };
   return {
     id: row.id,
     customerUserId: row.customer_user_id,
@@ -978,9 +1534,22 @@ function mapJobRow(row) {
     budget: Number(row.budget || 0),
     serviceType: row.service_type || "mowing",
     preferredDate: row.preferred_date || null,
-    details: row.details || "",
+    details,
     photos: parseJsonArray(row.photos),
     status: row.status || "open",
+    gate_size_category: detailValue("Gate size"),
+    gate_width_inches: Number(detailValue("Gate width inches") || 0) || null,
+    mower_access: detailValue("Mower access"),
+    yard_access_notes: detailValue("Yard access notes"),
+    community_access_type: detailValue("Community access"),
+    available_days_json: listField(detailValue("Available days")),
+    time_preference: detailValue("Time preference"),
+    schedule_flexibility: detailValue("Schedule flexibility"),
+    grass_height_range: detailValue("Grass height"),
+    service_frequency: detailValue("Frequency"),
+    pets: detailValue("Pets"),
+    pet_waste_level: detailValue("Pet waste"),
+    obstacles_list: listField(detailValue("Obstacles")),
     postedAt: row.created_at
   };
 }
@@ -1019,24 +1588,7 @@ app.get("/api/jobs", requireAuth, async (req, res) => {
       );
     }
 
-    const jobs = result.rows.map((row) => ({
-      id: row.id,
-      customerUserId: row.customer_user_id,
-      providerUserId: row.provider_user_id,
-      title: row.title || "",
-      address: row.address || "",
-      city: row.city || "",
-      state: row.state || "",
-      zip: row.zip || "",
-      regionId: row.region_id || "",
-      budget: Number(row.budget || 0),
-      serviceType: row.service_type || "mowing",
-      preferredDate: row.preferred_date || null,
-      details: row.details || "",
-      photos: parseJsonArray(row.photos),
-      status: row.status || "open",
-      postedAt: row.created_at
-    }));
+    const jobs = result.rows.map(mapJobRow);
 
     res.json({ ok: true, jobs });
   } catch (error) {
@@ -1045,8 +1597,39 @@ app.get("/api/jobs", requireAuth, async (req, res) => {
 });
 
 app.post("/api/jobs", requireAuth, async (req, res) => {
+  const user = req.user;
+
+  // === AUTHENTICATED FLOW ONLY ===
+
   try {
     const body = req.body || {};
+    const serviceFields = servicePayloadFields(body);
+    const details = [
+      body.details || "",
+      ...mowableEstimateDetails(body),
+      serviceFields.quote_type ? `Quote type: ${serviceFields.quote_type}` : "",
+      serviceFields.scope_locked ? "Scope locked: standard mowing only" : "",
+      serviceFields.selected_yard_areas.length ? `Yard areas: ${serviceFields.selected_yard_areas.join(", ")}` : "",
+      serviceFields.grass_height_range ? `Grass height: ${serviceFields.grass_height_range}` : "",
+      serviceFields.service_frequency ? `Frequency: ${serviceFields.service_frequency}` : "",
+      serviceFields.gate_size_category ? `Gate size: ${serviceFields.gate_size_category}` : "",
+      serviceFields.gate_width_inches ? `Gate width inches: ${serviceFields.gate_width_inches}` : "",
+      serviceFields.mower_access ? `Mower access: ${serviceFields.mower_access}` : "",
+      serviceFields.yard_access_notes ? `Yard access notes: ${serviceFields.yard_access_notes}` : "",
+      serviceFields.community_access_type ? `Community access: ${serviceFields.community_access_type}` : "",
+      serviceFields.community_access_instructions_encrypted ? "Community access instructions: private" : "",
+      serviceFields.available_days_json.length ? `Available days: ${serviceFields.available_days_json.join(", ")}` : "",
+      serviceFields.time_preference ? `Time preference: ${serviceFields.time_preference}` : "",
+      serviceFields.schedule_flexibility ? `Schedule flexibility: ${serviceFields.schedule_flexibility}` : "",
+      serviceFields.available_date_start ? `Available start: ${serviceFields.available_date_start}` : "",
+      serviceFields.available_date_end ? `Available end: ${serviceFields.available_date_end}` : "",
+      serviceFields.specific_service_date ? `Specific date: ${serviceFields.specific_service_date}` : "",
+      serviceFields.pets ? `Pets: ${serviceFields.pets}` : "",
+      serviceFields.pet_waste_level ? `Pet waste: ${serviceFields.pet_waste_level}` : "",
+      serviceFields.obstacles_list.length ? `Obstacles: ${serviceFields.obstacles_list.join(", ")}` : "",
+      serviceFields.included_tasks_json.length ? `Included: ${serviceFields.included_tasks_json.join(", ")}` : "",
+      serviceFields.excluded_tasks_json.length ? `Excluded: ${serviceFields.excluded_tasks_json.join(", ")}` : ""
+    ].filter(Boolean).join("\n");
 
     const result = await pgdb.query(
       `
@@ -1074,7 +1657,7 @@ app.post("/api/jobs", requireAuth, async (req, res) => {
       `,
       [
         nanoid(10),
-        req.user.id,
+        user.id,
         body.providerUserId || null,
         body.title || "",
         body.address || "",
@@ -1085,7 +1668,7 @@ app.post("/api/jobs", requireAuth, async (req, res) => {
         Number(body.budget || 0),
         body.serviceType || "mowing",
         body.preferredDate || null,
-        body.details || "",
+        details,
         JSON.stringify(Array.isArray(body.photos) ? body.photos : []),
         "open"
       ]
@@ -1116,6 +1699,288 @@ app.post("/api/jobs", requireAuth, async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+// Public alias: POST /api/leads — same as unauthenticated /api/jobs
+app.post("/api/leads", async (req, res) => {
+  try {
+    const body = req.body || {};
+    const lead = {
+      id: nanoid(10),
+      createdAt: new Date().toISOString(),
+      status: "new",
+      customerName: body.customerName || body.name || "",
+      customerPhone: body.customerPhone || body.phone || "",
+      customerEmail: body.customerEmail || body.email || "",
+      address: body.address || "",
+      city: body.city || "",
+      state: body.state || DEFAULT_STATE,
+      zip: body.zip || "",
+      regionId: body.regionId || PRIMARY_REGION,
+      serviceType: body.serviceType || "mowing",
+      preferredDate: body.preferredDate || null,
+      notes: body.notes || body.details || "",
+      lotAreaSqft: Number(body.lotAreaSqft || 0),
+      mowAreaSqft: Number(body.mowAreaSqft || 0),
+      ...mowableEstimateFields(body),
+      ...servicePayloadFields(body),
+      estimatedPrice: Number(body.estimatedPrice || body.estimate || body.budget || 0),
+      estimatedPriceLow: body.estimated_price_low ? Number(body.estimated_price_low) : null,
+      estimatedPriceHigh: body.estimated_price_high ? Number(body.estimated_price_high) : null,
+      finalPrice: body.final_price ? Number(body.final_price) : null,
+      suggestedBudget: Number(body.suggestedBudget || body.budget || 0),
+      photos: listField(body.photos),
+      aiSummaryJson: body.ai_summary_json || aiPhotoAnalysisPlaceholder(body),
+      sourceBrand: body.sourceBrand || SITE_BRAND
+    };
+
+    const leads = readLeads();
+    leads.push(lead);
+    writeLeads(leads);
+
+    res.status(201).json({ ok: true, lead, job: lead });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.post("/api/bid-requests", async (req, res) => {
+  try {
+    const body = req.body || {};
+    const photoUrls = listField(body.photos);
+    const serviceTypes = listField(body.service_types || body.serviceTypes || body.requested_tasks);
+    const bidRequest = {
+      id: nanoid(10),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      related_quote_id: body.related_quote_id || body.relatedQuoteId || null,
+      related_job_id: body.related_job_id || body.relatedJobId || null,
+      customer_user_id: body.customer_user_id || null,
+      customerName: body.customerName || body.name || "",
+      customerPhone: body.customerPhone || body.phone || "",
+      customerEmail: body.customerEmail || body.email || "",
+      address: body.address || "",
+      city: body.city || "",
+      state: body.state || DEFAULT_STATE,
+      zip: body.zip || "",
+      service_types: serviceTypes.length ? serviceTypes : [body.serviceType || "other_outdoor_work"],
+      requested_tasks: listField(body.requested_tasks || body.requestedTasks),
+      notes: body.notes || "",
+      preferredTiming: body.preferredTiming || body.preferred_timing || "flexible",
+      status: "new",
+      ai_summary_json: body.ai_summary_json || aiPhotoAnalysisPlaceholder(body),
+      provider_bid_amount: body.provider_bid_amount == null ? null : Number(body.provider_bid_amount),
+      accepted_bid_id: body.accepted_bid_id || null,
+      ...servicePayloadFields(body),
+      photos: photoUrls
+    };
+
+    const bidRequests = readJsonArray(BID_REQUESTS_FILE);
+    bidRequests.push(bidRequest);
+    writeJsonArray(BID_REQUESTS_FILE, bidRequests);
+
+    if (photoUrls.length) {
+      const photos = readJsonArray(JOB_PHOTOS_FILE);
+      photoUrls.forEach((fileUrl) => {
+        photos.push({
+          id: nanoid(10),
+          createdAt: new Date().toISOString(),
+          quote_id: bidRequest.related_quote_id,
+          job_id: bidRequest.related_job_id,
+          bid_request_id: bidRequest.id,
+          photo_type: body.photo_type || "customer_scope",
+          file_url: fileUrl,
+          ai_analysis_json: aiPhotoAnalysisPlaceholder({
+            ...body,
+            detected_services: bidRequest.service_types
+          })
+        });
+      });
+      writeJsonArray(JOB_PHOTOS_FILE, photos);
+    }
+
+    res.status(201).json({ ok: true, bidRequest });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.get("/api/admin/bid-requests", requireAuth, requireRole("admin"), (req, res) => {
+  try {
+    let bidRequests = readJsonArray(BID_REQUESTS_FILE);
+    if (req.query.status) bidRequests = bidRequests.filter((item) => item.status === req.query.status);
+    if (req.query.serviceType) {
+      bidRequests = bidRequests.filter((item) => listField(item.service_types).includes(req.query.serviceType));
+    }
+    bidRequests.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    res.json({ ok: true, bidRequests, total: bidRequests.length });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.get("/api/admin/job-photos", requireAuth, requireRole("admin"), (_req, res) => {
+  try {
+    const photos = readJsonArray(JOB_PHOTOS_FILE).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    res.json({ ok: true, photos, total: photos.length });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.post("/api/jobs/:id/photos", requireAuth, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const urls = listField(body.photos || body.file_url || body.fileUrl);
+    const photos = readJsonArray(JOB_PHOTOS_FILE);
+    const created = urls.map((fileUrl) => ({
+      id: nanoid(10),
+      createdAt: new Date().toISOString(),
+      quote_id: body.quote_id || null,
+      job_id: req.params.id,
+      bid_request_id: null,
+      photo_type: body.photo_type || "other",
+      file_url: fileUrl,
+      ai_analysis_json: aiPhotoAnalysisPlaceholder(body)
+    }));
+    photos.push(...created);
+    writeJsonArray(JOB_PHOTOS_FILE, photos);
+    res.status(201).json({ ok: true, photos: created });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.post("/api/bid-requests/:id/photos", async (req, res) => {
+  try {
+    const body = req.body || {};
+    const urls = listField(body.photos || body.file_url || body.fileUrl);
+    const photos = readJsonArray(JOB_PHOTOS_FILE);
+    const created = urls.map((fileUrl) => ({
+      id: nanoid(10),
+      createdAt: new Date().toISOString(),
+      quote_id: body.quote_id || null,
+      job_id: body.job_id || null,
+      bid_request_id: req.params.id,
+      photo_type: body.photo_type || "other",
+      file_url: fileUrl,
+      ai_analysis_json: aiPhotoAnalysisPlaceholder(body)
+    }));
+    photos.push(...created);
+    writeJsonArray(JOB_PHOTOS_FILE, photos);
+    res.status(201).json({ ok: true, photos: created });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.post("/api/jobs/:id/ai-photo-evaluate", requireAuth, async (req, res) => {
+  try {
+    res.json({ ok: true, analysis: aiPhotoAnalysisPlaceholder(req.body || {}) });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+function providerCanHandleJob(providerArea, job) {
+  const service = job.service_type || job.serviceType || "mowing";
+  const services = providerArea.services_offered || [];
+  const reasons = [];
+  const excluded = [];
+
+  if (providerArea.preferences?.service_areas_paused) excluded.push("Service areas paused");
+  if (services.length && !services.includes(service)) excluded.push("Does not offer requested service");
+
+  const cityMatch = (providerArea.cities || []).some((city) =>
+    city.enabled !== false && String(city.city || "").toLowerCase() === String(job.city || "").toLowerCase()
+  );
+  if (cityMatch) reasons.push(`Serves ${job.city}`);
+
+  if (!cityMatch && providerArea.zones?.some((zone) => zone.enabled !== false)) {
+    reasons.push("Has custom polygon; location should be verified");
+  }
+
+  const gate = job.gate_size_category || "";
+  if (["small_under_36", "standard_36", "wide_48", "not_sure"].includes(gate) && !providerArea.equipment?.has_small_gate_mower) {
+    excluded.push("Gate/equipment mismatch");
+  } else if (providerArea.equipment?.has_small_gate_mower) {
+    reasons.push("Has small-gate mower");
+  }
+
+  return {
+    eligible: excluded.length === 0 && (cityMatch || providerArea.preferences?.accepts_nearby_jobs || providerArea.zones?.length),
+    reasons,
+    excluded
+  };
+}
+
+app.get("/api/admin/providers/:id/service-areas", requireAuth, requireRole("admin"), (req, res) => {
+  try {
+    const area = readJsonArray(PROVIDER_SERVICE_AREAS_FILE).find((item) => item.provider_user_id === req.params.id || item.provider_profile_id === req.params.id);
+    res.json({ ok: true, serviceAreas: area || null });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.get("/api/admin/jobs/:id/eligible-providers", requireAuth, requireRole("admin"), async (req, res) => {
+  try {
+    const jobResult = await pgdb.query("SELECT * FROM jobs WHERE id = $1 LIMIT 1", [req.params.id]);
+    if (!jobResult.rows.length) return res.status(404).json({ ok: false, error: "Job not found" });
+    const job = mapJobRow(jobResult.rows[0]);
+    const providerAreas = readJsonArray(PROVIDER_SERVICE_AREAS_FILE);
+    const providers = providerAreas.map((area) => {
+      const match = providerCanHandleJob(area, job);
+      return {
+        provider_user_id: area.provider_user_id,
+        provider_profile_id: area.provider_profile_id || null,
+        eligible: match.eligible,
+        matched_reasons: match.reasons,
+        excluded_reasons: match.excluded,
+        equipment: area.equipment,
+        services_offered: area.services_offered,
+        preferences: area.preferences
+      };
+    });
+    res.json({ ok: true, job, eligibleProviders: providers.filter((p) => p.eligible), excludedProviders: providers.filter((p) => !p.eligible) });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.post("/api/admin/jobs/:id/assign-provider", requireAuth, requireRole("admin"), async (req, res) => {
+  try {
+    const providerUserId = req.body?.provider_user_id || req.body?.providerUserId;
+    if (!providerUserId) return res.status(400).json({ ok: false, error: "provider_user_id is required" });
+    const result = await pgdb.query(
+      "UPDATE jobs SET provider_user_id = $1, status = 'assigned' WHERE id = $2 RETURNING *",
+      [providerUserId, req.params.id]
+    );
+    if (!result.rows.length) return res.status(404).json({ ok: false, error: "Job not found" });
+    res.json({ ok: true, job: mapJobRow(result.rows[0]) });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.post("/api/admin/bids", requireAuth, requireRole("admin"), (req, res) => {
+  try {
+    const bid = {
+      id: nanoid(10),
+      createdAt: new Date().toISOString(),
+      bid_request_id: req.body?.bid_request_id || null,
+      provider_user_id: req.body?.provider_user_id || null,
+      amount: Number(req.body?.amount || 0),
+      notes: req.body?.notes || "",
+      status: "created"
+    };
+    const bids = readJsonArray(path.join(__dirname, "..", "data", "provider_bids.json"));
+    bids.push(bid);
+    writeJsonArray(path.join(__dirname, "..", "data", "provider_bids.json"), bids);
+    res.status(201).json({ ok: true, bid });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
   }
 });
 
@@ -1215,6 +2080,7 @@ app.post("/api/quotes", async (req, res) => {
     const body = req.body || {};
     const settings = await loadSettingsFromDb();
     const estimate = estimateQuote(body, settings);
+    const serviceFields = servicePayloadFields(body);
 
     const quote = {
       id: nanoid(10),
@@ -1242,6 +2108,10 @@ app.post("/api/quotes", async (req, res) => {
       gates: Boolean(body.gates),
       parcelId: body.parcelId || "",
       notes: body.notes || "",
+      ...serviceFields,
+      estimated_price_low: serviceFields.estimated_price_low,
+      estimated_price_high: serviceFields.estimated_price_high,
+      final_price: estimate,
       estimate,
       status: "new"
     };
@@ -1521,6 +2391,64 @@ app.post("/api/jobs/:id/accept", requireAuth, requireRole("provider"), async (re
     res.json({ ok: true, job: mapJobRow(result.rows[0]) });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+/* -------------------- ADMIN LEADS (JSON-backed) -------------------- */
+
+const VALID_LEAD_STATUSES = new Set(["new", "quoted", "bidding", "scheduled", "completed", "canceled"]);
+
+app.get("/api/admin/jobs", requireAuth, requireRole("admin"), (req, res) => {
+  try {
+    let leads = readLeads();
+
+    if (req.query.status && VALID_LEAD_STATUSES.has(req.query.status)) {
+      leads = leads.filter((l) => l.status === req.query.status);
+    }
+    if (req.query.regionId) {
+      leads = leads.filter((l) => l.regionId === req.query.regionId);
+    }
+    if (req.query.serviceType) {
+      leads = leads.filter((l) => l.serviceType === req.query.serviceType);
+    }
+
+    leads.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+    res.json({ ok: true, jobs: leads, total: leads.length });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.get("/api/admin/jobs/:id", requireAuth, requireRole("admin"), (req, res) => {
+  try {
+    const leads = readLeads();
+    const lead = leads.find((l) => l.id === req.params.id);
+    if (!lead) return res.status(404).json({ ok: false, error: "Lead not found" });
+    res.json({ ok: true, job: lead });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.patch("/api/admin/jobs/:id/status", requireAuth, requireRole("admin"), (req, res) => {
+  try {
+    const { status } = req.body || {};
+    if (!status || !VALID_LEAD_STATUSES.has(status)) {
+      return res.status(400).json({ ok: false, error: `Invalid status. Allowed: ${[...VALID_LEAD_STATUSES].join(", ")}` });
+    }
+
+    const leads = readLeads();
+    const idx = leads.findIndex((l) => l.id === req.params.id);
+    if (idx === -1) return res.status(404).json({ ok: false, error: "Lead not found" });
+
+    leads[idx].status = status;
+    leads[idx].updatedAt = new Date().toISOString();
+    writeLeads(leads);
+
+    res.json({ ok: true, job: leads[idx] });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
   }
 });
 

@@ -313,6 +313,62 @@
     return latlngs;
   }
 
+  function polygonFeatureFromLatLngs(latlngs) {
+    if (!window.turf || !latlngs || latlngs.length < 3) return null;
+    const coords = latlngs.map(function (p) { return [p.lng, p.lat]; });
+    coords.push(coords[0]);
+    try {
+      return turf.polygon([coords], { source: 'mowable_lasso' });
+    } catch {
+      return null;
+    }
+  }
+
+  function largestPolygonFeature(feature) {
+    if (!feature || !feature.geometry || !window.turf) return null;
+    if (feature.geometry.type === 'Polygon') return feature;
+    if (feature.geometry.type !== 'MultiPolygon') return null;
+
+    return feature.geometry.coordinates
+      .map(function (coords) {
+        return turf.polygon(coords, feature.properties || {});
+      })
+      .sort(function (a, b) {
+        return turf.area(b) - turf.area(a);
+      })[0] || null;
+  }
+
+  function selectedMowableFeatureFromLasso(latlngs) {
+    const lasso = polygonFeatureFromLatLngs(latlngs);
+    const parcel = getParcel();
+    if (!lasso || !window.turf || !parcel) return lasso;
+
+    try {
+      let clipped = null;
+      try { clipped = turf.intersect(parcel, lasso); } catch {
+        clipped = turf.intersect(turf.featureCollection([parcel, lasso]));
+      }
+
+      const selected = largestPolygonFeature(clipped);
+      if (!selected) return lasso;
+
+      const lassoArea = turf.area(lasso);
+      const selectedArea = turf.area(selected);
+      const parcelArea = turf.area(parcel);
+
+      // A true intersection cannot be materially larger than the lasso.
+      // If Turf returns a parcel-sized shape from an invalid/self-crossed trace,
+      // keep the user-drawn lasso instead of pricing the inverse area.
+      if (lassoArea > 0 && selectedArea > lassoArea * 1.15 && selectedArea > parcelArea * 0.5) {
+        return lasso;
+      }
+
+      return selected;
+    } catch {
+      return lasso;
+    }
+  }
+
   // ── Drawing state helpers ─────────────────────────────────────────────────
 
   function stopTempLine() {
@@ -403,12 +459,9 @@
     }
 
     let cleaned = points.slice();
-    cleaned = snapFullEdges(cleaned);
-    cleaned = clipToParcel(cleaned);
     cleaned = simplifyLatLngs(cleaned, SMOOTH_TOLERANCE_METERS);
     if (cleaned.length > MAX_POINTS) cleaned = simplifyLatLngs(cleaned, STRONG_SMOOTH_TOLERANCE_METERS);
     if (cleaned.length > MAX_POINTS) cleaned = simplifyLatLngs(cleaned, STRONG_SMOOTH_TOLERANCE_METERS + 1.5);
-    cleaned = clipToParcel(cleaned);
 
     if (cleaned.length < 3) {
       points = [];
@@ -416,28 +469,39 @@
       return;
     }
 
-    const layer = L.polygon(cleaned, {
-      color: '#16a34a',
-      weight: 3,
-      fillOpacity: 0.22
-    });
+    const selectedFeature = selectedMowableFeatureFromLasso(cleaned);
+    if (!selectedFeature) {
+      points = [];
+      setStatus('Mode: Could not close shape — try again');
+      return;
+    }
 
     // Replace any previous lasso — one active mowable polygon at a time
     disableActiveEditing();
     group.clearLayers();
-    group.addLayer(layer);
+    let activeMowableLayer = null;
+    L.geoJSON(selectedFeature, {
+      style: {
+        color: '#16a34a',
+        weight: 3,
+        fillOpacity: 0.22
+      }
+    }).eachLayer(function (layer) {
+      activeMowableLayer = activeMowableLayer || layer;
+      group.addLayer(layer);
+    });
 
     const appState = window.TurfLynkAppState;
     if (appState && appState.parcelLayer && appState.parcelLayer.bringToBack) {
       appState.parcelLayer.bringToBack();
     }
-    if (layer.bringToFront) layer.bringToFront();
+    if (activeMowableLayer && activeMowableLayer.bringToFront) activeMowableLayer.bringToFront();
 
     recalc();
     points = [];
 
     // Auto-enable vertex editing so the polygon is immediately adjustable
-    setTimeout(function () { enableEditing(layer); }, 150);
+    if (activeMowableLayer) setTimeout(function () { enableEditing(activeMowableLayer); }, 150);
   }
 
   function armLasso() {

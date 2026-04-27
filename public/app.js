@@ -3471,6 +3471,11 @@ byId('jobForm')?.addEventListener('submit', async (event) => {
 
     payload.photos = photoUrls;
 
+      if (!getAuthToken()) {
+        openAuthGate(() => form.requestSubmit());
+        return;
+      }
+
     const data = await api('/api/jobs', {
       method: 'POST',
       body: JSON.stringify(payload),

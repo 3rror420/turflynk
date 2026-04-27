@@ -19,10 +19,16 @@
   "services": [
     { "id": "mowing", "label": "Mowing", "baseFee": 0, "ratePer1000Sqft": 6.5, "minimumPrice": 38 },
     { "id": "mowing_edging", "label": "Mowing + Edging", "baseFee": 10, "ratePer1000Sqft": 7.4, "minimumPrice": 46 },
+    { "id": "edging", "label": "Edging Only", "baseFee": 20, "ratePer1000Sqft": 3.5, "minimumPrice": 35 },
     { "id": "full_service", "label": "Full Service", "baseFee": 24, "ratePer1000Sqft": 9.25, "minimumPrice": 64 },
-    { "id": "cleanup", "label": "Cleanup / Brush / Blowoff", "baseFee": 35, "ratePer1000Sqft": 4.5, "minimumPrice": 65 },
     { "id": "leaf_cleanup", "label": "Leaf Cleanup", "baseFee": 28, "ratePer1000Sqft": 4.0, "minimumPrice": 58 },
-    { "id": "mulch_refresh", "label": "Mulch Refresh", "baseFee": 55, "ratePer1000Sqft": 1.5, "minimumPrice": 95 }
+    { "id": "brush_cleanup", "label": "Brush Cleanup", "baseFee": 45, "ratePer1000Sqft": 5.0, "minimumPrice": 75 },
+    { "id": "yard_cleanup", "label": "Yard Cleanup", "baseFee": 40, "ratePer1000Sqft": 4.5, "minimumPrice": 65 },
+    { "id": "cleanup", "label": "Cleanup / Blowoff", "baseFee": 35, "ratePer1000Sqft": 4.5, "minimumPrice": 65 },
+    { "id": "landscaping", "label": "Landscaping", "baseFee": 75, "ratePer1000Sqft": 0, "minimumPrice": 125 },
+    { "id": "hauling", "label": "Hauling / Debris Removal", "baseFee": 65, "ratePer1000Sqft": 0, "minimumPrice": 85 },
+    { "id": "mulch_refresh", "label": "Mulch Refresh", "baseFee": 55, "ratePer1000Sqft": 1.5, "minimumPrice": 95 },
+    { "id": "other", "label": "Other / Custom Request", "baseFee": 0, "ratePer1000Sqft": 0, "minimumPrice": 0 }
   ],
   "regions": [
     {
