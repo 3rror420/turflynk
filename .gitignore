@@ -65,3 +65,7 @@ backups/
 
 # Test output
 test-results/
+
+# Runtime booking/payment data
+data/leads.json
+data/payments.json
