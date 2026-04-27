@@ -5,3 +5,63 @@ npm-debug.log
 package-lock.json
 *.log
 uploads
+
+# Local AI/editor settings
+.claude/settings.local.json
+
+# Local backups
+backups/
+*.bak-admin-gate-*
+
+# Test output
+test-results/
+
+# Local AI/editor settings
+.claude/settings.local.json
+
+# Local backups
+backups/
+*.bak-admin-gate-*
+
+# Test output
+test-results/
+
+# Local AI/editor settings
+.claude/settings.local.json
+
+# Local backups
+backups/
+*.bak-admin-gate-*
+
+# Test output
+test-results/
+
+# Local AI/editor settings
+.claude/settings.local.json
+
+# Local backups
+backups/
+*.bak-admin-gate-*
+
+# Test output
+test-results/
+
+# Local AI/editor settings
+.claude/settings.local.json
+
+# Local backups
+backups/
+*.bak-admin-gate-*
+
+# Test output
+test-results/
+
+# Local AI/editor settings
+.claude/settings.local.json
+
+# Local backups
+backups/
+*.bak-admin-gate-*
+
+# Test output
+test-results/
