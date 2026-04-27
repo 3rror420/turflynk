@@ -1,235 +1,5 @@
-const byId = (id) => document.getElementById(id);
-const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
-const QUOTE_DRAFT_KEY = 'turflynk.quoteDraft.v5';
-
-const EPSG4326 = 'EPSG:4326';
-const EPSG26915 = '+proj=utm +zone=15 +datum=NAD83 +units=m +no_defs';
-const PARCEL_FIT_OPTIONS = { padding: [40, 40], maxZoom: 18 };
-const DEFAULT_MAP_CENTER = [36.1867, -94.1288];
-const DEFAULT_MAP_ZOOM = 11;
-const MOWABLE_ESTIMATE_FIELDS = [
-  'parcelAreaSqft',
-  'buildingFootprintSqft',
-  'buildingAdjustedSqft',
-  'estimatedNonMowableSqft',
-  'autoEstimatedMowableSqft',
-  'mowableEstimateConfidence',
-  'buildingFootprintsSource',
-  'customerAdjustedMowableSqft',
-];
-const SERVICE_CATALOG = [
-  {
-    id: 'mowing',
-    group: 'Lawn Care',
-    title: 'Instant Lawn Mowing',
-    badge: 'Instant price',
-    quoteType: 'instant_mow',
-    description: 'Standard mowing, normal edge trimming, and blowing clippings from hard surfaces.',
-  },
-  {
-    id: 'recurring_lawn_care',
-    group: 'Lawn Care',
-    title: 'Recurring Lawn Care',
-    badge: 'Live bid',
-    quoteType: 'live_bid',
-    description: 'Weekly or biweekly care plans reviewed after your property details are submitted.',
-  },
-  {
-    id: 'long_grass_service',
-    group: 'Lawn Care',
-    title: 'Long Grass Service',
-    badge: 'Live bid',
-    quoteType: 'live_bid',
-    description: 'Tall grass, first cuts, and heavy trim-down work reviewed before final pricing.',
-  },
-  {
-    id: 'yard_cleanup',
-    group: 'Yard Cleanup',
-    title: 'Yard Cleanup',
-    badge: 'Live bid',
-    quoteType: 'live_bid',
-    description: 'Cleanup, bagging, debris, and property refresh work reviewed from notes and photos.',
-  },
-  {
-    id: 'leaf_removal',
-    group: 'Yard Cleanup',
-    title: 'Leaf Removal',
-    badge: 'Live bid',
-    quoteType: 'live_bid',
-    description: 'Seasonal leaf clearing, pile removal, and curb or bag pickup requests.',
-  },
-  {
-    id: 'storm_debris_cleanup',
-    group: 'Yard Cleanup',
-    title: 'Storm Debris Cleanup',
-    badge: 'Live bid',
-    quoteType: 'live_bid',
-    description: 'Branches, limbs, and storm debris reviewed by volume, access, and haul-away needs.',
-  },
-  {
-    id: 'brush_removal',
-    group: 'Yard Cleanup',
-    title: 'Brush Removal',
-    badge: 'Live bid',
-    quoteType: 'live_bid',
-    description: 'Brush, vines, limbs, and rough outdoor cleanup priced after review.',
-  },
-  {
-    id: 'overgrown_yard_cleanup',
-    group: 'Yard Cleanup',
-    title: 'Overgrown Yard Cleanup',
-    badge: 'Live bid',
-    quoteType: 'live_bid',
-    description: 'Heavy overgrowth, cleanup, and first-pass recovery work quoted separately.',
-  },
-  {
-    id: 'haul_away',
-    group: 'Yard Cleanup',
-    title: 'Haul-away',
-    badge: 'Live bid',
-    quoteType: 'live_bid',
-    description: 'Debris, bags, branches, and outdoor material removal priced by load and access.',
-  },
-  {
-    id: 'bush_hedge_trimming',
-    group: 'Bushes & Landscaping',
-    title: 'Bush / Hedge Trimming',
-    badge: 'Live bid',
-    quoteType: 'live_bid',
-    description: 'Shaping, reduction, cleanup, and haul-away reviewed before final pricing.',
-  },
-  {
-    id: 'mulch_flower_beds',
-    group: 'Bushes & Landscaping',
-    title: 'Mulch / Flower Beds',
-    badge: 'Live bid',
-    quoteType: 'live_bid',
-    description: 'Mulch refreshes, bed cleanup, weed removal, and edging requests.',
-  },
-  {
-    id: 'weed_pulling',
-    group: 'Bushes & Landscaping',
-    title: 'Weed Pulling',
-    badge: 'Live bid',
-    quoteType: 'live_bid',
-    description: 'Hand weeding, bed cleanup, and detail work quoted by scope and condition.',
-  },
-  {
-    id: 'small_landscaping_projects',
-    group: 'Bushes & Landscaping',
-    title: 'Small Landscaping Projects',
-    badge: 'Live bid',
-    quoteType: 'live_bid',
-    description: 'Small installs, bed reshaping, plant refreshes, and outdoor improvement work.',
-  },
-  {
-    id: 'pressure_washing',
-    group: 'Exterior Home',
-    title: 'Pressure Washing',
-    badge: 'Live bid',
-    quoteType: 'live_bid',
-    description: 'Driveways, patios, walks, siding, and outdoor surfaces reviewed by scope.',
-  },
-  {
-    id: 'gutter_cleaning',
-    group: 'Exterior Home',
-    title: 'Gutter Cleaning',
-    badge: 'Live bid',
-    quoteType: 'live_bid',
-    description: 'Gutter cleaning requests reviewed for height, access, and debris level.',
-  },
-  {
-    id: 'fence_line_cleanup',
-    group: 'Exterior Home',
-    title: 'Fence Line Cleanup',
-    badge: 'Live bid',
-    quoteType: 'live_bid',
-    description: 'Trim, clear, and clean up fence edges, vines, and growth along property lines.',
-  },
-  {
-    id: 'outdoor_junk_debris_removal',
-    group: 'Exterior Home',
-    title: 'Outdoor Junk / Debris Removal',
-    badge: 'Live bid',
-    quoteType: 'live_bid',
-    description: 'Outdoor junk, debris piles, and one-off removal jobs quoted from photos.',
-  },
-];
-const EXTRA_SERVICE_OPTIONS = [
-  ['yard_cleanup', 'Yard cleanup'],
-  ['leaf_removal', 'Leaf removal'],
-  ['bush_hedge_trimming', 'Bush / hedge trimming'],
-  ['brush_removal', 'Brush removal'],
-  ['debris_hauling', 'Debris / hauling'],
-  ['mulch_flower_beds', 'Mulch / flower beds'],
-  ['pressure_washing', 'Pressure washing'],
-  ['gutter_cleaning', 'Gutter cleaning'],
-  ['other', 'Other'],
-];
-const SERVICE_AREA_OPTIONS = [
-  'Fayetteville',
-  'Springdale',
-  'Rogers',
-  'Bentonville',
-  'Bella Vista',
-  'Lowell',
-  'Johnson',
-  'Farmington',
-  'Prairie Grove',
-  'Centerton',
-  'Cave Springs',
-  'Pea Ridge',
-  'Tontitown',
-  'Elkins',
-  'Greenland',
-  'Siloam Springs',
-  'Fayetteville + surrounding area',
-  'Springdale + surrounding area',
-  'Rogers + surrounding area',
-  'Bentonville + surrounding area',
-  'All Northwest Arkansas',
-  'Other',
-];
-const AVAILABLE_DAY_OPTIONS = [
-  ['monday', 'Monday'],
-  ['tuesday', 'Tuesday'],
-  ['wednesday', 'Wednesday'],
-  ['thursday', 'Thursday'],
-  ['friday', 'Friday'],
-  ['saturday', 'Saturday'],
-  ['sunday', 'Sunday'],
-];
-const AI_PHOTO_PLACEHOLDER = {
-  photo_type: 'customer_scope',
-  ai_analysis_json: null,
-  detected_services: [],
-  difficulty: 'unknown',
-  access_concerns: [],
-  equipment_recommendation: '',
-  instant_quote_safe: false,
-  rough_price_low: null,
-  rough_price_high: null,
-  customer_questions: [],
-  live_bid_recommended: true,
-  provider_notes: '',
-  customer_summary: 'Based on your photos, this may require a live bid. The range shown is only a rough expectation. A provider will confirm final pricing.',
-};
-const INCLUDED_MOW_TASKS = [
-  'Mow selected lawn area',
-  'Basic trimming around normal edges',
-  'Blow clippings from hard surfaces',
-];
-const EXCLUDED_MOW_TASKS = [
-  'Yard cleanup',
-  'Leaf cleanup',
-  'Hauling',
-  'Bush/hedge trimming',
-  'Landscaping',
-  'Pet waste cleanup',
-  'Unsafe/blocked areas',
-  'Extreme overgrowth remediation',
-  'Any extra service not listed in the instant mow scope',
-];
+// byId, $$, all constants (QUOTE_DRAFT_KEY, EPSG*, SERVICE_CATALOG, etc.)
+// are now defined in public/js/config.js and public/js/utils/dom.js — loaded before this file.
 
 async function api(path, options = {}) {
   const token = localStorage.getItem('turflynk.authToken') || '';
@@ -261,17 +31,7 @@ function getAuthToken() {
   return localStorage.getItem('turflynk.authToken') || '';
 }
 
-function isAdmin() {
-  return state.currentUser?.role === 'admin';
-}
-
-function showAdminControls() {
-  $$('.admin-only').forEach((el) => { el.style.display = 'block'; });
-}
-
-function hideAdminControls() {
-  $$('.admin-only').forEach((el) => { el.style.display = 'none'; });
-}
+// isAdmin, showAdminControls, hideAdminControls → public/js/auth/admin-visibility.js
 
 function prettyApiError(error) {
   try {
@@ -304,12 +64,7 @@ function updateSessionStatus(user) {
   if (mobileAuth) mobileAuth.textContent = 'Account';
 }
 
-function money(value) {
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'USD',
-  }).format(Number(value || 0));
-}
+// money() → public/js/utils/dom.js
 
 function formToObject(form) {
   const fd = new FormData(form);
@@ -433,47 +188,7 @@ function multiSelectValues(select) {
   return Array.from(select?.selectedOptions || []).map((option) => option.value);
 }
 
-function showResult(id, html) {
-  const el = byId(id);
-  if (!el) return;
-  el.innerHTML = html;
-  el.classList.remove('hidden');
-}
-
-function showToast(message, type = 'info') {
-  const layer = byId('toastLayer');
-  if (!layer) return;
-  const toast = document.createElement('div');
-  toast.className = `toast ${type}`;
-  toast.textContent = String(message || '');
-  layer.append(toast);
-  setTimeout(() => {
-    toast.style.opacity = '0';
-    toast.style.transform = 'translateY(8px)';
-    setTimeout(() => toast.remove(), 180);
-  }, 3200);
-}
-
-const showSuccess = (message) => showToast(message, 'success');
-const showError = (message) => showToast(message, 'error');
-const showWarning = (message) => showToast(message, 'warning');
-const showInfo = (message) => showToast(message, 'info');
-
-function card(html) {
-  const wrap = document.createElement('div');
-  wrap.className = 'card';
-  wrap.innerHTML = html;
-  return wrap;
-}
-
-function escapeHtml(value) {
-  return String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
+// showResult, showToast, showSuccess/Error/Warning/Info, card, escapeHtml → public/js/utils/dom.js
 
 function renderJobPhotoPreview() {
   const input = byId('jobPhotos');
@@ -496,38 +211,7 @@ function renderJobPhotoPreview() {
   });
 }
 
-const state = {
-  config: null,
-  regions: [],
-  services: [],
-  map: null,
-  marker: null,
-  parcelLayer: null,
-  parcelGeometry: null,
-  drawGroup: null,
-  drawHandler: null,
-  editHandler: null,
-  deleteHandler: null,
-  activeView: 'quote',
-  mowUndoStack: [],
-  aiCutoutGroup: null,
-  buildingFootprintGroup: null,
-  mowableEstimate: null,
-  lastQuote: null,       // set after successful quote submission
-  pendingQuote: null,    // set after guest estimate, before acceptance
-  currentUser: null,     // set after login / session check
-  moveDrag: null,
-  quoteUiMode: 'idle',
-  serviceFlow: 'instant_mow',
-  pendingExtraBid: null,
-  parcelSelectMode: false,
-  pendingParcelFeature: null,
-  pendingParcelPreviewLayer: null,
-  parcelDblClick: false,
-  quoteFlowStep: 'start',
-};
-
-const QUOTE_STEP_ORDER = ['start', 'parcel', 'draw', 'estimate', 'request'];
+// state, QUOTE_STEP_ORDER → public/js/state.js
 
 function quoteStepNumber(step = state.quoteFlowStep) {
   return Math.max(1, QUOTE_STEP_ORDER.indexOf(step) + 1);
@@ -4011,45 +3695,7 @@ function initAddressAutocomplete() {
   });
 }
 
-/* ─────────────────────────────────────────────────────────────────────────
-   ROLE VISIBILITY — show/hide admin controls based on session role
-───────────────────────────────────────────────────────────────────────── */
-
-function applyRoleVisibility() {
-  const isAdmin = state.currentUser?.role === 'admin';
-  const isProvider = state.currentUser?.role === 'provider';
-  const isLoggedIn = Boolean(state.currentUser);
-
-  // Admin nav buttons: only visible to admins
-  $$('.admin-only-nav').forEach((el) => {
-    el.style.display = isAdmin ? '' : 'none';
-  });
-  const drawerAdminLogin = byId('drawerAdminLogin');
-  if (drawerAdminLogin) drawerAdminLogin.style.display = isAdmin ? 'none' : '';
-
-  // Provider section: visible to providers and admins
-  $$('.provider-only-nav').forEach((el) => {
-    el.style.display = (isProvider || isAdmin) ? '' : 'none';
-  });
-
-  // Logged-in customer section: My Bookings etc.
-  $$('.customer-logged-in-nav').forEach((el) => {
-    el.style.display = isLoggedIn ? '' : 'none';
-  });
-
-  // Admin view: show controls or auth wall
-  const wall = byId('adminAuthWall');
-  const wrap = byId('adminControlsWrap');
-  if (wall) wall.style.display = isAdmin ? 'none' : '';
-  if (wrap) wrap.style.display = isAdmin ? '' : 'none';
-
-  // Admin-only panels (e.g., dashboard metrics, recent activity)
-  $$('.admin-only').forEach((el) => { el.style.display = isAdmin ? 'block' : 'none'; });
-
-  // Leads panel is always shown in admin view but loads data only if admin
-  if (isAdmin) loadAdminLeads().catch(() => {});
-  if (isAdmin) loadAdmin().catch(() => {});
-}
+// applyRoleVisibility() → public/js/auth/admin-visibility.js
 
 function updateQuoteStepper() {
   const stepper = byId('quoteStepper');

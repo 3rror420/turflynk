@@ -1020,6 +1020,12 @@
   <script src="https://cdn.jsdelivr.net/npm/proj4@2.11.0/dist/proj4.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
   
+  <!-- Phase 1 modules: load before app.js — plain globals, no ES module system -->
+  <script src="/js/config.js"></script>
+  <script src="/js/state.js"></script>
+  <script src="/js/utils/dom.js"></script>
+  <script src="/js/auth/admin-visibility.js"></script>
+
   <script src="/data/local-content.js"></script>
   <script src="/app.js"></script>
   <script src="/js/ai-detect-grass.js"></script>
