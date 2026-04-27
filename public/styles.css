@@ -2018,3 +2018,71 @@ body[data-quote-flow-step="draw"] #quoteMap{
   text-decoration: underline;
 }
 .link-btn:hover { opacity: .8; }
+
+/* Brand image polish */
+
+/* ── Topbar logo image ── */
+.app-brand-logo {
+  height: 44px;
+  width: auto;
+  object-fit: contain;
+  display: block;
+  border-radius: 8px;
+  flex-shrink: 0;
+}
+
+/* ── Quote start hero cover photo ── */
+.start-hero.quote-hero-cover {
+  padding: 0;
+  background-image:
+    linear-gradient(160deg, rgba(4,20,10,.78) 0%, rgba(10,35,18,.9) 100%),
+    url('/assets/brand/mownwa_cover_photo.png');
+  background-size: cover;
+  background-position: center;
+  border-radius: 20px;
+  overflow: hidden;
+  box-shadow: 0 8px 32px rgba(0,0,0,.38);
+}
+
+.quote-hero-inner {
+  display: grid;
+  gap: 12px;
+  padding: 24px 20px 22px;
+  align-content: end;
+  min-height: 260px;
+}
+
+.quote-hero-logo {
+  height: 40px;
+  width: auto;
+  object-fit: contain;
+  filter: drop-shadow(0 2px 8px rgba(0,0,0,.5));
+}
+
+.start-hero.quote-hero-cover h2 {
+  color: #ffffff;
+}
+
+.start-hero.quote-hero-cover p {
+  color: rgba(255,255,255,.76);
+}
+
+.quote-hero-badge {
+  display: inline-flex;
+  align-items: center;
+  background: rgba(74,222,128,.14);
+  border: 1px solid rgba(74,222,128,.28);
+  color: #b4ffcc;
+  border-radius: 999px;
+  padding: 6px 14px;
+  font-size: .8rem;
+  font-weight: 700;
+  width: fit-content;
+  margin-top: 4px;
+}
+
+@media (min-width: 768px) {
+  .app-brand-logo { height: 56px; }
+  .quote-hero-inner { min-height: 300px; padding: 32px 28px 28px; }
+  .quote-hero-logo { height: 48px; }
+}

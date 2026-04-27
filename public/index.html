@@ -7,6 +7,7 @@
   <meta name="description" content="Get fast lawn mowing quotes in Northwest Arkansas. Enter your address, estimate your yard, and request mowing or yard cleanup service in minutes." />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" />
+  <link rel="icon" href="/assets/brand/mownwa_logo.png">
   <link rel="stylesheet" href="/styles.css" />
 </head>
 
@@ -15,7 +16,7 @@
 
 <header class="app-topbar">
   <button class="app-brand-btn" type="button" data-jump-view="quote" aria-label="MowNWA home">
-    <div class="app-brand-icon-sq" aria-hidden="true">🌱</div>
+    <img src="/assets/brand/mownwa_logo.png" alt="MowNWA / TurfLynk logo" class="app-brand-logo">
     <strong class="app-brand-wordmark">MowNWA</strong>
   </button>
   <span id="mobileViewTitle" class="topbar-view-chip"></span>
@@ -329,16 +330,13 @@
             <input type="hidden" name="parcelId" />
 
             <section class="quote-flow-screen is-active" id="quoteStartScreen" data-quote-step-panel="start">
-              <div class="start-hero">
-                <div class="brand-lockup">
-                  <div class="brand-mark" aria-hidden="true">TL</div>
-                  <div>
-                    <div class="brand-name">TurfLynk</div>
-                    <div class="brand-subtitle">Arkansas lawn care</div>
-                  </div>
+              <div class="start-hero quote-hero-cover">
+                <div class="quote-hero-inner">
+                  <img src="/assets/brand/mownwa_logo.png" alt="MowNWA / TurfLynk logo" class="quote-hero-logo">
+                  <h2>Fast lawn mowing estimates</h2>
+                  <p>Draw the area you want mowed, review the price, and request service.</p>
+                  <div class="quote-hero-badge">Northwest Arkansas lawn care made simple</div>
                 </div>
-                <h2>Professional lawn care, on demand</h2>
-                <p>Enter your address to find the parcel and draw only the mowable area.</p>
               </div>
 
               <div class="flow-card">
