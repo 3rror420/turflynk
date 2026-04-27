@@ -2650,6 +2650,95 @@ async function loadAdmin() {
   }
 }
 
+async function loadAdminPaidJobs() {
+  const list = byId('adminPaidJobsList');
+  if (!list) return;
+  list.innerHTML = '<div style="color:var(--muted);padding:12px">Loading...</div>';
+  try {
+    const data = await api('/api/admin/paid-jobs');
+    if (!data.jobs?.length) {
+      list.innerHTML = '<div style="color:var(--muted);padding:12px">No paid jobs found.</div>';
+      return;
+    }
+    list.innerHTML = '';
+    data.jobs.forEach((job) => {
+      const addr = [job.address, job.city, job.state, job.zip].filter(Boolean).join(', ');
+      list.append(card(`
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:4px">
+          <div>
+            <h4 style="margin:0">${escapeHtml(job.title || 'Mowing job')}</h4>
+            <div class="meta">${escapeHtml(addr)}</div>
+            <div class="meta">Amount: <strong>${job.paymentAmount ? money(job.paymentAmount) : money(job.budget)}</strong> &middot; Service: ${escapeHtml(serviceLabel(job.serviceType))}</div>
+            ${job.yard_access_notes ? `<div class="meta">Access: ${escapeHtml(job.yard_access_notes)}</div>` : ''}
+            <div class="meta">Job ID: <code>${escapeHtml(job.id)}</code> &middot; ${statusBadge(job.status)}</div>
+            ${job.paidAt ? `<div class="meta">Paid: ${escapeHtml(new Date(job.paidAt).toLocaleString())}</div>` : ''}
+          </div>
+          <div style="display:flex;flex-direction:column;gap:6px">
+            <select class="admin-job-status-select" data-job-id="${escapeHtml(job.id)}" style="width:auto;padding:6px 8px;font-size:13px">
+              <option value="">Move to...</option>
+              <option value="open">Open</option>
+              <option value="assigned">Assigned</option>
+              <option value="scheduled">Scheduled</option>
+              <option value="in_progress">In Progress</option>
+              <option value="completed">Completed</option>
+              <option value="canceled">Canceled</option>
+            </select>
+          </div>
+        </div>
+      `));
+    });
+    list.querySelectorAll('.admin-job-status-select').forEach((sel) => {
+      sel.addEventListener('change', async () => {
+        const status = sel.value;
+        const jobId = sel.dataset.jobId;
+        if (!status || !jobId) return;
+        sel.disabled = true;
+        try {
+          await api(`/api/admin/jobs/${encodeURIComponent(jobId)}/status`, { method: 'PATCH', body: JSON.stringify({ status }) });
+          showSuccess(`Job ${jobId} moved to ${status}`);
+          await loadAdminPaidJobs();
+        } catch (err) {
+          showError(prettyApiError(err));
+          sel.disabled = false;
+          sel.value = '';
+        }
+      });
+    });
+  } catch (err) {
+    list.innerHTML = `<div style="color:var(--muted);padding:12px">Could not load paid jobs: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+async function loadProviderPaidJobs() {
+  const list = byId('providerPaidJobsList');
+  if (!list) return;
+  list.innerHTML = '<div style="color:var(--muted);padding:12px">Loading...</div>';
+  try {
+    const data = await api('/api/provider/paid-jobs');
+    if (!data.jobs?.length) {
+      list.innerHTML = '<div style="color:var(--muted);padding:12px">No paid jobs available in your area.</div>';
+      return;
+    }
+    list.innerHTML = '';
+    data.jobs.forEach((job) => {
+      const addr = [job.address, job.city, job.state, job.zip].filter(Boolean).join(', ');
+      list.append(card(`
+        <h4 style="margin:0">${escapeHtml(job.title || 'Mowing job')}</h4>
+        <div class="meta">${escapeHtml(addr)}</div>
+        <div class="meta">Budget: <strong>${money(job.paymentAmount || job.budget)}</strong> &middot; ${escapeHtml(serviceLabel(job.serviceType))}</div>
+        ${job.grass_height_range ? `<div class="meta">Grass height: ${escapeHtml(job.grass_height_range)}</div>` : ''}
+        ${job.gate_size_category ? `<div class="meta">Gate: ${escapeHtml(job.gate_size_category)}</div>` : ''}
+        ${job.yard_access_notes ? `<div class="meta">Access: ${escapeHtml(job.yard_access_notes)}</div>` : ''}
+        ${job.preferredDate ? `<div class="meta">Preferred date: ${escapeHtml(job.preferredDate)}</div>` : ''}
+        <div class="meta">${statusBadge(job.status)}</div>
+        ${navLinksHtml(job)}
+      `));
+    });
+  } catch (err) {
+    list.innerHTML = `<div style="color:var(--muted);padding:12px">Could not load paid jobs: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
 function quoteContactMissing(payload) {
   const missing = [];
   if (!String(payload.name || '').trim()) missing.push('name');
@@ -3679,6 +3768,8 @@ async function loadAdminLeads() {
 byId('refreshLeadsBtn')?.addEventListener('click', loadAdminLeads);
 byId('leadsStatusFilter')?.addEventListener('change', loadAdminLeads);
 byId('leadsServiceFilter')?.addEventListener('change', loadAdminLeads);
+byId('refreshAdminPaidJobsBtn')?.addEventListener('click', loadAdminPaidJobs);
+byId('refreshProviderPaidJobsBtn')?.addEventListener('click', loadProviderPaidJobs);
 function resetParcelQuoteStateForNewAddress() {
   const form = byId('quoteForm');
 
@@ -3987,15 +4078,14 @@ async function bookQuoteAsJob(explicitBtn) {
     });
     console.log('[MowNWA Checkout Debug] checkout API response | ok=' + checkout.ok + ' session=' + (checkout.checkoutSessionId ? checkout.checkoutSessionId.slice(0, 12) + '...' : 'none') + ' url=' + (checkout.checkoutUrl ? 'present' : 'missing'));
     if (checkout.checkoutUrl) {
-      if (btn) btn.textContent = 'Opening checkout...';
-      console.log('[MowNWA Checkout Debug] before redirect to checkoutUrl');
-      window.location.href = checkout.checkoutUrl;
-      // Fallback: if redirect is blocked, surface a direct link
-      const fallbackResult = byId('leadRequestResult') || byId('quoteResult');
-      if (fallbackResult) {
-        fallbackResult.innerHTML = `<a class="btn primary" href="${escapeHtml(checkout.checkoutUrl)}" target="_self" style="margin-top:8px;display:inline-block">Open Secure Checkout</a>`;
-        fallbackResult.classList.remove('hidden');
+      if (btn) { btn.disabled = false; btn.textContent = btn.id === 'leadSubmitBtn' ? 'Book & Pay Securely' : (btn.textContent || 'Book & Pay Securely'); }
+      if (getAuthToken()) {
+        // Already logged in — link job to user; go straight to Stripe
+        window.location.href = checkout.checkoutUrl;
+        return;
       }
+      // Guest — recommend account creation before redirect
+      showAccountRecommend(checkout.checkoutUrl, q.estimate);
       return;
     }
     payload.payment_status = checkout.paymentStatus || 'checkout_pending';
@@ -4054,6 +4144,112 @@ async function bookQuoteAsJob(explicitBtn) {
     if (btn) { btn.disabled = false; btn.textContent = originalText; }
   }
 }
+
+/* ─────────────────────────────────────────────────────────────────────────
+   ACCOUNT RECOMMENDATION (shown before Stripe redirect for guests)
+───────────────────────────────────────────────────────────────────────── */
+
+function showAccountRecommend(checkoutUrl, estimate) {
+  state.pendingCheckoutUrl = checkoutUrl;
+  const panel = byId('accountRecommendPanel');
+  const estimateEl = byId('accountRecommendEstimate');
+  if (estimateEl && estimate > 0) estimateEl.textContent = money(estimate);
+  // Hide other panels
+  byId('leadRequestPanel')?.classList.add('hidden');
+  byId('checkoutSuccessPanel')?.classList.add('hidden');
+  if (panel) {
+    panel.style.display = '';
+    panel.classList.remove('hidden');
+    panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+  setActiveView('quote');
+}
+
+function hideAccountRecommend() {
+  const panel = byId('accountRecommendPanel');
+  if (panel) { panel.style.display = 'none'; panel.classList.add('hidden'); }
+}
+
+function proceedToCheckout() {
+  const url = state.pendingCheckoutUrl;
+  state.pendingCheckoutUrl = null;
+  hideAccountRecommend();
+  if (url) window.location.href = url;
+}
+
+byId('accountRecommendGuestBtn')?.addEventListener('click', () => {
+  proceedToCheckout();
+});
+
+byId('accountRecommendCreateBtn')?.addEventListener('click', () => {
+  const authForm = byId('accountRecommendAuthForm');
+  if (authForm) authForm.classList.toggle('hidden');
+});
+
+byId('accountRecommendLoginToggle')?.addEventListener('click', () => {
+  byId('accountRecommendRegisterForm')?.classList.add('hidden');
+  byId('accountRecommendLoginForm')?.classList.remove('hidden');
+});
+
+byId('accountRecommendRegisterToggle')?.addEventListener('click', () => {
+  byId('accountRecommendLoginForm')?.classList.add('hidden');
+  byId('accountRecommendRegisterForm')?.classList.remove('hidden');
+});
+
+byId('accountRecommendRegisterForm')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const btn = byId('accountRecommendRegisterBtn');
+  const result = byId('accountRecommendAuthResult');
+  if (btn) { btn.disabled = true; btn.textContent = 'Creating account...'; }
+  try {
+    const fd = new FormData(e.target);
+    const data = await api('/api/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({ fullName: fd.get('fullName'), email: fd.get('email'), password: fd.get('password') }),
+    });
+    // Auto-login after register
+    const loginData = await api('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email: fd.get('email'), password: fd.get('password') }),
+    });
+    setAuthToken(loginData.token);
+    state.currentUser = loginData.user;
+    updateSessionStatus(loginData.user);
+    applyRoleVisibility();
+    proceedToCheckout();
+  } catch (err) {
+    if (result) {
+      result.innerHTML = `<strong>Could not create account:</strong> ${escapeHtml(prettyApiError(err))}`;
+      result.classList.remove('hidden');
+    }
+    if (btn) { btn.disabled = false; btn.textContent = 'Create Account & Proceed to Checkout'; }
+  }
+});
+
+byId('accountRecommendLoginForm')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const btn = byId('accountRecommendLoginBtn');
+  const result = byId('accountRecommendAuthResult');
+  if (btn) { btn.disabled = true; btn.textContent = 'Signing in...'; }
+  try {
+    const fd = new FormData(e.target);
+    const loginData = await api('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email: fd.get('email'), password: fd.get('password') }),
+    });
+    setAuthToken(loginData.token);
+    state.currentUser = loginData.user;
+    updateSessionStatus(loginData.user);
+    applyRoleVisibility();
+    proceedToCheckout();
+  } catch (err) {
+    if (result) {
+      result.innerHTML = `<strong>Could not sign in:</strong> ${escapeHtml(prettyApiError(err))}`;
+      result.classList.remove('hidden');
+    }
+    if (btn) { btn.disabled = false; btn.textContent = 'Sign In & Proceed to Checkout'; }
+  }
+});
 
 /* ─────────────────────────────────────────────────────────────────────────
    MY BOOKINGS (customer) + OPEN JOBS (provider)
@@ -4218,30 +4414,123 @@ window.addEventListener('popstate', () => {
   setActiveView('dashboard');
 });
 
-function handleCheckoutReturn() {
+async function handleCheckoutReturn() {
   const params = new URLSearchParams(window.location.search);
   const checkout = params.get('checkout');
   if (!checkout) return;
 
+  const sessionId = params.get('session_id');
+  const jobId = params.get('job_id');
+
+  // Clear URL params early so refresh doesn't re-trigger
+  window.history.replaceState({}, '', window.location.pathname);
+
   if (checkout === 'success') {
-    showSuccess('Payment received. Your mow is booked.');
-    showResult(
-      'quoteResult',
-      `<strong>Payment received.</strong><br>
-       Your mow is booked and will appear in My Bookings shortly.`
-    );
-    setActiveView('jobs');
+    setActiveView('quote');
+    showQuoteFlowStep('estimate');
+    const successPanel = byId('checkoutSuccessPanel');
+    const cancelPanel = byId('checkoutCancelPanel');
+    if (cancelPanel) { cancelPanel.style.display = 'none'; cancelPanel.classList.add('hidden'); }
+    if (successPanel) {
+      successPanel.style.display = '';
+      successPanel.classList.remove('hidden');
+      const contentEl = byId('checkoutSuccessContent');
+      if (contentEl) contentEl.innerHTML = '<div style="color:var(--muted);padding:12px">Loading receipt&hellip;</div>';
+      successPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+    if (sessionId) {
+      try {
+        const data = await api(`/api/payments/session/${encodeURIComponent(sessionId)}`);
+        renderCheckoutSuccess(data.session);
+      } catch {
+        const contentEl = byId('checkoutSuccessContent');
+        if (contentEl) {
+          contentEl.innerHTML = `<p><strong>Payment received.</strong> Your mow is booked.</p>
+            <p class="meta">Your receipt is being processed. Check My Bookings for status.</p>
+            <button class="btn secondary small" type="button" onclick="setActiveView('jobs')">View My Bookings</button>`;
+        }
+      }
+    }
     if (getAuthToken()) loadMyJobs().catch(() => {});
   } else if (checkout === 'cancel') {
+    setActiveView('quote');
+    showQuoteFlowStep('estimate');
+    const successPanel = byId('checkoutSuccessPanel');
+    const cancelPanel = byId('checkoutCancelPanel');
+    if (successPanel) { successPanel.style.display = 'none'; successPanel.classList.add('hidden'); }
+    if (cancelPanel) {
+      cancelPanel.style.display = '';
+      cancelPanel.classList.remove('hidden');
+      const contentEl = byId('checkoutCancelContent');
+      if (contentEl) {
+        contentEl.innerHTML = `<p>Your card was not charged. You can return to the quote and book when ready.</p>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
+            <button class="btn primary" type="button" onclick="showQuoteFlowStep('estimate')">Return to Quote</button>
+            <button class="btn ghost" type="button" onclick="setActiveView('quote')">Start Over</button>
+          </div>`;
+      }
+      cancelPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
     showWarning('Checkout canceled. Your card was not charged.');
-    showResult(
-      'quoteResult',
-      `<strong>Checkout canceled.</strong><br>
-       Your card was not charged. You can return to the quote and book when ready.`
-    );
   }
+}
 
-  window.history.replaceState({}, '', window.location.pathname);
+function renderCheckoutSuccess(session) {
+  const contentEl = byId('checkoutSuccessContent');
+  if (!contentEl) return;
+
+  const s = session || {};
+  const job = s.job || {};
+  const svc = s.service || {};
+  const customer = s.customer || {};
+
+  const formatSqftLocal = (n) => n > 0 ? `${Number(n).toLocaleString()} sq ft` : '';
+  const acresLocal = (n) => n > 0 ? `${(n / 43560).toFixed(3)} acres` : '';
+  const moneyLocal = (n) => n > 0 ? `$${Number(n).toFixed(2)}` : '';
+
+  const addr = [job.address || svc.address, job.city || svc.city, job.state || svc.state, job.zip || svc.zip].filter(Boolean).join(', ');
+  const mowSqft = Number(svc.mowAreaSqft || 0);
+  const lotSqft = Number(svc.lotAreaSqft || 0);
+  const isGuest = !getAuthToken();
+
+  contentEl.innerHTML = `
+    <div class="estimate-card" style="margin:0">
+      <div class="estimate-head">
+        <div>
+          <span class="pill">Booking confirmed</span>
+          <h3>${moneyLocal(s.amount) || 'Payment received'}</h3>
+          <p>Payment status: <strong>${escapeHtml(s.status || 'paid')}</strong></p>
+        </div>
+        ${mowSqft > 0 ? `<div class="preview-pill"><span>Mowable area</span><strong>${formatSqftLocal(mowSqft)}</strong></div>` : ''}
+      </div>
+      <div style="margin-top:12px;display:grid;gap:6px">
+        ${s.job_id ? `<div><span class="meta">Booking ID:</span> <strong>${escapeHtml(s.job_id)}</strong></div>` : ''}
+        ${addr ? `<div><span class="meta">Address:</span> ${escapeHtml(addr)}</div>` : ''}
+        ${job.serviceType || svc.serviceType ? `<div><span class="meta">Service:</span> ${escapeHtml((job.serviceType || svc.serviceType || '').replace(/_/g, ' '))}</div>` : ''}
+        ${mowSqft > 0 ? `<div><span class="meta">Mowable area:</span> ${formatSqftLocal(mowSqft)}${acresLocal(mowSqft) ? ` (${acresLocal(mowSqft)})` : ''}</div>` : ''}
+        ${lotSqft > 0 ? `<div><span class="meta">Lot area:</span> ${formatSqftLocal(lotSqft)}</div>` : ''}
+        ${customer.name ? `<div><span class="meta">Name:</span> ${escapeHtml(customer.name)}</div>` : ''}
+        ${customer.email ? `<div><span class="meta">Email:</span> ${escapeHtml(customer.email)}</div>` : ''}
+        ${(job.preferredDate || svc.preferredDate) ? `<div><span class="meta">Preferred date:</span> ${escapeHtml(job.preferredDate || svc.preferredDate)}</div>` : ''}
+        ${s.paid_at ? `<div><span class="meta">Paid:</span> ${escapeHtml(new Date(s.paid_at).toLocaleString())}</div>` : ''}
+        ${job.status ? `<div><span class="meta">Job status:</span> <span class="status-badge ${escapeHtml(job.status)}">${escapeHtml(job.status)}</span></div>` : ''}
+      </div>
+      <div class="final-review" style="margin-top:12px">
+        <h4>Next steps</h4>
+        <p class="meta">We'll review your access details and schedule your mow. You'll be contacted to confirm the appointment.</p>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
+        ${getAuthToken() ? `<button class="btn secondary small" type="button" onclick="setActiveView('jobs')">View My Bookings</button>` : ''}
+        ${isGuest ? `<button class="btn secondary small" type="button" id="successCreateAccountBtn">Create Account to Track This Booking</button>` : ''}
+        <button class="btn ghost small" type="button" onclick="setActiveView('quote')">Return Home</button>
+      </div>
+    </div>`;
+
+  if (isGuest) {
+    byId('successCreateAccountBtn')?.addEventListener('click', () => {
+      byId('openAuth')?.click();
+    });
+  }
 }
 
 (async function init() {

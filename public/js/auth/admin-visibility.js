@@ -40,8 +40,10 @@ function applyRoleVisibility() {
   // Admin view: show controls or auth wall
   const wall = byId('adminAuthWall');
   const wrap = byId('adminControlsWrap');
+  const paidPanel = byId('adminPaidJobsPanel');
   if (wall) wall.style.display = isAdmin ? 'none' : '';
   if (wrap) wrap.style.display = isAdmin ? '' : 'none';
+  if (paidPanel) paidPanel.style.display = isAdmin ? '' : 'none';
 
   // Admin-only panels (e.g., dashboard metrics, recent activity)
   $$('.admin-only').forEach((el) => { el.style.display = isAdmin ? 'block' : 'none'; });
@@ -49,4 +51,13 @@ function applyRoleVisibility() {
   // Leads panel is always shown in admin view but loads data only if admin
   if (isAdmin) loadAdminLeads().catch(() => {});
   if (isAdmin) loadAdmin().catch(() => {});
+  if (isAdmin) loadAdminPaidJobs().catch(() => {});
+
+  // Provider paid jobs panel: show to providers and admins
+  const providerPaidPanel = byId('providerPaidJobsPanel');
+  if (providerPaidPanel) {
+    const showPanel = isProvider || isAdmin;
+    providerPaidPanel.classList.toggle('hidden', !showPanel);
+    if (showPanel) loadProviderPaidJobs().catch(() => {});
+  }
 }

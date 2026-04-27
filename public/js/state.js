@@ -30,6 +30,7 @@ const state = {
   pendingParcelPreviewLayer: null,
   parcelDblClick: false,
   quoteFlowStep: 'start',
+  pendingCheckoutUrl: null,
 };
 
 const QUOTE_STEP_ORDER = ['start', 'parcel', 'draw', 'estimate', 'request'];

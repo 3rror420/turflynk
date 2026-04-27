@@ -619,6 +619,76 @@
             <div id="leadRequestResult" class="result hidden" style="margin-top:12px"></div>
           </section>
 
+          <!-- Account recommendation step — shown before Stripe redirect for guest users -->
+          <section id="accountRecommendPanel" class="quote-flow-screen lead-request-panel hidden" style="display:none">
+            <div class="flow-screen-head">
+              <div>
+                <h2>Want to track your booking later?</h2>
+                <p>Create a free account to view your booking status, receipts, and future mowing requests. You can also continue as a guest and still complete your payment now.</p>
+              </div>
+            </div>
+            <div class="price-hero compact">
+              <span>Estimate</span>
+              <strong id="accountRecommendEstimate">-</strong>
+            </div>
+            <div class="stack" style="gap:10px;margin-top:16px">
+              <p class="meta" style="margin:0">Create a free account to:</p>
+              <ul class="meta" style="margin:4px 0 0 16px;padding:0;list-style:disc">
+                <li>View your booking status</li>
+                <li>See receipts and payment history</li>
+                <li>Manage future mowing requests faster</li>
+                <li>Get updates about scheduling and completed work</li>
+              </ul>
+              <button class="btn primary" type="button" id="accountRecommendCreateBtn" style="margin-top:8px">Create Account &amp; Continue</button>
+              <button class="btn ghost" type="button" id="accountRecommendGuestBtn">Continue as Guest</button>
+            </div>
+            <div id="accountRecommendAuthForm" class="hidden" style="margin-top:16px">
+              <h3 style="margin:0 0 8px">Create Account</h3>
+              <form id="accountRecommendRegisterForm" class="stack" style="gap:10px">
+                <label><span>Full Name</span><input name="fullName" autocomplete="name" required /></label>
+                <label><span>Email</span><input name="email" type="email" autocomplete="email" required /></label>
+                <label><span>Password</span><input name="password" type="password" autocomplete="new-password" required minlength="8" /></label>
+                <button class="btn primary" type="submit" id="accountRecommendRegisterBtn">Create Account &amp; Proceed to Checkout</button>
+                <p class="meta" style="text-align:center;margin:0">Already have an account? <button type="button" class="link-btn" id="accountRecommendLoginToggle">Sign in instead</button></p>
+              </form>
+              <form id="accountRecommendLoginForm" class="stack hidden" style="gap:10px">
+                <label><span>Email</span><input name="email" type="email" autocomplete="email" required /></label>
+                <label><span>Password</span><input name="password" type="password" autocomplete="current-password" required /></label>
+                <button class="btn primary" type="submit" id="accountRecommendLoginBtn">Sign In &amp; Proceed to Checkout</button>
+                <p class="meta" style="text-align:center;margin:0">New user? <button type="button" class="link-btn" id="accountRecommendRegisterToggle">Create account instead</button></p>
+              </form>
+              <div id="accountRecommendAuthResult" class="result hidden" style="margin-top:8px"></div>
+            </div>
+          </section>
+
+          <!-- Checkout success screen — shown after Stripe redirect with ?checkout=success -->
+          <section id="checkoutSuccessPanel" class="panel hidden" style="display:none;margin-top:16px">
+            <div class="panel-head">
+              <div>
+                <h2>Payment received</h2>
+                <p class="section-copy" style="margin:0">Your mow is booked. We'll review access details and schedule your mow.</p>
+              </div>
+            </div>
+            <div id="checkoutSuccessContent" style="padding:4px 0"></div>
+          </section>
+
+          <!-- Checkout cancel screen — shown after Stripe redirect with ?checkout=cancel -->
+          <section id="checkoutCancelPanel" class="panel hidden" style="display:none;margin-top:16px">
+            <div class="panel-head">
+              <div>
+                <h2>Checkout canceled</h2>
+                <p class="section-copy" style="margin:0">Your card was not charged.</p>
+              </div>
+            </div>
+            <div id="checkoutCancelContent" style="padding:4px 0">
+              <p>Your card was not charged. You can return to the quote and book when you are ready.</p>
+              <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
+                <button class="btn primary" type="button" onclick="showQuoteFlowStep('estimate')">Return to Quote</button>
+                <button class="btn ghost" type="button" onclick="setActiveView('quote')">Start Over</button>
+              </div>
+            </div>
+          </section>
+
           <section id="liveBidPanel" class="panel lead-request-panel hidden" style="margin-top:16px">
               <div class="panel-head">
                 <div>
@@ -809,6 +879,20 @@
       </section>
 
       <section class="view" data-view-panel="providers">
+        <!-- Provider paid jobs panel — visible to signed-in providers -->
+        <section class="panel provider-only-panel hidden" id="providerPaidJobsPanel" style="margin-bottom:20px">
+          <div class="panel-head">
+            <div>
+              <h2>Available Paid Jobs</h2>
+              <p class="section-copy" style="margin:0">Paid jobs needing a provider. Sign in as a provider to see and claim jobs.</p>
+            </div>
+            <button class="btn secondary small" id="refreshProviderPaidJobsBtn" type="button">Refresh</button>
+          </div>
+          <div id="providerPaidJobsList" class="card-list">
+            <div style="color:var(--muted);padding:12px">Sign in as a provider to see available paid jobs.</div>
+          </div>
+        </section>
+
         <div class="section-grid two-up">
           <section class="panel">
             <div class="panel-head"><h2>Provider Signup</h2></div>
@@ -926,6 +1010,22 @@
           <p class="section-copy">Log in as an admin to manage leads and pricing.</p>
           <button class="btn primary" type="button" onclick="document.getElementById('openAuth').click()">Log In</button>
         </div>
+
+        <!-- Paid Jobs panel -->
+        <section class="panel" id="adminPaidJobsPanel" style="margin-bottom:20px">
+          <div class="panel-head">
+            <div>
+              <h2>Paid Jobs</h2>
+              <p class="section-copy" style="margin:0">Jobs with completed payments needing scheduling or assignment.</p>
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+              <button class="btn secondary small" id="refreshAdminPaidJobsBtn" type="button">Refresh</button>
+            </div>
+          </div>
+          <div id="adminPaidJobsList" class="card-list">
+            <div style="color:var(--muted);padding:12px">No paid jobs found.</div>
+          </div>
+        </section>
 
         <!-- Leads & Jobs panel -->
         <section class="panel" id="leadsPanel" style="margin-bottom:20px">

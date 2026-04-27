@@ -2006,3 +2006,15 @@ body[data-quote-flow-step="draw"] #quoteMap{
 .admin-only { display: none; }
 .provider-only { display: none; }
 .technical-parcel-fields { display: none; }
+
+/* ── Inline text-link button ── */
+.link-btn {
+  background: none;
+  border: none;
+  color: var(--accent, #4ade80);
+  cursor: pointer;
+  font-size: inherit;
+  padding: 0;
+  text-decoration: underline;
+}
+.link-btn:hover { opacity: .8; }

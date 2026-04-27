@@ -1059,6 +1059,17 @@ app.post("/api/checkout/instant-mow", optionalAuth, async (req, res) => {
     const checkoutJobPayload = normalizeInstantCheckoutPayload(jobPayload, calculatedEstimate);
 
     const secretKey = stripeSecretKey();
+    const serviceSnapshot = {
+      serviceType: checkoutJobPayload.serviceType || "mowing",
+      address: checkoutJobPayload.address || "",
+      city: checkoutJobPayload.city || "",
+      state: checkoutJobPayload.state || "",
+      zip: checkoutJobPayload.zip || "",
+      mowAreaSqft: Number(jobPayload.mowAreaSqft || 0),
+      lotAreaSqft: Number(jobPayload.lotAreaSqft || 0),
+      preferredDate: checkoutJobPayload.preferredDate || null,
+      notes: jobPayload.notes || jobPayload.yard_access_notes || ""
+    };
     if (!secretKey) {
       const job = await insertJobForUser(req.user?.id || null, checkoutJobPayload, "open");
       const payment = {
@@ -1068,11 +1079,13 @@ app.post("/api/checkout/instant-mow", optionalAuth, async (req, res) => {
         stripe_checkout_session_id: null,
         stripe_payment_intent_id: null,
         amount: amount / 100,
+        currency: "usd",
         customer: {
           name: checkoutJobPayload.name,
           phone: checkoutJobPayload.phone,
           email: checkoutJobPayload.email
         },
+        service: serviceSnapshot,
         status: "checkout_pending",
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
@@ -1101,11 +1114,13 @@ app.post("/api/checkout/instant-mow", optionalAuth, async (req, res) => {
       stripe_checkout_session_id: null,
       stripe_payment_intent_id: null,
       amount: amount / 100,
+      currency: "usd",
       customer: {
         name: checkoutJobPayload.name,
         phone: checkoutJobPayload.phone,
         email: checkoutJobPayload.email
       },
+      service: serviceSnapshot,
       status: "checkout_pending",
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString()
@@ -1268,6 +1283,7 @@ async function markCheckoutSessionPaid(session = {}) {
   }
 
   payment.status = "paid";
+  payment.paid_at = payment.paid_at || new Date().toISOString();
   payment.job_id = payment.job_id || metadata.job_id || null;
   payment.quote_id = payment.quote_id || metadata.quote_id || null;
   payment.stripe_checkout_session_id = session.id || payment.stripe_checkout_session_id || null;
@@ -2683,6 +2699,7 @@ app.post("/api/jobs/:id/accept", requireAuth, requireRole("provider"), async (re
 /* -------------------- ADMIN LEADS (JSON-backed) -------------------- */
 
 const VALID_LEAD_STATUSES = new Set(["new", "quoted", "bidding", "scheduled", "completed", "canceled"]);
+const VALID_JOB_STATUSES = new Set(["payment_pending", "payment_failed", "paid", "open", "assigned", "scheduled", "in_progress", "completed", "canceled", "refunded"]);
 
 app.get("/api/admin/jobs", requireAuth, requireRole("admin"), (req, res) => {
   try {
@@ -2717,22 +2734,36 @@ app.get("/api/admin/jobs/:id", requireAuth, requireRole("admin"), (req, res) => 
   }
 });
 
-app.patch("/api/admin/jobs/:id/status", requireAuth, requireRole("admin"), (req, res) => {
+app.patch("/api/admin/jobs/:id/status", requireAuth, requireRole("admin"), async (req, res) => {
   try {
     const { status } = req.body || {};
-    if (!status || !VALID_LEAD_STATUSES.has(status)) {
-      return res.status(400).json({ ok: false, error: `Invalid status. Allowed: ${[...VALID_LEAD_STATUSES].join(", ")}` });
+    const allValid = new Set([...VALID_LEAD_STATUSES, ...VALID_JOB_STATUSES]);
+    if (!status || !allValid.has(status)) {
+      return res.status(400).json({ ok: false, error: `Invalid status. Allowed: ${[...allValid].join(", ")}` });
     }
 
+    // Try JSON leads first
     const leads = readLeads();
     const idx = leads.findIndex((l) => l.id === req.params.id);
-    if (idx === -1) return res.status(404).json({ ok: false, error: "Lead not found" });
+    if (idx !== -1) {
+      leads[idx].status = status;
+      leads[idx].updatedAt = new Date().toISOString();
+      writeLeads(leads);
+      return res.json({ ok: true, job: leads[idx] });
+    }
 
-    leads[idx].status = status;
-    leads[idx].updatedAt = new Date().toISOString();
-    writeLeads(leads);
+    // Try DB jobs
+    try {
+      const dbResult = await pgdb.query(
+        "UPDATE jobs SET status = $2 WHERE id = $1 RETURNING *",
+        [req.params.id, status]
+      );
+      if (dbResult.rows.length) {
+        return res.json({ ok: true, job: mapJobRow(dbResult.rows[0]) });
+      }
+    } catch {}
 
-    res.json({ ok: true, job: leads[idx] });
+    res.status(404).json({ ok: false, error: "Job not found" });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
@@ -2793,6 +2824,185 @@ app.get("/api/admin/overview", requireAuth, requireRole("admin"), async (_req, r
     });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+/* -------------------- PAYMENT SESSION LOOKUP -------------------- */
+
+app.get("/api/payments/session/:sessionId", async (req, res) => {
+  try {
+    const sessionId = req.params.sessionId;
+    const payments = readJsonArray(PAYMENTS_FILE);
+    const payment = payments.find((p) => p.stripe_checkout_session_id === sessionId);
+    if (!payment) {
+      return res.status(404).json({ ok: false, error: "Payment session not found" });
+    }
+    let jobDetails = null;
+    if (payment.job_id) {
+      try {
+        const jobResult = await pgdb.query("SELECT * FROM jobs WHERE id = $1", [payment.job_id]);
+        if (jobResult.rows.length) {
+          const j = mapJobRow(jobResult.rows[0]);
+          jobDetails = {
+            id: j.id,
+            status: j.status,
+            serviceType: j.serviceType,
+            address: j.address,
+            city: j.city,
+            state: j.state,
+            zip: j.zip,
+            budget: j.budget,
+            preferredDate: j.preferredDate,
+            details: j.details,
+            gate_size_category: j.gate_size_category,
+            mower_access: j.mower_access,
+            yard_access_notes: j.yard_access_notes,
+            grass_height_range: j.grass_height_range,
+            service_frequency: j.service_frequency,
+            pets: j.pets,
+            obstacles_list: j.obstacles_list,
+            available_days_json: j.available_days_json,
+          };
+        }
+      } catch {}
+    }
+    res.json({
+      ok: true,
+      session: {
+        id: payment.id,
+        job_id: payment.job_id,
+        stripe_checkout_session_id: payment.stripe_checkout_session_id,
+        amount: payment.amount,
+        currency: payment.currency || "usd",
+        status: payment.status,
+        paid_at: payment.paid_at || payment.updated_at,
+        customer: {
+          name: payment.customer?.name || "",
+          email: payment.customer?.email || "",
+          phone: payment.customer?.phone || ""
+        },
+        service: payment.service || null,
+        job: jobDetails
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+/* -------------------- ADMIN PAID/COMPLETED JOBS -------------------- */
+
+app.get("/api/admin/paid-jobs", requireAuth, requireRole("admin"), async (req, res) => {
+  try {
+    const result = await pgdb.query(
+      `SELECT * FROM jobs WHERE status IN ('paid','open','assigned','scheduled','in_progress') ORDER BY created_at DESC`
+    );
+    const payments = readJsonArray(PAYMENTS_FILE);
+    const jobs = result.rows.map((row) => {
+      const j = mapJobRow(row);
+      const payment = payments.find((p) => p.job_id === j.id);
+      return { ...j, paymentAmount: payment?.amount || null, paymentStatus: payment?.status || null, paidAt: payment?.paid_at || null };
+    });
+    res.json({ ok: true, jobs });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.get("/api/admin/completed-jobs", requireAuth, requireRole("admin"), async (req, res) => {
+  try {
+    const result = await pgdb.query(
+      `SELECT * FROM jobs WHERE status IN ('completed','canceled','refunded') ORDER BY created_at DESC`
+    );
+    const payments = readJsonArray(PAYMENTS_FILE);
+    const jobs = result.rows.map((row) => {
+      const j = mapJobRow(row);
+      const payment = payments.find((p) => p.job_id === j.id);
+      return { ...j, paymentAmount: payment?.amount || null, paymentStatus: payment?.status || null, paidAt: payment?.paid_at || null };
+    });
+    res.json({ ok: true, jobs });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+/* -------------------- CUSTOMER BOOKINGS / RECEIPTS -------------------- */
+
+app.get("/api/customer/bookings", requireAuth, async (req, res) => {
+  try {
+    const result = await pgdb.query(
+      "SELECT * FROM jobs WHERE customer_user_id = $1 ORDER BY created_at DESC",
+      [req.user.id]
+    );
+    const payments = readJsonArray(PAYMENTS_FILE);
+    const jobs = result.rows.map((row) => {
+      const j = mapJobRow(row);
+      const payment = payments.find((p) => p.job_id === j.id);
+      return { ...j, paymentAmount: payment?.amount || null, paymentStatus: payment?.status || null, paidAt: payment?.paid_at || null };
+    });
+    res.json({ ok: true, jobs });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.get("/api/customer/receipts", requireAuth, async (req, res) => {
+  try {
+    const dbResult = await pgdb.query(
+      "SELECT id FROM jobs WHERE customer_user_id = $1",
+      [req.user.id]
+    );
+    const myJobIds = new Set(dbResult.rows.map((r) => r.id));
+    const allPayments = readJsonArray(PAYMENTS_FILE);
+    const receipts = allPayments.filter((p) => {
+      if (p.job_id && myJobIds.has(p.job_id)) return true;
+      const email = req.user.email || "";
+      if (email && p.customer?.email && p.customer.email.toLowerCase() === email.toLowerCase()) return true;
+      return false;
+    });
+    res.json({ ok: true, receipts });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+/* -------------------- PROVIDER PAID JOBS -------------------- */
+
+app.get("/api/provider/paid-jobs", requireAuth, requireRole("provider"), async (req, res) => {
+  try {
+    const result = await pgdb.query(
+      `SELECT * FROM jobs WHERE status IN ('paid','open') AND (provider_user_id IS NULL OR provider_user_id = $1) ORDER BY created_at DESC`,
+      [req.user.id]
+    );
+    const payments = readJsonArray(PAYMENTS_FILE);
+    const jobs = result.rows.map((row) => {
+      const j = mapJobRow(row);
+      const payment = payments.find((p) => p.job_id === j.id);
+      return { ...j, paymentAmount: payment?.amount || null, paymentStatus: payment?.status || null, paidAt: payment?.paid_at || null };
+    });
+    res.json({ ok: true, jobs });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.patch("/api/provider/jobs/:id/status", requireAuth, requireRole("provider"), async (req, res) => {
+  try {
+    const { status } = req.body || {};
+    const allowed = new Set(["in_progress", "completed", "issue_reported"]);
+    if (!status || !allowed.has(status)) {
+      return res.status(400).json({ ok: false, error: `Providers can set: ${[...allowed].join(", ")}` });
+    }
+    const result = await pgdb.query(
+      "UPDATE jobs SET status = $2 WHERE id = $1 AND provider_user_id = $3 RETURNING *",
+      [req.params.id, status, req.user.id]
+    );
+    if (!result.rows.length) {
+      return res.status(404).json({ ok: false, error: "Job not found or not assigned to you" });
+    }
+    res.json({ ok: true, job: mapJobRow(result.rows[0]) });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
   }
 });
 
