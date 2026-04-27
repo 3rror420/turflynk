@@ -80,9 +80,68 @@ function writeJsonArray(file, rows) {
   renameSync(tmp, file);
 }
 
+function publicAppOrigin() {
+  if (process.env.PUBLIC_APP_URL) {
+    return String(process.env.PUBLIC_APP_URL).replace(/\/+$/, "");
+  }
+  if (PUBLIC_DOMAIN) {
+    const domain = String(PUBLIC_DOMAIN).replace(/^https?:\/\//, "").replace(/\/+$/, "");
+    return `https://${domain}`;
+  }
+  return `http://localhost:${PORT}`;
+}
+
+function stripeSecretKey() {
+  return process.env.STRIPE_SECRET_KEY || process.env.STRIPE_TEST_SECRET_KEY || "";
+}
+
+function assertStripeTestMode(secretKey) {
+  const liveAllowed = String(process.env.STRIPE_ALLOW_LIVE || "false").toLowerCase() === "true";
+  if (secretKey && !secretKey.startsWith("sk_test_") && !liveAllowed) {
+    throw new Error("Stripe checkout is configured for test mode only. Use an sk_test_ key or set STRIPE_ALLOW_LIVE=true.");
+  }
+}
+
+function checkoutReturnUrl(status, extraParams = {}) {
+  const url = new URL(publicAppOrigin());
+  url.searchParams.set("checkout", status);
+  Object.entries(extraParams).forEach(([key, value]) => {
+    if (value != null && value !== "") url.searchParams.set(key, String(value));
+  });
+  return url.toString();
+}
+
+function verifyStripeWebhookSignature(req) {
+  const secret = process.env.STRIPE_WEBHOOK_SECRET || "";
+  if (!secret) return true;
+
+  const signature = req.headers["stripe-signature"] || "";
+  const parts = Object.fromEntries(
+    String(signature)
+      .split(",")
+      .map((part) => part.split("="))
+      .filter(([key, value]) => key && value)
+  );
+
+  const timestamp = parts.t;
+  const expected = parts.v1;
+  if (!timestamp || !expected || !req.rawBody) return false;
+
+  const payload = `${timestamp}.${req.rawBody.toString("utf8")}`;
+  const digest = crypto.createHmac("sha256", secret).update(payload).digest("hex");
+  const expectedBuffer = Buffer.from(expected, "hex");
+  const digestBuffer = Buffer.from(digest, "hex");
+  return expectedBuffer.length === digestBuffer.length && crypto.timingSafeEqual(expectedBuffer, digestBuffer);
+}
+
 // Middleware MUST come before API routes
 app.use(cors());
-app.use(express.json({ limit: "10mb" }));
+app.use(express.json({
+  limit: "10mb",
+  verify: (req, _res, buf) => {
+    req.rawBody = buf;
+  }
+}));
 
 app.use('/api/ai', aiDetectGrassRouter);
 
@@ -240,6 +299,42 @@ async function requireAuth(req, res, next) {
   }
 }
 
+async function optionalAuth(req, _res, next) {
+  try {
+    const authHeader = req.headers.authorization || "";
+    const token = authHeader.startsWith("Bearer ")
+      ? authHeader.slice("Bearer ".length)
+      : "";
+
+    if (!token) return next();
+
+    if (ADMIN_API_KEY && token === ADMIN_API_KEY) {
+      req.user = { id: "admin-key", email: "admin", role: "admin" };
+      req.authToken = token;
+      return next();
+    }
+
+    const result = await pgdb.query(
+      `
+      SELECT users.*
+      FROM sessions
+      JOIN users ON users.id = sessions.user_id
+      WHERE sessions.token = $1
+      LIMIT 1
+      `,
+      [token]
+    );
+
+    if (result.rows.length) {
+      req.user = result.rows[0];
+      req.authToken = token;
+    }
+  } catch (error) {
+    console.warn("Optional auth failed", error.message);
+  }
+  next();
+}
+
 function requireRole(...roles) {
   return (req, res, next) => {
     if (!req.user) {
@@ -336,6 +431,7 @@ function estimateQuote(payload, settings) {
   const region = findRegion(settings, payload.regionId);
   const rules = settings.complexityRules || {};
   const mowAreaSqft = Number(payload.mowAreaSqft || 0);
+  console.log('[TurfLynk Area Trace] F. estimateQuote | mowAreaSqft=' + mowAreaSqft + ' lotAreaSqft=' + Number(payload.lotAreaSqft || 0) + ' serviceType=' + (payload.serviceType || '') + ' regionId=' + (payload.regionId || '') + ' source=payload');
   if (mowAreaSqft <= 0) return 0;
 
   const areaUnits = mowAreaSqft > 0 ? mowAreaSqft / 1000 : 0;
@@ -891,62 +987,183 @@ app.put("/api/regions/:id", requireAuth, requireRole("admin"), async (req, res) 
 
 app.post("/api/estimate", async (req, res) => {
   try {
+    const _body = req.body || {};
+    console.log('[TurfLynk Area Trace] F. /api/estimate received | mowAreaSqft=' + Number(_body.mowAreaSqft || 0) + ' lotAreaSqft=' + Number(_body.lotAreaSqft || 0) + ' serviceType=' + (_body.serviceType || '') + ' source=request.body');
     const settings = await loadSettingsFromDb();
-    const estimate = estimateQuote(req.body || {}, settings);
+    const estimate = estimateQuote(_body, settings);
+    console.log('[TurfLynk Area Trace] F. /api/estimate result | estimate=' + estimate + ' mowAreaSqft=' + Number(_body.mowAreaSqft || 0));
     res.json({ ok: true, estimate });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
   }
 });
 
-app.post("/api/checkout/instant-mow", requireAuth, async (req, res) => {
+function bookingAccessNotesRequired(payload = {}) {
+  const gate = payload.gate_size_category || payload.gate_access_type || "";
+  const mowerAccess = payload.mower_access || "";
+  const community = payload.community_access_type || "";
+  return (
+    (gate && gate !== "no_gate_open_access") ||
+    (mowerAccess && mowerAccess !== "yes") ||
+    (community && community !== "no")
+  );
+}
+
+function instantCheckoutMissingFields(payload = {}) {
+  const missing = [];
+  if (!String(payload.name || payload.customerName || "").trim()) missing.push("name");
+  if (!String(payload.phone || payload.customerPhone || "").trim()) missing.push("phone");
+  if (!String(payload.email || payload.customerEmail || "").trim()) missing.push("email");
+  if (!String(payload.address || "").trim()) missing.push("address");
+  const accessNotes = payload.yard_access_notes || payload.access_notes || payload.notes || payload.community_access_instructions || "";
+  if (bookingAccessNotesRequired(payload) && !String(accessNotes).trim()) missing.push("access notes");
+  return missing;
+}
+
+function normalizeInstantCheckoutPayload(payload = {}, calculatedEstimate = 0) {
+  const name = payload.name || payload.customerName || "";
+  const phone = payload.phone || payload.customerPhone || "";
+  const email = payload.email || payload.customerEmail || "";
+  return {
+    ...payload,
+    name,
+    phone,
+    email,
+    customerName: payload.customerName || name,
+    customerPhone: payload.customerPhone || phone,
+    customerEmail: payload.customerEmail || email,
+    serviceType: payload.serviceType || payload.service_type || "mowing",
+    budget: calculatedEstimate,
+    estimate: calculatedEstimate,
+    final_price: calculatedEstimate,
+    scope_locked: true
+  };
+}
+
+app.post("/api/checkout/instant-mow", optionalAuth, async (req, res) => {
   try {
     const body = req.body || {};
-    const amount = Math.round(Number(body.amount || body.final_price || body.estimate || 0) * 100);
+    const jobPayload = body.job && typeof body.job === "object" ? body.job : body;
+    const quoteId = body.quote_id || jobPayload.quote_id || jobPayload.quoteId || "";
+    const missing = instantCheckoutMissingFields(jobPayload);
+    if (missing.length) {
+      return res.status(400).json({ ok: false, error: `Missing booking fields: ${missing.join(", ")}` });
+    }
+
+    const settings = await loadSettingsFromDb();
+    const calculatedEstimate = estimateQuote(jobPayload, settings);
+    const amount = Math.round(Number(calculatedEstimate || 0) * 100);
     if (amount <= 0) {
       return res.status(400).json({ ok: false, error: "Checkout amount is required" });
     }
+    const checkoutJobPayload = normalizeInstantCheckoutPayload(jobPayload, calculatedEstimate);
 
-    if (!process.env.STRIPE_SECRET_KEY) {
+    const secretKey = stripeSecretKey();
+    if (!secretKey) {
+      const job = await insertJobForUser(req.user?.id || null, checkoutJobPayload, "open");
+      const payment = {
+        id: nanoid(10),
+        job_id: job.id,
+        quote_id: quoteId || null,
+        stripe_checkout_session_id: null,
+        stripe_payment_intent_id: null,
+        amount: amount / 100,
+        customer: {
+          name: checkoutJobPayload.name,
+          phone: checkoutJobPayload.phone,
+          email: checkoutJobPayload.email
+        },
+        status: "checkout_pending",
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        note: "Stripe is not configured in this environment."
+      };
+      const payments = readJsonArray(PAYMENTS_FILE);
+      payments.push(payment);
+      writeJsonArray(PAYMENTS_FILE, payments);
       return res.json({
         ok: true,
         paymentStatus: "checkout_pending",
         checkoutUrl: null,
+        job,
+        payment,
         message: "Stripe is not configured in this environment."
       });
     }
 
-    const origin = process.env.PUBLIC_APP_URL || `http://localhost:${PORT}`;
+    assertStripeTestMode(secretKey);
+
+    const job = await insertJobForUser(req.user?.id || null, checkoutJobPayload, "payment_pending");
+    const payment = {
+      id: nanoid(10),
+      job_id: job.id,
+      quote_id: quoteId || null,
+      stripe_checkout_session_id: null,
+      stripe_payment_intent_id: null,
+      amount: amount / 100,
+      customer: {
+        name: checkoutJobPayload.name,
+        phone: checkoutJobPayload.phone,
+        email: checkoutJobPayload.email
+      },
+      status: "checkout_pending",
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    };
+    const payments = readJsonArray(PAYMENTS_FILE);
+    payments.push(payment);
+    writeJsonArray(PAYMENTS_FILE, payments);
+
     const params = new URLSearchParams();
     params.set("mode", "payment");
-    params.set("success_url", `${origin}/?checkout=success`);
-    params.set("cancel_url", `${origin}/?checkout=cancel`);
+    params.set("success_url", checkoutReturnUrl("success", { session_id: "{CHECKOUT_SESSION_ID}" }));
+    params.set("cancel_url", checkoutReturnUrl("cancel", { job_id: job.id }));
     params.set("line_items[0][quantity]", "1");
     params.set("line_items[0][price_data][currency]", "usd");
     params.set("line_items[0][price_data][unit_amount]", String(amount));
     params.set("line_items[0][price_data][product_data][name]", "Instant standard lawn mowing");
-    params.set("metadata[quote_id]", body.quote_id || "");
-    params.set("metadata[service_type]", body.service_type || body.serviceType || "mowing");
+    params.set("client_reference_id", job.id);
+    params.set("metadata[payment_id]", payment.id);
+    params.set("metadata[job_id]", job.id);
+    params.set("metadata[quote_id]", quoteId);
+    params.set("metadata[customer_user_id]", req.user?.id || "");
+    params.set("metadata[customer_name]", checkoutJobPayload.name || "");
+    params.set("metadata[customer_phone]", checkoutJobPayload.phone || "");
+    params.set("customer_email", checkoutJobPayload.email || "");
+    params.set("metadata[service_type]", checkoutJobPayload.serviceType || "mowing");
     params.set("metadata[scope]", "standard_mowing_only");
 
     const stripeRes = await fetch("https://api.stripe.com/v1/checkout/sessions", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${process.env.STRIPE_SECRET_KEY}`,
+        Authorization: `Bearer ${secretKey}`,
         "Content-Type": "application/x-www-form-urlencoded"
       },
       body: params
     });
     const session = await stripeRes.json();
     if (!stripeRes.ok) {
+      payment.status = "checkout_failed";
+      payment.updated_at = new Date().toISOString();
+      payment.error = session.error?.message || "Stripe checkout failed";
+      writeJsonArray(PAYMENTS_FILE, payments);
+      await pgdb.query("UPDATE jobs SET status = 'payment_failed' WHERE id = $1", [job.id]);
       return res.status(502).json({ ok: false, error: session.error?.message || "Stripe checkout failed" });
     }
+
+    payment.status = "checkout_created";
+    payment.stripe_checkout_session_id = session.id;
+    payment.stripe_payment_intent_id = session.payment_intent || null;
+    payment.updated_at = new Date().toISOString();
+    writeJsonArray(PAYMENTS_FILE, payments);
 
     res.json({
       ok: true,
       paymentStatus: "checkout_created",
       checkoutUrl: session.url,
-      checkoutSessionId: session.id
+      checkoutSessionId: session.id,
+      job,
+      payment
     });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
@@ -959,7 +1176,8 @@ app.post("/api/payments/create-checkout-session", requireAuth, async (req, res) 
     const amount = Math.round(Number(body.amount || body.final_price || body.estimate || 0) * 100);
     if (amount <= 0) return res.status(400).json({ ok: false, error: "Checkout amount is required" });
 
-    if (!process.env.STRIPE_SECRET_KEY) {
+    const secretKey = stripeSecretKey();
+    if (!secretKey) {
       const payment = {
         id: nanoid(10),
         job_id: body.job_id || null,
@@ -977,11 +1195,12 @@ app.post("/api/payments/create-checkout-session", requireAuth, async (req, res) 
       return res.json({ ok: true, paymentStatus: payment.status, checkoutUrl: null, payment });
     }
 
-    const origin = process.env.PUBLIC_APP_URL || `http://localhost:${PORT}`;
+    assertStripeTestMode(secretKey);
+
     const params = new URLSearchParams();
     params.set("mode", "payment");
-    params.set("success_url", `${origin}/?checkout=success`);
-    params.set("cancel_url", `${origin}/?checkout=cancel`);
+    params.set("success_url", checkoutReturnUrl("success", { session_id: "{CHECKOUT_SESSION_ID}" }));
+    params.set("cancel_url", checkoutReturnUrl("cancel"));
     params.set("line_items[0][quantity]", "1");
     params.set("line_items[0][price_data][currency]", "usd");
     params.set("line_items[0][price_data][unit_amount]", String(amount));
@@ -992,7 +1211,7 @@ app.post("/api/payments/create-checkout-session", requireAuth, async (req, res) 
     const stripeRes = await fetch("https://api.stripe.com/v1/checkout/sessions", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${process.env.STRIPE_SECRET_KEY}`,
+        Authorization: `Bearer ${secretKey}`,
         "Content-Type": "application/x-www-form-urlencoded"
       },
       body: params
@@ -1020,19 +1239,97 @@ app.post("/api/payments/create-checkout-session", requireAuth, async (req, res) 
   }
 });
 
+async function markCheckoutSessionPaid(session = {}) {
+  const metadata = session.metadata || {};
+  const payments = readJsonArray(PAYMENTS_FILE);
+  let payment = payments.find((item) => item.stripe_checkout_session_id === session.id);
+  if (!payment && metadata.payment_id) {
+    payment = payments.find((item) => item.id === metadata.payment_id);
+  }
+
+  if (!payment) {
+    payment = {
+      id: metadata.payment_id || nanoid(10),
+      job_id: metadata.job_id || null,
+      quote_id: metadata.quote_id || null,
+      stripe_checkout_session_id: session.id || null,
+      stripe_payment_intent_id: null,
+      amount: session.amount_total ? Number(session.amount_total) / 100 : 0,
+      customer: {
+        name: metadata.customer_name || session.customer_details?.name || "",
+        phone: metadata.customer_phone || session.customer_details?.phone || "",
+        email: session.customer_details?.email || ""
+      },
+      status: "checkout_created",
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    };
+    payments.push(payment);
+  }
+
+  payment.status = "paid";
+  payment.job_id = payment.job_id || metadata.job_id || null;
+  payment.quote_id = payment.quote_id || metadata.quote_id || null;
+  payment.stripe_checkout_session_id = session.id || payment.stripe_checkout_session_id || null;
+  payment.stripe_payment_intent_id = session.payment_intent || payment.stripe_payment_intent_id || null;
+  payment.amount = session.amount_total ? Number(session.amount_total) / 100 : payment.amount;
+  payment.customer = payment.customer || {
+    name: metadata.customer_name || session.customer_details?.name || "",
+    phone: metadata.customer_phone || session.customer_details?.phone || "",
+    email: session.customer_details?.email || ""
+  };
+  payment.updated_at = new Date().toISOString();
+  writeJsonArray(PAYMENTS_FILE, payments);
+
+  if (payment.job_id) {
+    await pgdb.query(
+      `
+      UPDATE jobs
+      SET
+        status = 'open',
+        details = CASE
+          WHEN COALESCE(details, '') ILIKE '%Payment status: paid%' THEN details
+          ELSE CONCAT(
+            COALESCE(details, ''),
+            CASE WHEN COALESCE(details, '') = '' THEN '' ELSE E'\n' END,
+            'Payment status: paid',
+            CASE WHEN $2::text = '' THEN '' ELSE CONCAT(E'\nStripe checkout session: ', $2::text) END
+          )
+        END
+      WHERE id = $1
+      `,
+      [payment.job_id, session.id || ""]
+    );
+  }
+
+  if (payment.quote_id) {
+    await pgdb.query(
+      `
+      UPDATE quotes
+      SET
+        status = 'paid',
+        converted_to_job_id = COALESCE(converted_to_job_id, $2),
+        converted_at = COALESCE(converted_at, NOW())
+      WHERE id = $1
+      `,
+      [payment.quote_id, payment.job_id]
+    );
+  }
+
+  return payment;
+}
+
 app.post("/api/stripe/webhook", async (req, res) => {
   try {
+    if (!verifyStripeWebhookSignature(req)) {
+      return res.status(400).json({ ok: false, error: "Invalid Stripe signature" });
+    }
+
     const event = req.body || {};
     const session = event.data?.object || {};
     if (event.type === "checkout.session.completed" && session.id) {
-      const payments = readJsonArray(PAYMENTS_FILE);
-      const payment = payments.find((item) => item.stripe_checkout_session_id === session.id);
-      if (payment) {
-        payment.status = "paid";
-        payment.stripe_payment_intent_id = session.payment_intent || payment.stripe_payment_intent_id || null;
-        payment.updated_at = new Date().toISOString();
-        writeJsonArray(PAYMENTS_FILE, payments);
-      }
+      const payment = await markCheckoutSessionPaid(session);
+      return res.json({ ok: true, received: true, paymentStatus: payment.status });
     }
     res.json({ ok: true, received: true });
   } catch (err) {
@@ -1554,6 +1851,83 @@ function mapJobRow(row) {
   };
 }
 
+function buildJobDetails(body = {}) {
+  const serviceFields = servicePayloadFields(body);
+  return [
+    body.details || "",
+    ...mowableEstimateDetails(body),
+    serviceFields.quote_type ? `Quote type: ${serviceFields.quote_type}` : "",
+    serviceFields.scope_locked ? "Scope locked: standard mowing only" : "",
+    serviceFields.selected_yard_areas.length ? `Yard areas: ${serviceFields.selected_yard_areas.join(", ")}` : "",
+    serviceFields.grass_height_range ? `Grass height: ${serviceFields.grass_height_range}` : "",
+    serviceFields.service_frequency ? `Frequency: ${serviceFields.service_frequency}` : "",
+    serviceFields.gate_size_category ? `Gate size: ${serviceFields.gate_size_category}` : "",
+    serviceFields.gate_width_inches ? `Gate width inches: ${serviceFields.gate_width_inches}` : "",
+    serviceFields.mower_access ? `Mower access: ${serviceFields.mower_access}` : "",
+    serviceFields.yard_access_notes ? `Yard access notes: ${serviceFields.yard_access_notes}` : "",
+    serviceFields.community_access_type ? `Community access: ${serviceFields.community_access_type}` : "",
+    serviceFields.community_access_instructions_encrypted ? "Community access instructions: private" : "",
+    serviceFields.available_days_json.length ? `Available days: ${serviceFields.available_days_json.join(", ")}` : "",
+    serviceFields.time_preference ? `Time preference: ${serviceFields.time_preference}` : "",
+    serviceFields.schedule_flexibility ? `Schedule flexibility: ${serviceFields.schedule_flexibility}` : "",
+    serviceFields.available_date_start ? `Available start: ${serviceFields.available_date_start}` : "",
+    serviceFields.available_date_end ? `Available end: ${serviceFields.available_date_end}` : "",
+    serviceFields.specific_service_date ? `Specific date: ${serviceFields.specific_service_date}` : "",
+    serviceFields.pets ? `Pets: ${serviceFields.pets}` : "",
+    serviceFields.pet_waste_level ? `Pet waste: ${serviceFields.pet_waste_level}` : "",
+    serviceFields.obstacles_list.length ? `Obstacles: ${serviceFields.obstacles_list.join(", ")}` : "",
+    serviceFields.included_tasks_json.length ? `Included: ${serviceFields.included_tasks_json.join(", ")}` : "",
+    serviceFields.excluded_tasks_json.length ? `Excluded: ${serviceFields.excluded_tasks_json.join(", ")}` : ""
+  ].filter(Boolean).join("\n");
+}
+
+async function insertJobForUser(userId, body = {}, status = "open") {
+  const result = await pgdb.query(
+    `
+    INSERT INTO jobs (
+      id,
+      customer_user_id,
+      provider_user_id,
+      title,
+      address,
+      city,
+      state,
+      zip,
+      region_id,
+      budget,
+      service_type,
+      preferred_date,
+      details,
+      photos,
+      status
+    )
+    VALUES (
+      $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
+    )
+    RETURNING *
+    `,
+    [
+      nanoid(10),
+      userId,
+      body.providerUserId || null,
+      body.title || "",
+      body.address || "",
+      body.city || "",
+      body.state || DEFAULT_STATE,
+      body.zip || "",
+      body.regionId || "",
+      Number(body.budget || body.final_price || body.estimate || 0),
+      body.serviceType || body.service_type || "mowing",
+      body.preferredDate || null,
+      buildJobDetails(body),
+      JSON.stringify(Array.isArray(body.photos) ? body.photos : []),
+      status
+    ]
+  );
+
+  return mapJobRow(result.rows[0]);
+}
+
 app.get("/api/jobs", requireAuth, async (req, res) => {
   try {
     let result;
@@ -1603,99 +1977,11 @@ app.post("/api/jobs", requireAuth, async (req, res) => {
 
   try {
     const body = req.body || {};
-    const serviceFields = servicePayloadFields(body);
-    const details = [
-      body.details || "",
-      ...mowableEstimateDetails(body),
-      serviceFields.quote_type ? `Quote type: ${serviceFields.quote_type}` : "",
-      serviceFields.scope_locked ? "Scope locked: standard mowing only" : "",
-      serviceFields.selected_yard_areas.length ? `Yard areas: ${serviceFields.selected_yard_areas.join(", ")}` : "",
-      serviceFields.grass_height_range ? `Grass height: ${serviceFields.grass_height_range}` : "",
-      serviceFields.service_frequency ? `Frequency: ${serviceFields.service_frequency}` : "",
-      serviceFields.gate_size_category ? `Gate size: ${serviceFields.gate_size_category}` : "",
-      serviceFields.gate_width_inches ? `Gate width inches: ${serviceFields.gate_width_inches}` : "",
-      serviceFields.mower_access ? `Mower access: ${serviceFields.mower_access}` : "",
-      serviceFields.yard_access_notes ? `Yard access notes: ${serviceFields.yard_access_notes}` : "",
-      serviceFields.community_access_type ? `Community access: ${serviceFields.community_access_type}` : "",
-      serviceFields.community_access_instructions_encrypted ? "Community access instructions: private" : "",
-      serviceFields.available_days_json.length ? `Available days: ${serviceFields.available_days_json.join(", ")}` : "",
-      serviceFields.time_preference ? `Time preference: ${serviceFields.time_preference}` : "",
-      serviceFields.schedule_flexibility ? `Schedule flexibility: ${serviceFields.schedule_flexibility}` : "",
-      serviceFields.available_date_start ? `Available start: ${serviceFields.available_date_start}` : "",
-      serviceFields.available_date_end ? `Available end: ${serviceFields.available_date_end}` : "",
-      serviceFields.specific_service_date ? `Specific date: ${serviceFields.specific_service_date}` : "",
-      serviceFields.pets ? `Pets: ${serviceFields.pets}` : "",
-      serviceFields.pet_waste_level ? `Pet waste: ${serviceFields.pet_waste_level}` : "",
-      serviceFields.obstacles_list.length ? `Obstacles: ${serviceFields.obstacles_list.join(", ")}` : "",
-      serviceFields.included_tasks_json.length ? `Included: ${serviceFields.included_tasks_json.join(", ")}` : "",
-      serviceFields.excluded_tasks_json.length ? `Excluded: ${serviceFields.excluded_tasks_json.join(", ")}` : ""
-    ].filter(Boolean).join("\n");
-
-    const result = await pgdb.query(
-      `
-      INSERT INTO jobs (
-        id,
-        customer_user_id,
-        provider_user_id,
-        title,
-        address,
-        city,
-        state,
-        zip,
-        region_id,
-        budget,
-        service_type,
-        preferred_date,
-        details,
-        photos,
-        status
-      )
-      VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
-      )
-      RETURNING *
-      `,
-      [
-        nanoid(10),
-        user.id,
-        body.providerUserId || null,
-        body.title || "",
-        body.address || "",
-        body.city || "",
-        body.state || DEFAULT_STATE,
-        body.zip || "",
-        body.regionId || "",
-        Number(body.budget || 0),
-        body.serviceType || "mowing",
-        body.preferredDate || null,
-        details,
-        JSON.stringify(Array.isArray(body.photos) ? body.photos : []),
-        "open"
-      ]
-    );
-
-    const row = result.rows[0];
+    const job = await insertJobForUser(user.id, body, "open");
 
     res.status(201).json({
       ok: true,
-      job: {
-        id: row.id,
-        customerUserId: row.customer_user_id,
-        providerUserId: row.provider_user_id,
-        title: row.title || "",
-        address: row.address || "",
-        city: row.city || "",
-        state: row.state || "",
-        zip: row.zip || "",
-        regionId: row.region_id || "",
-        budget: Number(row.budget || 0),
-        serviceType: row.service_type || "mowing",
-        preferredDate: row.preferred_date || null,
-        details: row.details || "",
-        photos: parseJsonArray(row.photos),
-        status: row.status || "open",
-        postedAt: row.created_at
-      }
+      job
     });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });

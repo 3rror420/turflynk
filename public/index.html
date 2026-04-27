@@ -430,7 +430,7 @@
                 <button class="flow-back-btn" type="button" data-quote-back="draw">Back</button>
                 <div>
                   <h2>Your Estimate</h2>
-                  <p>Review price, service details, and access before requesting service.</p>
+                  <p>Review price, service details, and access before secure checkout.</p>
                 </div>
               </div>
               <div class="price-hero">
@@ -542,7 +542,8 @@
                 <input type="hidden" name="gates" value="" />
               </section>
 
-              <button class="btn primary request-service-cta hidden" type="button" id="requestServiceBtn">Request Service</button>
+              <button class="btn primary request-service-cta hidden" type="button" id="requestServiceBtn">Continue to Secure Checkout</button>
+              <p class="meta hidden" id="checkoutTestModeNote" style="margin:8px 0 0">Stripe test checkout enabled. Use card 4242 4242 4242 4242.</p>
               <button class="btn primary" type="submit" id="getEstimateBtn">Refresh Estimate</button>
             </section>
           </form>
@@ -551,8 +552,8 @@
             <div class="flow-screen-head">
               <button class="flow-back-btn" type="button" data-quote-back="estimate">Back</button>
               <div>
-                <h2>Request Service</h2>
-                <p>Share contact and schedule details. Account setup comes after the request.</p>
+                <h2>Secure Checkout</h2>
+                <p>Share booking details, then continue to Stripe test checkout.</p>
               </div>
             </div>
             <div class="price-hero compact">
@@ -563,10 +564,6 @@
                 <input type="hidden" name="estimatedPrice" id="leadEstimatedPrice" />
                 <input type="hidden" name="mowAreaSqft" id="leadMowAreaSqft" />
                 <input type="hidden" name="lotAreaSqft" id="leadLotAreaSqft" />
-                <input type="hidden" name="address" id="leadAddress" />
-                <input type="hidden" name="city" id="leadCity" />
-                <input type="hidden" name="state" id="leadState" />
-                <input type="hidden" name="zip" id="leadZip" />
                 <input type="hidden" name="regionId" id="leadRegionId" />
                 <input type="hidden" name="serviceType" id="leadServiceType" />
                 <input type="hidden" name="parcelAreaSqft" id="leadParcelAreaSqft" />
@@ -581,7 +578,13 @@
                 <label><span>Your Name</span><input name="customerName" placeholder="Jane Smith" autocomplete="name" required /></label>
                 <label><span>Phone</span><input name="customerPhone" type="tel" placeholder="555-555-5555" autocomplete="tel" required /></label>
               </div>
-              <label><span>Email</span><input name="customerEmail" type="email" placeholder="you@example.com" autocomplete="email" /></label>
+              <label><span>Email</span><input name="customerEmail" type="email" placeholder="you@example.com" autocomplete="email" required /></label>
+              <label><span>Service Address</span><input name="address" id="leadAddress" placeholder="123 Main St" autocomplete="street-address" required /></label>
+              <div class="grid-3">
+                <label><span>City</span><input name="city" id="leadCity" autocomplete="address-level2" /></label>
+                <label><span>State</span><input name="state" id="leadState" value="AR" autocomplete="address-level1" /></label>
+                <label><span>ZIP</span><input name="zip" id="leadZip" inputmode="numeric" autocomplete="postal-code" /></label>
+              </div>
               <div class="grid-2">
                 <label><span>Preferred Date</span><input name="preferredDate" type="date" /></label>
                 <label><span>Schedule Preference</span>
@@ -608,8 +611,9 @@
               <input type="hidden" name="available_date_start" />
               <input type="hidden" name="available_date_end" />
               <input type="hidden" name="specific_service_date" />
-              <label><span>Notes</span><textarea name="notes" rows="4" placeholder="Access, dogs, HOA rules, timing, or anything the crew should know."></textarea></label>
-              <button class="btn primary" type="submit" id="leadSubmitBtn">Submit Request</button>
+              <label><span>Access Notes</span><textarea name="notes" rows="4" placeholder="Access, dogs, HOA rules, timing, or anything the crew should know."></textarea></label>
+              <p class="meta" style="margin:0">Stripe test checkout enabled. Use card 4242 4242 4242 4242.</p>
+              <button class="btn primary" type="submit" id="leadSubmitBtn">Book &amp; Pay Securely</button>
               <button class="btn ghost" type="button" id="closeleadRequestPanel">Cancel</button>
             </form>
             <div id="leadRequestResult" class="result hidden" style="margin-top:12px"></div>

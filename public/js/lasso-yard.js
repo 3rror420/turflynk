@@ -54,6 +54,9 @@
 
   function recalc() {
     if (typeof window.syncMowAreaFromLayers === 'function') {
+      var _grp = getGroup();
+      var _layerCount = _grp ? _grp.getLayers().length : 0;
+      console.log('[TurfLynk Area Trace] A. lasso recalc() → syncMowAreaFromLayers | layers=' + _layerCount + ' source=lasso-yard.js');
       window.syncMowAreaFromLayers();
       return;
     }
@@ -68,6 +71,7 @@
         totalSqFt += Math.round(turf.area(layer.toGeoJSON()) * 10.7639);
       } catch {}
     });
+    console.log('[TurfLynk Area Trace] A. lasso recalc() fallback | layers=' + group.getLayers().length + ' totalSqFt=' + totalSqFt + ' source=lasso-yard.js');
     if (form.elements.mowAreaSqft) form.elements.mowAreaSqft.value = totalSqFt || '';
     if (typeof window.updateEstimatePreview === 'function') window.updateEstimatePreview();
   }
@@ -356,10 +360,21 @@
       const selectedArea = turf.area(selected);
       const parcelArea = turf.area(parcel);
 
-      // A true intersection cannot be materially larger than the lasso.
+      console.log('[TurfLynk Area Trace] A. lasso intersect: lassoArea=' + Math.round(lassoArea * 10.7639) + ' selectedArea=' + Math.round(selectedArea * 10.7639) + ' parcelArea=' + Math.round(parcelArea * 10.7639) + ' sqft | source=selectedMowableFeatureFromLasso');
+
+      // Guard 1: A true intersection cannot be materially larger than the lasso.
       // If Turf returns a parcel-sized shape from an invalid/self-crossed trace,
       // keep the user-drawn lasso instead of pricing the inverse area.
       if (lassoArea > 0 && selectedArea > lassoArea * 1.15 && selectedArea > parcelArea * 0.5) {
+        console.log('[TurfLynk Area Trace] A. guard1 fired: intersection bigger than lasso, using lasso sqft=' + Math.round(lassoArea * 10.7639));
+        return lasso;
+      }
+
+      // Guard 2: If the user drew a clearly smaller lasso (≤90% of parcel) but the
+      // intersection returned nearly the full parcel (≥95%), bad geometry occurred.
+      // Keep the original lasso polygon instead of pricing the whole lot.
+      if (parcelArea > 0 && lassoArea <= parcelArea * 0.90 && selectedArea >= parcelArea * 0.95) {
+        console.log('[TurfLynk Area Trace] A. guard2 fired: small lasso produced full-parcel intersection, using lasso sqft=' + Math.round(lassoArea * 10.7639));
         return lasso;
       }
 

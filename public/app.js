@@ -100,7 +100,13 @@ function aiPhotoPlaceholder(overrides = {}) {
 
 function buildQuotePayload(form) {
   const payload = formToObject(form);
+  const _formMowArea = Number(payload.mowAreaSqft || 0);
   const drawnMowAreaSqft = currentDrawnMowAreaSqFt();
+  const _dbgLot = Number(form?.elements?.lotAreaSqft?.value || 0);
+  const _dbgLayers = state.drawGroup?.getLayers()?.length ?? 0;
+  const _pct = _dbgLot > 0 ? Math.round((drawnMowAreaSqft / _dbgLot) * 100) : null;
+  const _mismatch = _formMowArea > 0 && Math.abs(_formMowArea - drawnMowAreaSqft) > 50;
+  console.log('[TurfLynk Area Trace] C. buildQuotePayload | formField=' + _formMowArea + ' drawGroup=' + drawnMowAreaSqft + ' lotAreaSqft=' + _dbgLot + (_pct !== null ? ' (' + _pct + '% of parcel)' : '') + ' layers=' + _dbgLayers + (_mismatch ? ' ⚠ MISMATCH' : '') + ' source=' + (drawnMowAreaSqft > 0 ? 'drawGroup' : 'none(no polygon)'));
   payload.mowAreaSqft = drawnMowAreaSqft > 0 ? drawnMowAreaSqft : 0;
   payload.areaSqft = payload.mowAreaSqft;
   if (form?.elements?.mowAreaSqft) form.elements.mowAreaSqft.value = payload.mowAreaSqft || '';
@@ -247,6 +253,11 @@ function showQuoteFlowStep(step, options = {}) {
     setTimeout(() => state.map.invalidateSize(true), 80);
     setTimeout(() => state.parcelLayer ? fitLayerBoundsWithContext(state.parcelLayer) : state.map.invalidateSize(true), 180);
   } else if (!drawing) {
+    // Commit any pending vertex edits before leaving the draw step.
+    // L.EditToolbar.Edit.disable() (called inside stopToolModes) reverts edits unless saved first.
+    if (state.editHandler) {
+      try { state.editHandler.save(); } catch {}
+    }
     stopToolModes();
   }
 
@@ -1031,6 +1042,10 @@ function syncMowAreaFromLayers() {
   if (!form) return;
 
   const totalSqFt = currentDrawnMowAreaSqFt();
+  const _syncLayers = state.drawGroup ? state.drawGroup.getLayers().length : 0;
+  const _syncLot = Number(form.elements.lotAreaSqft?.value || 0);
+  const _syncPct = _syncLot > 0 ? Math.round((totalSqFt / _syncLot) * 100) : null;
+  console.log('[TurfLynk Area Trace] B. syncMowAreaFromLayers | mowAreaSqft=' + totalSqFt + ' lotAreaSqft=' + _syncLot + (_syncPct !== null ? ' (' + _syncPct + '% of parcel)' : '') + ' layers=' + _syncLayers + ' source=drawGroup');
   form.elements.mowAreaSqft.value = totalSqFt || '';
   if (form.elements.customerAdjustedMowableSqft) {
     form.elements.customerAdjustedMowableSqft.value = totalSqFt || '';
@@ -1204,6 +1219,7 @@ function updateQuoteFlowState(options = {}) {
 
   const requestBtn = byId('requestServiceBtn');
   if (requestBtn) requestBtn.classList.toggle('hidden', !hasEstimate);
+  byId('checkoutTestModeNote')?.classList.toggle('hidden', !hasEstimate);
 
   if (!options.skipStepper) updateQuoteStepper();
 }
@@ -2642,6 +2658,45 @@ function quoteContactMissing(payload) {
   return missing;
 }
 
+function bookingAccessNotesRequired(payload = {}) {
+  const gate = payload.gate_size_category || payload.gate_access_type || '';
+  const mowerAccess = payload.mower_access || '';
+  const community = payload.community_access_type || '';
+  return (
+    (gate && gate !== 'no_gate_open_access') ||
+    (mowerAccess && mowerAccess !== 'yes') ||
+    (community && community !== 'no')
+  );
+}
+
+function bookingContactMissing(payload = {}) {
+  const missing = [];
+  if (!String(payload.name || payload.customerName || '').trim()) missing.push('name');
+  if (!String(payload.phone || payload.customerPhone || '').trim()) missing.push('phone');
+  if (!String(payload.email || payload.customerEmail || '').trim()) missing.push('email');
+  if (!String(payload.address || '').trim()) missing.push('address');
+  const accessNotes = payload.yard_access_notes || payload.access_notes || payload.notes || payload.community_access_instructions || '';
+  if (bookingAccessNotesRequired(payload) && !String(accessNotes).trim()) missing.push('access notes');
+  return missing;
+}
+
+function normalizeBookingContact(payload = {}) {
+  return {
+    ...payload,
+    name: payload.name || payload.customerName || '',
+    phone: payload.phone || payload.customerPhone || '',
+    email: payload.email || payload.customerEmail || '',
+    customerName: payload.customerName || payload.name || '',
+    customerPhone: payload.customerPhone || payload.phone || '',
+    customerEmail: payload.customerEmail || payload.email || '',
+  };
+}
+
+function showBookingContactPanel(payload = {}) {
+  showLeadRequestPanel(payload);
+  showWarning('Add booking details to continue to secure checkout.');
+}
+
 function showQuoteContactRequest(missing) {
   const details = document.querySelector('#quoteForm .contact-details');
   if (details) details.open = true;
@@ -2653,7 +2708,7 @@ function showQuoteContactRequest(missing) {
   showResult(
     'quoteResult',
     `<strong>Almost there.</strong><br>Add your ${escapeHtml(missing.join(', '))}, then accept the quote.<br><br>
-     <button class="btn primary" type="button" id="acceptQuoteBtn">Pay &amp; Book Mow</button>`
+     <button class="btn primary" type="button" id="acceptQuoteBtn">Book &amp; Pay Securely</button>`
   );
 
   byId('acceptQuoteBtn')?.addEventListener('click', acceptPendingQuote);
@@ -2737,6 +2792,7 @@ async function submitBidRequest(payload, resultId = 'liveBidResult') {
 
 function renderEstimateResult(payload) {
   const area = Number(payload.mowAreaSqft || 0);
+  console.log('[TurfLynk Area Trace] E. renderEstimateResult | mowAreaSqft=' + area + ' lotAreaSqft=' + Number(payload.lotAreaSqft || 0) + ' estimate=' + payload.estimate + ' source=pendingQuote');
   if (area <= 0) {
     showMissingMowableAreaPrompt('quoteResult');
     return;
@@ -2806,7 +2862,7 @@ function showLeadRequestPanel(payload) {
   const submitBtn = byId('leadSubmitBtn');
   if (submitBtn) {
     submitBtn.disabled = false;
-    submitBtn.textContent = 'Submit Service Request';
+    submitBtn.textContent = 'Book & Pay Securely';
   }
 
   panel.classList.remove('hidden');
@@ -2815,7 +2871,27 @@ function showLeadRequestPanel(payload) {
 }
 
 async function generateGuestEstimate(form) {
+  const _preBuildFormMow = Number(form?.elements?.mowAreaSqft?.value || 0);
   const payload = buildQuotePayload(form);
+  const _genLot = Number(payload.lotAreaSqft || 0);
+  const _genMow = Number(payload.mowAreaSqft || 0);
+  const _genLayers = state.drawGroup?.getLayers()?.length ?? 0;
+  const _genPct = _genLot > 0 ? Math.round((_genMow / _genLot) * 100) : null;
+  console.log('[TurfLynk Area Trace] D. generateGuestEstimate | mowAreaSqft=' + _genMow + ' lotAreaSqft=' + _genLot + (_genPct !== null ? ' (' + _genPct + '% of parcel)' : '') + ' layers=' + _genLayers + ' formFieldBeforeBuild=' + _preBuildFormMow + ' source=buildQuotePayload→drawGroup');
+
+  // Hard guard: mowAreaSqft is suspiciously close to lotAreaSqft but the form field
+  // (set by syncMowAreaFromLayers) showed a much smaller area — indicates stale/wrong drawGroup read
+  if (
+    _genLot > 0 &&
+    _genMow >= _genLot * 0.98 &&
+    _preBuildFormMow > 0 &&
+    _preBuildFormMow < _genLot * 0.95
+  ) {
+    console.error('[TurfLynk Area Trace] HARD GUARD triggered | drawGroup=' + _genMow + ' ≈ lot=' + _genLot + ' but formField showed ' + _preBuildFormMow + ' — blocking estimate');
+    showError('Selected lawn area looks inconsistent. Please redraw or save the mowable area again.');
+    return;
+  }
+
   if (Number(payload.mowAreaSqft || 0) <= 0) {
     state.pendingQuote = null;
     showMissingMowableAreaPrompt('quoteResult');
@@ -2897,8 +2973,9 @@ async function acceptPendingQuote() {
        Region: ${escapeHtml(regionLabel(data.quote.regionId || data.quote.region_id))}<br>
        Service: ${escapeHtml(serviceLabel(data.quote.serviceType || data.quote.service_type))}<br><br>
        <button class="btn primary" type="button" id="bookJobBtn" style="margin-top:4px">
-         Pay &amp; Book Mow
-       </button>`
+         Book &amp; Pay Securely
+       </button><br>
+       <span class="meta">Stripe test checkout enabled. Use card 4242 4242 4242 4242.</span>`
     );
 
     byId('bookJobBtn')?.addEventListener('click', bookQuoteAsJob);
@@ -2907,9 +2984,6 @@ async function acceptPendingQuote() {
     await updateEstimatePreview();
     if (isAdmin()) await loadAdmin().catch(() => {});
 
-    if (!getAuthToken()) {
-      openAuthGate(bookQuoteAsJob);
-    }
   } catch (error) {
     showResult('quoteResult', `<strong>Could not accept quote:</strong> ${escapeHtml(prettyApiError(error))}`);
     const btn = byId('acceptQuoteBtn');
@@ -2989,12 +3063,21 @@ $$('[data-quote-back]').forEach((btn) => {
   btn.addEventListener('click', () => showQuoteFlowStep(btn.dataset.quoteBack || 'start'));
 });
 byId('saveAreaBtn')?.addEventListener('click', () => {
+  // Commit pending vertex edits before disabling the toolbar.
+  // L.EditToolbar.Edit.disable() reverts edits unless .save() is called first.
+  if (state.editHandler) {
+    try { state.editHandler.save(); } catch {}
+  }
   stopToolModes();
   syncMowAreaFromLayers();
   setMapToolPanelOpen(true);
   showSuccess('Area saved');
 });
 byId('cancelEditAreaBtn')?.addEventListener('click', () => {
+  // Explicitly revert any pending edits before disabling.
+  if (state.editHandler) {
+    try { state.editHandler.revertLayers(); } catch {}
+  }
   stopToolModes();
   state.quoteUiMode = 'idle';
   updateQuoteFlowState();
@@ -3301,8 +3384,8 @@ byId('closeleadRequestPanel')?.addEventListener('click', () => {
 
 byId('leadRequestForm')?.addEventListener('submit', async (e) => {
   e.preventDefault();
+  console.log('[MowNWA Checkout Debug] leadRequestForm submit fired');
   const btn = byId('leadSubmitBtn');
-  if (btn) { btn.disabled = true; btn.textContent = 'Submitting...'; }
 
   try {
     const form = e.target;
@@ -3316,7 +3399,6 @@ byId('leadRequestForm')?.addEventListener('submit', async (e) => {
       const qd = buildQuotePayload(quoteForm);
       if (Number(qd.mowAreaSqft || 0) <= 0) {
         showMissingMowableAreaPrompt('quoteResult');
-        if (btn) { btn.disabled = false; btn.textContent = 'Submit Service Request'; }
         return;
       }
       payload.address = payload.address || qd.address || '';
@@ -3359,41 +3441,29 @@ byId('leadRequestForm')?.addEventListener('submit', async (e) => {
       });
     }
 
-    const res = await fetch('/api/leads', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+    const estimate = Number(payload.estimatedPrice || state.pendingQuote?.estimate || state.lastQuote?.estimate || 0);
+    const bookingQuote = normalizeBookingContact({
+      ...(state.pendingQuote || state.lastQuote || {}),
+      ...payload,
+      estimate,
+      final_price: estimate,
+      scope_locked: true,
+      standardMowScopeAck: true,
     });
 
-    const data = await res.json();
-
-    if (!data.ok) throw new Error(data.error || 'Submission failed');
-
-    const result = byId('leadRequestResult');
-    if (result) {
-      result.innerHTML = `
-        <strong>Request submitted!</strong><br>
-        We'll follow up to confirm availability and schedule your service.<br>
-        <span style="color:var(--muted);font-size:.9rem">Request ID: ${escapeHtml(data.lead?.id || '')}</span><br><br>
-        ${getAuthToken() ? '' : '<button class="btn primary small" type="button" id="postRequestAuthBtn">Create Account / Sign In</button> '}
-        <button class="btn secondary small" type="button" id="startAnotherQuoteBtn">Start Another Quote</button>
-      `;
-      result.classList.remove('hidden');
+    const missing = bookingContactMissing(bookingQuote);
+    console.log('[MowNWA Checkout Debug] bookingContactMissing result:', missing);
+    if (missing.length) {
+      showError(`Add ${missing.join(', ')} to continue to secure checkout.`);
+      return;
     }
-    showSuccess('Service request submitted');
-    byId('postRequestAuthBtn')?.addEventListener('click', () => openAuthGate(() => closeAuthGate()));
 
-    form.reset();
-    if (btn) { btn.disabled = true; btn.textContent = 'Request Submitted'; }
-    byId('startAnotherQuoteBtn')?.addEventListener('click', () => {
-      byId('leadRequestPanel')?.classList.add('hidden');
-      byId('quoteForm')?.reset();
-      clearMowLayer();
-      clearParcelLayer();
-      clearQuoteDraft();
-      updateQuoteFlowState();
-      showInfo('Ready for another quote');
-    });
+    // Validation passed — disable button now
+    if (btn) { btn.disabled = true; btn.textContent = 'Opening checkout...'; }
+
+    state.lastQuote = bookingQuote;
+    state.pendingQuote = bookingQuote;
+    await bookQuoteAsJob(btn);
 
   } catch (err) {
     const result = byId('leadRequestResult');
@@ -3402,7 +3472,7 @@ byId('leadRequestForm')?.addEventListener('submit', async (e) => {
       result.classList.remove('hidden');
     }
     showError(err.message);
-    if (btn) { btn.disabled = false; btn.textContent = 'Submit Service Request'; }
+    if (btn) { btn.disabled = false; btn.textContent = 'Book & Pay Securely'; }
   }
 });
 
@@ -3817,22 +3887,31 @@ byId('gateRegisterForm')?.addEventListener('submit', async (e) => {
    QUOTE → JOB BOOKING
 ───────────────────────────────────────────────────────────────────────── */
 
-async function bookQuoteAsJob() {
+async function bookQuoteAsJob(explicitBtn) {
+  if (!state.lastQuote && state.pendingQuote) {
+    state.lastQuote = state.pendingQuote;
+  }
+
   if (!state.lastQuote) {
-    showResult('quoteResult', '<strong>Get an estimate, then accept the quote to book.</strong>');
+    showResult('quoteResult', '<strong>Get an estimate, then continue to secure checkout.</strong>');
     return;
   }
 
-  if (!getAuthToken()) {
-    openAuthGate(bookQuoteAsJob);
-    return;
-  }
-
-  const btn = byId('bookJobBtn');
-  if (btn) { btn.disabled = true; btn.textContent = 'Booking…'; }
+  const btn = explicitBtn || byId('bookJobBtn') || byId('leadSubmitBtn') || byId('requestServiceBtn');
+  const originalText = btn?.id === 'leadSubmitBtn' ? 'Book & Pay Securely' : (btn?.textContent || 'Book & Pay Securely');
+  console.log('[MowNWA Checkout Debug] bookQuoteAsJob start | btn=' + (btn?.id || 'none'));
 
   try {
-    const q = state.lastQuote;
+    const q = normalizeBookingContact(state.lastQuote);
+    const missing = bookingContactMissing(q);
+    if (missing.length) {
+      showBookingContactPanel(q);
+      if (btn) { btn.disabled = false; btn.textContent = originalText; }
+      return;
+    }
+
+    if (btn) { btn.disabled = true; btn.textContent = 'Opening checkout...'; }
+
     const serviceLabel = q.serviceType
       ? String(q.serviceType).replace(/_/g, ' ').replace(/\b\w/g, (m) => m.toUpperCase())
       : 'Mowing';
@@ -3861,6 +3940,12 @@ async function bookQuoteAsJob() {
 
     const payload = {
       title: `${serviceLabel} — ${q.address || 'Property'}`,
+      customerName: q.customerName || q.name || '',
+      customerPhone: q.customerPhone || q.phone || '',
+      customerEmail: q.customerEmail || q.email || '',
+      name: q.name || q.customerName || '',
+      phone: q.phone || q.customerPhone || '',
+      email: q.email || q.customerEmail || '',
       address: q.address || '',
       city: q.city || '',
       state: q.state || 'AR',
@@ -3872,6 +3957,13 @@ async function bookQuoteAsJob() {
       details: detailParts,
       photos: [],
       quote_id: q.id || q.quote_id || null,
+
+      // Critical for server-side Stripe pricing.
+      // The checkout route recalculates from mowAreaSqft/settings and must not receive zero area.
+      mowAreaSqft: Number(q.mowAreaSqft || 0),
+      lotAreaSqft: Number(q.lotAreaSqft || 0),
+      areaSqft: Number(q.mowAreaSqft || 0),
+
       final_price: Number(q.estimate || 0),
       payment_status: 'checkout_pending',
       scope_locked: true,
@@ -3879,25 +3971,41 @@ async function bookQuoteAsJob() {
       excluded_tasks_json: EXCLUDED_MOW_TASKS,
     };
 
+    const checkoutBody = {
+      quote_id: q.id || q.quote_id || '',
+      serviceType: q.serviceType || 'mowing',
+      estimate: Number(q.estimate || 0),
+      final_price: Number(q.estimate || 0),
+      mowAreaSqft: Number(q.mowAreaSqft || 0),
+      lotAreaSqft: Number(q.lotAreaSqft || 0),
+      job: payload,
+    };
+    console.log('[MowNWA Checkout Debug] payload to /api/checkout/instant-mow | mowAreaSqft=' + checkoutBody.mowAreaSqft + ' lotAreaSqft=' + checkoutBody.lotAreaSqft);
     const checkout = await api('/api/checkout/instant-mow', {
       method: 'POST',
-      body: JSON.stringify({
-        quote_id: q.id || q.quote_id || '',
-        serviceType: q.serviceType || 'mowing',
-        estimate: Number(q.estimate || 0),
-        final_price: Number(q.estimate || 0),
-      }),
+      body: JSON.stringify(checkoutBody),
     });
+    console.log('[MowNWA Checkout Debug] checkout API response | ok=' + checkout.ok + ' session=' + (checkout.checkoutSessionId ? checkout.checkoutSessionId.slice(0, 12) + '...' : 'none') + ' url=' + (checkout.checkoutUrl ? 'present' : 'missing'));
     if (checkout.checkoutUrl) {
+      if (btn) btn.textContent = 'Opening checkout...';
+      console.log('[MowNWA Checkout Debug] before redirect to checkoutUrl');
       window.location.href = checkout.checkoutUrl;
+      // Fallback: if redirect is blocked, surface a direct link
+      const fallbackResult = byId('leadRequestResult') || byId('quoteResult');
+      if (fallbackResult) {
+        fallbackResult.innerHTML = `<a class="btn primary" href="${escapeHtml(checkout.checkoutUrl)}" target="_self" style="margin-top:8px;display:inline-block">Open Secure Checkout</a>`;
+        fallbackResult.classList.remove('hidden');
+      }
       return;
     }
     payload.payment_status = checkout.paymentStatus || 'checkout_pending';
 
-    const data = await api('/api/jobs', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    });
+    const data = checkout.job
+      ? { ok: true, job: checkout.job }
+      : await api('/api/jobs', {
+          method: 'POST',
+          body: JSON.stringify(payload),
+        });
 
     let extraBidMessage = '';
     if (state.pendingExtraBid?.tasks?.length) {
@@ -3943,7 +4051,7 @@ async function bookQuoteAsJob() {
     if (isAdmin()) await loadAdmin().catch(() => {});
   } catch (error) {
     showResult('quoteResult', `<strong>Booking failed:</strong> ${escapeHtml(error.message)}`);
-    if (btn) { btn.disabled = false; btn.textContent = 'Pay & Book Mow'; }
+    if (btn) { btn.disabled = false; btn.textContent = originalText; }
   }
 }
 
@@ -4110,6 +4218,32 @@ window.addEventListener('popstate', () => {
   setActiveView('dashboard');
 });
 
+function handleCheckoutReturn() {
+  const params = new URLSearchParams(window.location.search);
+  const checkout = params.get('checkout');
+  if (!checkout) return;
+
+  if (checkout === 'success') {
+    showSuccess('Payment received. Your mow is booked.');
+    showResult(
+      'quoteResult',
+      `<strong>Payment received.</strong><br>
+       Your mow is booked and will appear in My Bookings shortly.`
+    );
+    setActiveView('jobs');
+    if (getAuthToken()) loadMyJobs().catch(() => {});
+  } else if (checkout === 'cancel') {
+    showWarning('Checkout canceled. Your card was not charged.');
+    showResult(
+      'quoteResult',
+      `<strong>Checkout canceled.</strong><br>
+       Your card was not charged. You can return to the quote and book when ready.`
+    );
+  }
+
+  window.history.replaceState({}, '', window.location.pathname);
+}
+
 (async function init() {
   initNavigation();
   initMap();
@@ -4147,6 +4281,7 @@ window.addEventListener('popstate', () => {
     }
   }
   applyRoleVisibility();
+  handleCheckoutReturn();
 
   updateSessionStatus();
   // loadAdmin() and loadAdminLeads() are triggered by applyRoleVisibility() above when admin
