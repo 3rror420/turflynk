@@ -66,6 +66,10 @@ function updateSessionStatus(user) {
 
 // money() → public/js/utils/dom.js
 
+const ESTIMATE_DEBOUNCE_MS = 350;
+let estimateRefreshTimer = null;
+let estimateRequestSeq = 0;
+
 function formToObject(form) {
   const fd = new FormData(form);
   const obj = Object.fromEntries(fd.entries());
@@ -103,7 +107,7 @@ function buildQuotePayload(form) {
   const _formMowArea = Number(payload.mowAreaSqft || 0);
   const drawnMowAreaSqft = currentDrawnMowAreaSqFt();
   const _dbgLot = Number(form?.elements?.lotAreaSqft?.value || 0);
-  const _dbgLayers = state.drawGroup?.getLayers()?.length ?? 0;
+  const _dbgLayers = getMowableFeatureCount();
   const _pct = _dbgLot > 0 ? Math.round((drawnMowAreaSqft / _dbgLot) * 100) : null;
   const _mismatch = _formMowArea > 0 && Math.abs(_formMowArea - drawnMowAreaSqft) > 50;
   console.log('[TurfLynk Area Trace] C. buildQuotePayload | formField=' + _formMowArea + ' drawGroup=' + drawnMowAreaSqft + ' lotAreaSqft=' + _dbgLot + (_pct !== null ? ' (' + _pct + '% of parcel)' : '') + ' layers=' + _dbgLayers + (_mismatch ? ' ⚠ MISMATCH' : '') + ' source=' + (drawnMowAreaSqft > 0 ? 'drawGroup' : 'none(no polygon)'));
@@ -225,13 +229,236 @@ function quoteStepNumber(step = state.quoteFlowStep) {
 
 function setMapGestureCapture(enabled) {
   if (!state.map) return;
-  ['dragging', 'touchZoom', 'doubleClickZoom', 'scrollWheelZoom', 'boxZoom', 'keyboard'].forEach((key) => {
+  ['dragPan', 'scrollZoom', 'boxZoom', 'keyboard', 'doubleClickZoom', 'dragRotate'].forEach((key) => {
     const control = state.map[key];
     if (!control) return;
     try {
       if (enabled && typeof control.enable === 'function') control.enable();
       if (!enabled && typeof control.disable === 'function') control.disable();
     } catch {}
+  });
+}
+
+const MAP_MODES = new Set(['idle', 'lasso', 'select', 'edit', 'pan']);
+
+function setMapMode(mode = 'idle') {
+  const nextMode = MAP_MODES.has(mode) ? mode : 'idle';
+  state.mapMode = nextMode;
+  document.body.dataset.mapMode = nextMode;
+  return nextMode;
+}
+
+function getMapMode() {
+  return MAP_MODES.has(state.mapMode) ? state.mapMode : 'idle';
+}
+
+const SATELLITE_TILE_URL = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
+const SATELLITE_TILE_ATTRIBUTION = 'Tiles Esri';
+const EMPTY_FEATURE_COLLECTION = () => ({ type: 'FeatureCollection', features: [] });
+const MAP_SOURCES = {
+  parcel: 'parcel-source',
+  mowable: 'mowable-source',
+  building: 'building-footprint-source',
+  cutout: 'cutout-source',
+  lasso: 'lasso-temp-source',
+  previewParcel: 'preview-parcel-source',
+  addressMarker: 'address-marker-source',
+  gpsMarker: 'gps-marker-source',
+};
+
+function latLngToLngLat(center = DEFAULT_MAP_CENTER) {
+  return [Number(center[1]), Number(center[0])];
+}
+
+function cloneFeatureCollection(collection) {
+  return {
+    type: 'FeatureCollection',
+    features: (collection?.features || []).map((feature) => {
+      try {
+        return JSON.parse(JSON.stringify(feature));
+      } catch {
+        return feature;
+      }
+    }),
+  };
+}
+
+function asFeature(featureOrGeometry, properties = {}) {
+  if (!featureOrGeometry) return null;
+  if (featureOrGeometry.type === 'Feature') {
+    return {
+      ...featureOrGeometry,
+      properties: { ...(featureOrGeometry.properties || {}), ...properties },
+    };
+  }
+  if (featureOrGeometry.type && featureOrGeometry.coordinates) {
+    return { type: 'Feature', properties, geometry: featureOrGeometry };
+  }
+  return null;
+}
+
+function setSourceData(sourceId, data = EMPTY_FEATURE_COLLECTION()) {
+  const source = state.map?.getSource?.(sourceId);
+  if (source?.setData) source.setData(data);
+}
+
+function updateMowableSource() {
+  setSourceData(MAP_SOURCES.mowable, state.mowableFeatureCollection || EMPTY_FEATURE_COLLECTION());
+}
+
+function updateCutoutSource() {
+  setSourceData(MAP_SOURCES.cutout, state.aiCutoutFeatureCollection || EMPTY_FEATURE_COLLECTION());
+}
+
+function updateBuildingFootprintSource() {
+  setSourceData(MAP_SOURCES.building, state.buildingFootprintFeatureCollection || EMPTY_FEATURE_COLLECTION());
+}
+
+function updateParcelSource() {
+  setSourceData(MAP_SOURCES.parcel, state.parcelFeature ? {
+    type: 'FeatureCollection',
+    features: [state.parcelFeature],
+  } : EMPTY_FEATURE_COLLECTION());
+}
+
+function updatePreviewParcelSource() {
+  setSourceData(MAP_SOURCES.previewParcel, state.pendingParcelPreviewFeature ? {
+    type: 'FeatureCollection',
+    features: [state.pendingParcelPreviewFeature],
+  } : EMPTY_FEATURE_COLLECTION());
+}
+
+function setLassoTempLine(points = []) {
+  const coords = points.map((point) => [point.lng, point.lat]);
+  setSourceData(MAP_SOURCES.lasso, coords.length > 1 ? {
+    type: 'FeatureCollection',
+    features: [{
+      type: 'Feature',
+      properties: {},
+      geometry: { type: 'LineString', coordinates: coords },
+    }],
+  } : EMPTY_FEATURE_COLLECTION());
+}
+
+function setPointSource(sourceId, lng, lat) {
+  const hasPoint = Number.isFinite(Number(lng)) && Number.isFinite(Number(lat));
+  setSourceData(sourceId, hasPoint ? {
+    type: 'FeatureCollection',
+    features: [{
+      type: 'Feature',
+      properties: {},
+      geometry: { type: 'Point', coordinates: [Number(lng), Number(lat)] },
+    }],
+  } : EMPTY_FEATURE_COLLECTION());
+}
+
+function ensureMapLayer(id, config, beforeId) {
+  if (state.map.getLayer(id)) return;
+  state.map.addLayer({ id, ...config }, beforeId);
+}
+
+function ensureMapLibreSourcesAndLayers() {
+  if (!state.map || !state.map.isStyleLoaded?.()) return false;
+  Object.values(MAP_SOURCES).forEach((id) => {
+    if (!state.map.getSource(id)) {
+      state.map.addSource(id, { type: 'geojson', data: EMPTY_FEATURE_COLLECTION() });
+    }
+  });
+
+  ensureMapLayer('parcel-fill', {
+    type: 'fill',
+    source: MAP_SOURCES.parcel,
+    paint: { 'fill-color': '#38bdf8', 'fill-opacity': 0.08 },
+  });
+  ensureMapLayer('parcel-line', {
+    type: 'line',
+    source: MAP_SOURCES.parcel,
+    paint: { 'line-color': '#38bdf8', 'line-width': 3 },
+  });
+  ensureMapLayer('building-footprint-fill', {
+    type: 'fill',
+    source: MAP_SOURCES.building,
+    paint: { 'fill-color': '#f97316', 'fill-opacity': 0.24 },
+  });
+  ensureMapLayer('building-footprint-line', {
+    type: 'line',
+    source: MAP_SOURCES.building,
+    paint: { 'line-color': '#f97316', 'line-width': 2 },
+  });
+  ensureMapLayer('mowable-fill', {
+    type: 'fill',
+    source: MAP_SOURCES.mowable,
+    paint: { 'fill-color': '#16a34a', 'fill-opacity': 0.22 },
+  });
+  ensureMapLayer('mowable-line', {
+    type: 'line',
+    source: MAP_SOURCES.mowable,
+    paint: { 'line-color': '#16a34a', 'line-width': 3 },
+  });
+  ensureMapLayer('cutout-fill', {
+    type: 'fill',
+    source: MAP_SOURCES.cutout,
+    paint: { 'fill-color': '#ef4444', 'fill-opacity': 0.25 },
+  });
+  ensureMapLayer('cutout-line', {
+    type: 'line',
+    source: MAP_SOURCES.cutout,
+    paint: { 'line-color': '#ef4444', 'line-width': 3 },
+  });
+  ensureMapLayer('preview-parcel-fill', {
+    type: 'fill',
+    source: MAP_SOURCES.previewParcel,
+    paint: { 'fill-color': '#f59e0b', 'fill-opacity': 0.15 },
+  });
+  ensureMapLayer('preview-parcel-line', {
+    type: 'line',
+    source: MAP_SOURCES.previewParcel,
+    paint: { 'line-color': '#f59e0b', 'line-width': 3 },
+  });
+  ensureMapLayer('lasso-temp-line', {
+    type: 'line',
+    source: MAP_SOURCES.lasso,
+    paint: { 'line-color': '#22c55e', 'line-width': 3, 'line-opacity': 0.9 },
+  });
+  ensureMapLayer('address-marker', {
+    type: 'circle',
+    source: MAP_SOURCES.addressMarker,
+    paint: {
+      'circle-radius': 7,
+      'circle-color': '#2563eb',
+      'circle-stroke-color': '#ffffff',
+      'circle-stroke-width': 2,
+    },
+  });
+  ensureMapLayer('gps-marker', {
+    type: 'circle',
+    source: MAP_SOURCES.gpsMarker,
+    paint: {
+      'circle-radius': 8,
+      'circle-color': '#f59e0b',
+      'circle-stroke-color': '#ffffff',
+      'circle-stroke-width': 2,
+    },
+  });
+
+  updateParcelSource();
+  updateMowableSource();
+  updateCutoutSource();
+  updateBuildingFootprintSource();
+  updatePreviewParcelSource();
+  setLassoTempLine([]);
+  return true;
+}
+
+function withMapReady(fn) {
+  if (!state.map) return;
+  if (ensureMapLibreSourcesAndLayers()) {
+    fn();
+    return;
+  }
+  state.map.once('load', () => {
+    ensureMapLibreSourcesAndLayers();
+    fn();
   });
 }
 
@@ -243,26 +470,29 @@ function showQuoteFlowStep(step, options = {}) {
   $$('[data-quote-step-panel]').forEach((panel) => {
     const active = panel.dataset.quoteStepPanel === nextStep;
     panel.classList.toggle('is-active', active);
-    panel.classList.toggle('hidden', !active && panel.id === 'leadRequestPanel');
+    panel.classList.toggle('is-hidden', !active);
+    panel.classList.toggle('hidden', !active);
+    panel.hidden = !active;
+    panel.setAttribute('aria-hidden', active ? 'false' : 'true');
   });
 
   const drawing = nextStep === 'draw';
   setMapGestureCapture(drawing);
   setMapToolPanelOpen(drawing);
+  if (drawing && !['lasso', 'select', 'edit'].includes(getMapMode())) setMapMode('idle');
   if (drawing && state.map) {
-    setTimeout(() => state.map.invalidateSize(true), 80);
-    setTimeout(() => state.parcelLayer ? fitLayerBoundsWithContext(state.parcelLayer) : state.map.invalidateSize(true), 180);
+    setTimeout(() => state.map.resize?.(), 80);
+    setTimeout(() => state.parcelLayer ? fitLayerBoundsWithContext(state.parcelLayer) : state.map.resize?.(), 180);
   } else if (!drawing) {
-    // Commit any pending vertex edits before leaving the draw step.
-    // L.EditToolbar.Edit.disable() (called inside stopToolModes) reverts edits unless saved first.
-    if (state.editHandler) {
-      try { state.editHandler.save(); } catch {}
-    }
     stopToolModes();
   }
 
   updateQuoteStepper();
   updateQuoteFlowState({ skipStepper: true });
+
+  if (nextStep === 'estimate') {
+    scheduleEstimateRefresh('estimate-step', { immediate: true });
+  }
 
   if (options.scroll !== false) {
     const activePanel = document.querySelector(`[data-quote-step-panel="${nextStep}"]`);
@@ -386,10 +616,18 @@ function setEditorModeLabel(text) {
 
 function placeMarker(lat, lng) {
   if (!state.map) return;
-  if (state.marker) state.marker.setLatLng([lat, lng]);
-  else state.marker = L.marker([lat, lng]).addTo(state.map);
-  state.map.setView([lat, lng], 15);
-  setTimeout(() => state.map?.invalidateSize(), 100);
+  state.marker = { lat: Number(lat), lng: Number(lng) };
+  withMapReady(() => setPointSource(MAP_SOURCES.addressMarker, lng, lat));
+  state.map.flyTo({ center: [Number(lng), Number(lat)], zoom: 15, essential: true });
+  setTimeout(() => state.map?.resize?.(), 100);
+}
+
+function placeCurrentLocationMarker(lat, lng) {
+  if (!state.map) return;
+  state.gpsMarker = { lat: Number(lat), lng: Number(lng) };
+  withMapReady(() => setPointSource(MAP_SOURCES.gpsMarker, lng, lat));
+  state.map.flyTo({ center: [Number(lng), Number(lat)], zoom: Math.max(state.map.getZoom() || 15, 17), essential: true });
+  setTimeout(() => state.map?.resize?.(), 100);
 }
 
 function setLatLng(lat, lng) {
@@ -400,18 +638,130 @@ function setLatLng(lat, lng) {
   saveQuoteDraft();
 }
 
-function snapshotMowLayersForUndo() {
-  if (!state.drawGroup) return;
+function normalizeServiceAddressParts(parts = {}) {
+  const clean = (value) => {
+    const text = String(value || '').trim();
+    return /^n\/?a$/i.test(text) ? '' : text;
+  };
+  const address = clean(parts.address);
+  const city = clean(parts.city);
+  const stateValue = clean(parts.state);
+  const zip = clean(parts.zip);
+  return {
+    address,
+    city,
+    state: stateValue || 'AR',
+    zip,
+  };
+}
 
-  const features = getAllMowLayers()
-    .map((layer) => {
-      try {
-        return layer.toGeoJSON();
-      } catch {
-        return null;
-      }
-    })
-    .filter(Boolean);
+function hasServiceAddress(parts = {}) {
+  return Boolean(String(parts.address || parts.city || parts.zip || '').trim());
+}
+
+function serviceAddressBlocksFallback(parts = {}) {
+  return ['gps-location', 'manual-parcel-selection', 'parcel-no-address', 'quote-reset', 'address-reset']
+    .includes(parts.source || '');
+}
+
+function getQuoteFormServiceAddress() {
+  const form = byId('quoteForm');
+  if (!form) return normalizeServiceAddressParts();
+  return normalizeServiceAddressParts({
+    address: form.elements.address?.value || '',
+    city: form.elements.city?.value || '',
+    state: form.elements.state?.value || 'AR',
+    zip: form.elements.zip?.value || '',
+  });
+}
+
+function parcelAddressFromNormalized(normalized = {}) {
+  const attrs = normalized.attributes || {};
+  return normalizeServiceAddressParts({
+    address: attrs.adrlabel || normalized.address || '',
+    city: attrs.adrcity || normalized.city || '',
+    state: 'AR',
+    zip: attrs.adrzip5 || normalized.zip || '',
+  });
+}
+
+function applyServiceAddressToQuoteForm(address, options = {}) {
+  const form = byId('quoteForm');
+  if (!form) return;
+  const next = normalizeServiceAddressParts(address);
+  const clearMissing = Boolean(options.clearMissing);
+  ['address', 'city', 'state', 'zip'].forEach((name) => {
+    const field = form.elements[name];
+    if (!field) return;
+    if (next[name] || clearMissing || name === 'state') field.value = next[name] || (name === 'state' ? 'AR' : '');
+  });
+}
+
+function clearStaleServiceAddressFields() {
+  ['leadAddress', 'leadCity', 'leadState', 'leadZip'].forEach((id) => {
+    const el = byId(id);
+    if (!el) return;
+    el.value = id === 'leadState' ? 'AR' : '';
+  });
+  const liveBidForm = byId('liveBidForm');
+  if (liveBidForm) {
+    ['address', 'city', 'state', 'zip'].forEach((name) => {
+      const field = liveBidForm.elements[name];
+      if (!field) return;
+      field.value = name === 'state' ? 'AR' : '';
+    });
+  }
+}
+
+function setCurrentServiceAddress(address, source = 'unknown', options = {}) {
+  const next = normalizeServiceAddressParts(address);
+  state.currentServiceAddress = {
+    ...next,
+    source,
+    updatedAt: Date.now(),
+  };
+  if (options.syncQuoteForm) {
+    applyServiceAddressToQuoteForm(next, { clearMissing: options.clearQuoteFormMissing });
+  }
+  clearStaleServiceAddressFields();
+  return next;
+}
+
+function getCurrentServiceAddress(fallback = {}) {
+  const current = normalizeServiceAddressParts(state.currentServiceAddress || {});
+  if (hasServiceAddress(current)) return current;
+  if (serviceAddressBlocksFallback(state.currentServiceAddress || {})) return current;
+
+  const formAddress = getQuoteFormServiceAddress();
+  if (hasServiceAddress(formAddress)) return formAddress;
+
+  return normalizeServiceAddressParts(fallback);
+}
+
+function syncServiceAddressFields(fallback = {}) {
+  const next = getCurrentServiceAddress(fallback);
+  clearStaleServiceAddressFields();
+  const set = (id, value) => {
+    const el = byId(id);
+    if (el) el.value = value || '';
+  };
+  set('leadAddress', next.address);
+  set('leadCity', next.city);
+  set('leadState', next.state || 'AR');
+  set('leadZip', next.zip);
+  const liveBidForm = byId('liveBidForm');
+  if (liveBidForm) {
+    ['address', 'city', 'state', 'zip'].forEach((name) => {
+      const field = liveBidForm.elements[name];
+      if (!field) return;
+      field.value = next[name] || (name === 'state' ? 'AR' : '');
+    });
+  }
+  return next;
+}
+
+function snapshotMowLayersForUndo() {
+  const features = cloneFeatureCollection(state.mowableFeatureCollection).features;
 
   state.mowUndoStack = state.mowUndoStack || [];
   state.mowUndoStack.push(features);
@@ -423,19 +773,8 @@ function snapshotMowLayersForUndo() {
 }
 
 function restoreMowLayersFromSnapshot(features) {
-  if (!state.drawGroup || !Array.isArray(features)) return;
-
-  state.drawGroup.clearLayers();
-
-  features.forEach((feature) => {
-    const group = L.geoJSON(feature);
-    group.eachLayer((layer) => {
-      styleMowLayer(layer);
-      state.drawGroup.addLayer(layer);
-    });
-  });
-
-  if (state.parcelLayer?.bringToBack) state.parcelLayer.bringToBack();
+  if (!Array.isArray(features)) return;
+  setMowableFeatures(features);
 
   syncMowAreaFromLayers();
   setTimeout(() => {
@@ -458,16 +797,72 @@ function undoLastCut() {
 }
 
 function clearParcelLayer() {
-  if (state.parcelLayer && state.map) {
-    state.map.removeLayer(state.parcelLayer);
-  }
-  if (state.buildingFootprintGroup) {
-    state.buildingFootprintGroup.clearLayers();
-  }
+  state.parcelFeature = null;
+  state.parcelLayer = null;
+  state.buildingFootprintFeatureCollection = EMPTY_FEATURE_COLLECTION();
+  updateParcelSource();
+  updateBuildingFootprintSource();
   state.parcelLayer = null;
   state.parcelGeometry = null;
   state.mowableEstimate = null;
   renderSuggestedMowablePanel(null);
+}
+
+function setMowableFeatures(features = []) {
+  state.mowableFeatureCollection = {
+    type: 'FeatureCollection',
+    features: features.map((feature, index) => {
+      const normalized = asFeature(feature);
+      if (!normalized) return null;
+      return {
+        ...normalized,
+        id: normalized.id || `mowable-${index}-${Date.now()}`,
+        properties: {
+          ...(normalized.properties || {}),
+          role: 'mowable',
+        },
+      };
+    }).filter((feature) => feature?.geometry),
+  };
+  state.drawGroup = state.mowableFeatureCollection;
+  window.mowableFeatureCollection = state.mowableFeatureCollection;
+  updateMowableSource();
+}
+
+function clearMowableFeatures() {
+  setMowableFeatures([]);
+}
+
+function setCutoutFeatures(features = []) {
+  state.aiCutoutFeatureCollection = {
+    type: 'FeatureCollection',
+    features: features.map((feature, index) => {
+      const normalized = asFeature(feature);
+      if (!normalized) return null;
+      return {
+        ...normalized,
+        id: normalized.id || `cutout-${index}-${Date.now()}`,
+        properties: {
+          ...(normalized.properties || {}),
+          role: 'cutout',
+        },
+      };
+    }).filter((feature) => feature?.geometry),
+  };
+  state.aiCutoutGroup = state.aiCutoutFeatureCollection;
+  updateCutoutSource();
+}
+
+function clearCutoutFeatures() {
+  setCutoutFeatures([]);
+}
+
+function getMowableFeatureCount() {
+  return state.mowableFeatureCollection?.features?.length || 0;
+}
+
+function getCutoutFeatureCount() {
+  return state.aiCutoutFeatureCollection?.features?.length || 0;
 }
 
 function geometryLooksProjected(geometry) {
@@ -480,7 +875,7 @@ function geometryLooksProjected(geometry) {
   return Math.abs(x) > 180 || Math.abs(y) > 90;
 }
 
-function ringToLeafletLatLngs(ring, geometry) {
+function ringToLngLatCoords(ring, geometry) {
   const projected = geometryLooksProjected(geometry);
   return ring.map(([xRaw, yRaw]) => {
     const x = Number(xRaw);
@@ -489,24 +884,44 @@ function ringToLeafletLatLngs(ring, geometry) {
 
     if (projected) {
       const [lng, lat] = proj4(EPSG26915, EPSG4326, [x, y]);
-      return [lat, lng];
+      return [lng, lat];
     }
 
-    return [y, x];
+    return [x, y];
   }).filter(Boolean);
 }
 
-function esriPolygonToLeafletLatLngs(geometry) {
+function closeRing(coords) {
+  if (!coords.length) return coords;
+  const first = coords[0];
+  const last = coords[coords.length - 1];
+  if (first[0] === last[0] && first[1] === last[1]) return coords;
+  return coords.concat([[first[0], first[1]]]);
+}
+
+function esriPolygonToGeoJSONFeature(geometry, properties = {}) {
   const rings = geometry?.rings || geometry?.coordinates || [];
-  return rings.map((ring) => ringToLeafletLatLngs(ring, geometry)).filter((ring) => ring.length >= 3);
+  const coordinates = rings
+    .map((ring) => closeRing(ringToLngLatCoords(ring, geometry)))
+    .filter((ring) => ring.length >= 4);
+  if (!coordinates.length) return null;
+  return {
+    type: 'Feature',
+    properties,
+    geometry: { type: 'Polygon', coordinates },
+  };
+}
+
+function esriPolygonToLatLngPairs(geometry) {
+  const feature = esriPolygonToGeoJSONFeature(geometry);
+  return (feature?.geometry?.coordinates || []).map((ring) => ring.map(([lng, lat]) => [lat, lng]));
 }
 
 function exposeTurfLynkMapGlobals() {
   if (state.map) window.map = state.map;
-  if (state.drawGroup) {
-    window.drawnItems = state.drawGroup;
-    window.mowLayerGroup = state.drawGroup;
-  }
+  window.mowableFeatureCollection = state.mowableFeatureCollection;
+  window.drawnItems = state.mowableFeatureCollection;
+  window.mowLayerGroup = state.mowableFeatureCollection;
   if (state.parcelLayer) window.parcelLayer = state.parcelLayer;
 }
 
@@ -516,8 +931,8 @@ function exposeCurrentParcelGeometryForAi() {
   try {
     const parcelRings = state.parcelGeometry?.rings || state.parcelGeometry?.coordinates || [];
     if (!parcelRings.length) return null;
-    const latLngsForAi = esriPolygonToLeafletLatLngs(state.parcelGeometry);
-    const geoJsonGeometry = L.polygon(latLngsForAi).toGeoJSON().geometry;
+    const geoJsonGeometry = esriPolygonToGeoJSONFeature(state.parcelGeometry)?.geometry;
+    if (!geoJsonGeometry) return null;
     window.currentParcelGeometry = geoJsonGeometry;
     window.parcelGeometry = geoJsonGeometry;
     return geoJsonGeometry;
@@ -543,87 +958,59 @@ function exposeTurfLynkQuoteGlobals() {
 
     updateMowAreaHelper(Number(form?.elements?.lotAreaSqft?.value || 0), rounded);
     saveQuoteDraft();
-    updateEstimatePreview();
+    scheduleEstimateRefresh('ai-area');
   };
 }
 
 function reorderMapOverlays() {
-  if (state.parcelLayer?.bringToBack) state.parcelLayer.bringToBack();
-  if (state.buildingFootprintGroup?.bringToFront) state.buildingFootprintGroup.bringToFront();
-  if (state.aiCutoutGroup?.bringToFront) state.aiCutoutGroup.bringToFront();
-  if (state.drawGroup?.bringToFront) state.drawGroup.bringToFront();
+  ensureMapLibreSourcesAndLayers();
 }
 
-function fitBoundsWithContext(bounds, options = {}) {
-  if (!state.map || !bounds?.isValid?.()) return;
+function fitBoundsWithContext(boundsOrFeature, options = {}) {
+  if (!state.map || !boundsOrFeature) return;
   const fitOptions = { ...PARCEL_FIT_OPTIONS, ...options };
+  let bounds = boundsOrFeature;
+  if (boundsOrFeature.type === 'Feature' || boundsOrFeature.type === 'FeatureCollection' || boundsOrFeature.type === 'Polygon' || boundsOrFeature.type === 'MultiPolygon') {
+    try {
+      const bbox = turf.bbox(boundsOrFeature);
+      if (bbox.some((value) => !Number.isFinite(value))) return;
+      bounds = [[bbox[0], bbox[1]], [bbox[2], bbox[3]]];
+    } catch {
+      return;
+    }
+  }
 
-  state.map.invalidateSize();
+  state.map.resize?.();
   state.map.fitBounds(bounds, fitOptions);
 
   setTimeout(() => {
     if (!state.map) return;
-    state.map.invalidateSize();
+    state.map.resize?.();
     state.map.fitBounds(bounds, fitOptions);
   }, 100);
 }
 
 function fitLayerBoundsWithContext(layer, options = {}) {
-  const bounds = layer?.getBounds?.();
-  fitBoundsWithContext(bounds, options);
+  fitBoundsWithContext(layer, options);
 }
 
 function drawParcel(geometry) {
   if (!state.map || !geometry) return;
-  const map = state.map;
-
-  // Remove previous parcel layer from the real Leaflet map
-  if (state.parcelLayer) {
-    try {
-      map.removeLayer(state.parcelLayer);
-    } catch (e) {
-      console.warn("old parcel layer remove failed", e);
-    }
-    state.parcelLayer = null;
-  }
-
-  // ArcGIS polygon geometry may arrive as projected UTM rings or lon/lat rings.
-  const rings = geometry.rings || geometry.coordinates;
-  if (!rings || !rings.length) {
-    console.warn("drawParcel: no rings", geometry);
-    return;
-  }
-
-  const latLngRings = rings
-    .map((ring) => ringToLeafletLatLngs(ring, geometry))
-    .filter((ring) => ring.length >= 3);
-
-  if (!latLngRings.length) {
-    console.warn("drawParcel: invalid lat/lng rings", geometry);
+  const feature = esriPolygonToGeoJSONFeature(geometry, { role: 'parcel' });
+  if (!feature) {
+    console.warn("drawParcel: invalid rings", geometry);
     return;
   }
 
   state.parcelGeometry = geometry;
+  state.parcelFeature = feature;
+  state.parcelLayer = feature;
 
-  const layer = L.polygon(latLngRings, {
-    color: "#38bdf8",
-    weight: 3,
-    opacity: 1,
-    fillColor: "#38bdf8",
-    fillOpacity: 0.08,
-    interactive: false
-  });
-
-  layer.addTo(map);
-  state.parcelLayer = layer;
-
-  fitLayerBoundsWithContext(layer);
-  reorderMapOverlays();
-
-  // Force Leaflet to repaint after sequential lookups / mobile layout shifts
-  requestAnimationFrame(() => {
-    map.invalidateSize(true);
-    layer.redraw();
+  withMapReady(() => {
+    updateParcelSource();
+    fitLayerBoundsWithContext(feature);
+    reorderMapOverlays();
+    requestAnimationFrame(() => state.map?.resize?.());
   });
 }
 
@@ -740,17 +1127,17 @@ function applySuggestedMowableArea() {
 
   updateMowAreaHelper(estimate.parcelAreaSqft, 0);
   saveQuoteDraft();
-  updateEstimatePreview();
+  scheduleEstimateRefresh('suggested-mowable');
   updateQuoteFlowState();
   showWarning('Draw your mowable area first.');
 }
 
 function adjustYardOutlineFromSuggestion() {
-  if (!state.drawGroup?.getLayers().length && state.parcelGeometry) {
+  if (!getMowableFeatureCount() && state.parcelGeometry) {
     cloneParcelAsMowable();
     return;
   }
-  if (state.drawGroup?.getLayers().length) startEditMowable();
+  if (getMowableFeatureCount()) startEditMowable();
   else startDrawMowable();
 }
 
@@ -791,27 +1178,13 @@ function renderSuggestedMowablePanel(estimate) {
 }
 
 function drawBuildingFootprintHelpers(footprints) {
-  if (!state.buildingFootprintGroup || !Array.isArray(footprints)) return;
-
-  state.buildingFootprintGroup.clearLayers();
-  if (!footprints.length) return;
-
-  footprints.forEach((footprint) => {
-    try {
-      const layer = L.geoJSON(footprint, {
-        style: {
-          color: '#f97316',
-          weight: 2,
-          fillColor: '#f97316',
-          fillOpacity: 0.24,
-          interactive: false,
-        },
-      });
-      layer.eachLayer((subLayer) => state.buildingFootprintGroup.addLayer(subLayer));
-    } catch (error) {
-      console.warn('Could not draw building footprint helper', error);
-    }
-  });
+  if (!Array.isArray(footprints)) return;
+  state.buildingFootprintFeatureCollection = {
+    type: 'FeatureCollection',
+    features: footprints.map((footprint) => asFeature(footprint)).filter(Boolean),
+  };
+  state.buildingFootprintGroup = state.buildingFootprintFeatureCollection;
+  updateBuildingFootprintSource();
 
   reorderMapOverlays();
 }
@@ -839,19 +1212,7 @@ async function updateAutoMowableEstimateForParcel(parcelAreaHint = 0) {
   return estimate;
 }
 function styleMowLayer(layer) {
-  if (layer?.setStyle) {
-    layer.setStyle({
-      color: '#16a34a',
-      weight: 3,
-      fillOpacity: 0.18,
-    });
-  }
-
-  if (layer) {
-    layer.options.interactive = true;
-    layer._turflynkMowable = true;
-    attachMowableMoveHandlers(layer);
-  }
+  return asFeature(layer, { role: 'mowable' });
 }
 
 function eachLatLng(latlngs, fn) {
@@ -877,39 +1238,16 @@ function translateLayerLatLngs(layer, fromLatLng, toLatLng) {
   });
 
   layer.setLatLngs(latlngs);
-  if (layer.redraw) layer.redraw();
 }
 
 function attachMowableMoveHandlers(layer) {
-  if (!layer || layer._turflynkMoveBound) return;
-  layer._turflynkMoveBound = true;
-
-  layer.on('mousedown touchstart', (event) => {
-    const directEditing = typeof layer.editing?.enabled === 'function' && layer.editing.enabled();
-    if ((!state.editHandler && !directEditing) || !layer._turflynkMowable || !state.map) return;
-    const latlng = eventLatLng(event);
-    if (!latlng) return;
-    const originalEvent = event.originalEvent || {};
-    if (originalEvent.target?.classList?.contains('leaflet-editing-icon')) return;
-
-    L.DomEvent.stop(originalEvent);
-    state.moveDrag = {
-      layer,
-      lastLatLng: latlng,
-      moved: false,
-    };
-
-    state.map.dragging.disable();
-    setEditorModeLabel('Mode: Moving mowable area');
-  });
+  return layer;
 }
 
 function finishMowableMove() {
   if (!state.moveDrag) return;
   const moved = state.moveDrag.moved;
   state.moveDrag = null;
-
-  if (state.map?.dragging) state.map.dragging.enable();
 
   if (moved) {
     syncMowAreaFromLayers();
@@ -920,79 +1258,106 @@ function finishMowableMove() {
 
 function eventLatLng(event) {
   if (event?.latlng) return event.latlng;
-  const touch = event?.originalEvent?.touches?.[0] || event?.originalEvent?.changedTouches?.[0];
-  if (!touch || !state.map) return null;
-  const point = state.map.mouseEventToContainerPoint(touch);
-  return state.map.containerPointToLatLng(point);
+  const lngLat = event?.lngLat;
+  return lngLat ? { lat: lngLat.lat, lng: lngLat.lng } : null;
 }
 
 function installMowableMoveMapHandlers() {
   if (!state.map || state._mowMoveHandlersInstalled) return;
   state._mowMoveHandlersInstalled = true;
-
-  state.map.on('mousemove touchmove', (event) => {
-    const latlng = eventLatLng(event);
-    if (!state.moveDrag || !latlng) return;
-    if (event.originalEvent) L.DomEvent.preventDefault(event.originalEvent);
-    translateLayerLatLngs(state.moveDrag.layer, state.moveDrag.lastLatLng, latlng);
-    state.moveDrag.lastLatLng = latlng;
-    state.moveDrag.moved = true;
-  });
-
-  state.map.on('mouseup touchend touchcancel', finishMowableMove);
 }
 
-function layerAreaSqFt(layer) {
-  if (!layer) return 0;
+function layerAreaSqFt(feature) {
+  if (!feature) return 0;
   try {
-    const gj = layer.toGeoJSON();
-    const sqm = turf.area(gj);
+    const sqm = turf.area(feature);
     return Math.round(sqm * 10.7639);
   } catch {
     return 0;
   }
 }
 
+function clearEditHandles() {
+  (state.editMarkers || []).forEach((marker) => {
+    try { marker.remove(); } catch {}
+  });
+  state.editMarkers = [];
+}
+
+function getEditableRings(feature) {
+  const geometry = feature?.geometry;
+  if (!geometry) return [];
+  if (geometry.type === 'Polygon') {
+    return geometry.coordinates.map((ring, ringIndex) => ({ ring, path: [ringIndex] }));
+  }
+  if (geometry.type === 'MultiPolygon') {
+    const rings = [];
+    geometry.coordinates.forEach((polygon, polygonIndex) => {
+      polygon.forEach((ring, ringIndex) => rings.push({ ring, path: [polygonIndex, ringIndex] }));
+    });
+    return rings;
+  }
+  return [];
+}
+
+function getRingByPath(feature, path) {
+  if (feature.geometry.type === 'Polygon') return feature.geometry.coordinates[path[0]];
+  return feature.geometry.coordinates[path[0]][path[1]];
+}
+
+function buildEditHandles() {
+  clearEditHandles();
+  if (!state.map || typeof maplibregl === 'undefined') return;
+  getAllMowLayers().forEach((feature, featureIndex) => {
+    getEditableRings(feature).forEach(({ ring, path }) => {
+      ring.slice(0, -1).forEach((coord, coordIndex) => {
+        const handle = document.createElement('button');
+        handle.type = 'button';
+        handle.className = 'maplibre-edit-handle';
+        handle.setAttribute('aria-label', 'Move vertex');
+        const marker = new maplibregl.Marker({ element: handle, draggable: true })
+          .setLngLat(coord)
+          .addTo(state.map);
+        marker.on('drag', () => {
+          const next = marker.getLngLat();
+          const targetFeature = state.mowableFeatureCollection.features[featureIndex];
+          const targetRing = getRingByPath(targetFeature, path);
+          targetRing[coordIndex] = [next.lng, next.lat];
+          if (coordIndex === 0) targetRing[targetRing.length - 1] = [next.lng, next.lat];
+          updateMowableSource();
+          updateMowAreaHelper(
+            Number(byId('quoteForm')?.elements?.lotAreaSqft?.value || 0),
+            currentDrawnMowAreaSqFt()
+          );
+        });
+        marker.on('dragend', () => {
+          syncMowAreaFromLayers();
+        });
+        state.editMarkers.push(marker);
+      });
+    });
+  });
+}
+
 function startEditAiCutouts() {
-  if (!state.map || !state.aiCutoutGroup || !state.aiCutoutGroup.getLayers().length) {
+  if (!state.map || !getCutoutFeatureCount()) {
     showResult('parcelInfo', '<strong>No AI cutouts to edit.</strong>');
     return;
   }
 
   stopToolModes();
-
-  state.editHandler = new L.EditToolbar.Edit(state.map, {
-    featureGroup: state.aiCutoutGroup,
-    selectedPathOptions: {
-      maintainColor: true,
-    },
-  });
-
-  state.editHandler.enable();
   setEditorModeLabel('Mode: Editing AI cutouts');
 }
 
 function startCutMowable() {
-  if (!state.map || !state.drawGroup || !getAllMowLayers().length) {
+  if (!state.map || !getAllMowLayers().length) {
     showResult('parcelInfo', '<strong>No mowable area to cut.</strong>');
     return;
   }
 
   stopToolModes();
   state.quoteUiMode = 'drawing';
-
-  state.drawHandler = new L.Draw.Polygon(state.map, {
-    allowIntersection: false,
-    showArea: false,
-    repeatMode: false,
-    shapeOptions: {
-      color: '#ef4444', // red = cut
-      weight: 3,
-      fillOpacity: 0.2,
-    },
-  });
-
-  state.drawHandler.enable();
+  if (window.TurfLynkLassoYard?.armCut) window.TurfLynkLassoYard.armCut();
   setEditorModeLabel('Mode: Draw area to CUT OUT');
   setMapToolPanelOpen(true);
   updateQuoteFlowState();
@@ -1000,12 +1365,11 @@ function startCutMowable() {
 
 
 function getAllMowLayers() {
-  if (!state.drawGroup) return [];
-  return state.drawGroup.getLayers().filter((layer) => typeof layer.toGeoJSON === 'function');
+  return state.mowableFeatureCollection?.features || [];
 }
 
 function totalMowAreaSqFt() {
-  return getAllMowLayers().reduce((sum, layer) => sum + layerAreaSqFt(layer), 0);
+  return getAllMowLayers().reduce((sum, feature) => sum + layerAreaSqFt(feature), 0);
 }
 
 function currentDrawnMowAreaSqFt() {
@@ -1025,16 +1389,12 @@ function updateMowAreaHelper(parcelSqFt, mowSqFt) {
   if (!helper) return;
 
   if (!mowSqFt) {
-    helper.innerHTML = '<strong>Mowable area editor:</strong> Draw your mowable area first. The parcel outline is only a property boundary.';
+    helper.textContent = 'Drag around the grass area. Lift your finger to finish.';
     return;
   }
 
   const pct = parcelSqFt ? Math.round((mowSqFt / parcelSqFt) * 100) : null;
-  helper.innerHTML = `
-    <strong>Mowable area editor:</strong><br>
-    Total mowable area: ${formatAcres(mowSqFt)}${pct ? ` (${pct}% of parcel)` : ''}<br>
-    Tap a green area to edit it, or use the buttons below.
-  `;
+  helper.textContent = `Area selected: ${formatAcres(mowSqFt)}${pct ? ` (${pct}% of parcel)` : ''}. Use Edit or Redraw if needed.`;
 }
 
 function syncMowAreaFromLayers() {
@@ -1042,7 +1402,7 @@ function syncMowAreaFromLayers() {
   if (!form) return;
 
   const totalSqFt = currentDrawnMowAreaSqFt();
-  const _syncLayers = state.drawGroup ? state.drawGroup.getLayers().length : 0;
+  const _syncLayers = getMowableFeatureCount();
   const _syncLot = Number(form.elements.lotAreaSqft?.value || 0);
   const _syncPct = _syncLot > 0 ? Math.round((totalSqFt / _syncLot) * 100) : null;
   console.log('[TurfLynk Area Trace] B. syncMowAreaFromLayers | mowAreaSqft=' + totalSqFt + ' lotAreaSqft=' + _syncLot + (_syncPct !== null ? ' (' + _syncPct + '% of parcel)' : '') + ' layers=' + _syncLayers + ' source=drawGroup');
@@ -1061,14 +1421,19 @@ function syncMowAreaFromLayers() {
   );
 
   saveQuoteDraft();
-  updateEstimatePreview();
+  scheduleEstimateRefresh('mow-area-sync');
   state.quoteUiMode = 'idle';
   updateQuoteFlowState();
   if (totalSqFt > 0) showSuccess('Mowable area updated');
 }
 
 function stopToolModes() {
+  if (getMapMode() === 'lasso' && window.TurfLynkLassoYard?.cancel) {
+    try { window.TurfLynkLassoYard.cancel(); } catch {}
+  }
+
   finishMowableMove();
+  clearEditHandles();
 
   if (state.drawHandler) {
     try { state.drawHandler.disable(); } catch {}
@@ -1083,16 +1448,15 @@ function stopToolModes() {
     state.deleteHandler = null;
   }
   state.quoteUiMode = 'idle';
+  if (getMapMode() !== 'select') setMapMode('idle');
   setEditorModeLabel('Mode: Ready');
   updateQuoteFlowState();
 }
 
 function clearMowLayer() {
   stopToolModes();
-
-  if (state.drawGroup) {
-    state.drawGroup.clearLayers();
-  }
+  clearMowableFeatures();
+  state.editSnapshot = null;
 
   const form = byId('quoteForm');
   if (form) {
@@ -1104,7 +1468,7 @@ function clearMowLayer() {
 
   updateMowAreaHelper(Number(form?.elements?.lotAreaSqft?.value || 0), 0);
   saveQuoteDraft();
-  updateEstimatePreview();
+  setEstimateState('empty', { signature: form ? estimateSignatureFromPayload(buildQuotePayload(form)) : '', payload: null });
   state.quoteUiMode = 'idle';
   updateQuoteFlowState();
   showInfo('Mowable area cleared');
@@ -1113,27 +1477,16 @@ function clearMowLayer() {
 function cloneParcelAsMowable(options = {}) {
   const starter = options?.starter === true;
   const parcelRings = state.parcelGeometry?.rings || state.parcelGeometry?.coordinates || [];
-  if (!parcelRings.length || !state.map || !state.drawGroup) {
+  if (!parcelRings.length || !state.map) {
     showResult('parcelInfo', '<strong>No parcel shape yet.</strong><br>Lookup the parcel first.');
     return;
   }
 
-  state.drawGroup.clearLayers();
+  const feature = esriPolygonToGeoJSONFeature(state.parcelGeometry, { role: 'mowable' });
+  if (!feature) return;
+  setMowableFeatures([feature]);
 
-  const latLngs = esriPolygonToLeafletLatLngs(state.parcelGeometry);
-  const layer = L.polygon(latLngs, {
-    color: '#16a34a',
-    weight: 3,
-    fillOpacity: 0.18,
-  });
-
-  styleMowLayer(layer);
-  state.drawGroup.addLayer(layer);
-
-  if (state.parcelLayer?.bringToBack) state.parcelLayer.bringToBack();
-  if (layer.bringToFront) layer.bringToFront();
-
-  fitLayerBoundsWithContext(layer);
+  fitLayerBoundsWithContext(feature);
 
   const totalSqFt = totalMowAreaSqFt();
   const parcelSqFt = state.mowableEstimate?.parcelAreaSqft
@@ -1175,6 +1528,191 @@ function setMapToolPanelOpen(open) {
   if (!panel) return;
   const allowOpen = Boolean(open && state.parcelLayer);
   panel.classList.toggle('hidden', !allowOpen);
+  setElementVisible('mapToolsToggle', Boolean(state.parcelLayer && state.quoteFlowStep === 'draw' && !allowOpen));
+}
+
+function estimateSignatureFromPayload(payload = {}) {
+  const sorted = (value) => Array.isArray(value) ? value.slice().sort() : [];
+  return JSON.stringify({
+    serviceType: payload.serviceType || payload.service_type || 'mowing',
+    regionId: payload.regionId || payload.region_id || '',
+    mowAreaSqft: Math.round(Number(payload.mowAreaSqft || 0)),
+    lotAreaSqft: Math.round(Number(payload.lotAreaSqft || 0)),
+    grassHeight: payload.grass_height_range || '',
+    frequency: payload.service_frequency || '',
+    yardAreas: sorted(payload.selected_yard_areas || payload.selectedYardAreas),
+    gateSize: payload.gate_size_category || payload.gate_access_type || '',
+    gateWidth: payload.gate_width_inches || '',
+    mowerAccess: payload.mower_access || '',
+    communityAccess: payload.community_access_type || '',
+    pets: payload.pets || '',
+    petWaste: payload.pet_waste_level || '',
+    propertyType: payload.propertyType || '',
+    obstacles: sorted(payload.obstacles_list),
+    rushJob: Boolean(payload.rushJob),
+    limitedAccess: Boolean(payload.limitedAccess),
+    slopedTerrain: Boolean(payload.slopedTerrain),
+    denseVegetation: Boolean(payload.denseVegetation),
+  });
+}
+
+function currentEstimateSignature() {
+  const form = byId('quoteForm');
+  if (!form) return '';
+  return estimateSignatureFromPayload(buildQuotePayload(form));
+}
+
+function setEstimateState(status, details = {}) {
+  const next = {
+    status,
+    estimate: Number(details.estimate || 0),
+    signature: details.signature || '',
+    payload: details.payload || null,
+    error: details.error || '',
+    updatedAt: status === 'fresh' ? Date.now() : state.currentEstimate?.updatedAt || null,
+  };
+  state.currentEstimate = next;
+
+  if (status !== 'fresh') {
+    state.pendingQuote = null;
+    state.lastQuote = null;
+  }
+
+  renderEstimateState();
+  updateQuoteFlowState({ skipStepper: true });
+  return next;
+}
+
+function renderEstimateState() {
+  const estimateState = state.currentEstimate || { status: 'empty' };
+  const preview = byId('quotePreview');
+  const mirror = byId('quotePreviewMirror');
+  const leadDisplay = byId('leadEstimateDisplay');
+  const result = byId('quoteResult');
+  const estimateActive = state.quoteFlowStep === 'estimate';
+
+  let main = 'Draw area';
+  let sub = 'Draw area';
+
+  if (estimateState.status === 'fresh' && estimateState.estimate > 0) {
+    main = money(estimateState.estimate);
+    sub = money(estimateState.estimate);
+  } else if (estimateState.status === 'updating' || estimateState.status === 'stale') {
+    main = 'Updating...';
+    sub = 'Updating estimate...';
+  } else if (estimateState.status === 'error') {
+    main = 'Unavailable';
+    sub = 'Estimate unavailable';
+  }
+
+  if (preview) preview.textContent = main;
+  if (mirror) mirror.textContent = sub;
+  if (leadDisplay) leadDisplay.textContent = estimateState.status === 'fresh' ? money(estimateState.estimate) : main;
+
+  if (!result) return;
+  if (estimateState.status === 'fresh' && estimateState.payload) {
+    renderEstimateResult(estimateState.payload);
+    return;
+  }
+  if (!estimateActive) {
+    result.classList.add('hidden');
+    return;
+  }
+  if (estimateState.status === 'updating' || estimateState.status === 'stale') {
+    showResult('quoteResult', '<strong>Updating estimate...</strong><br>Checking the latest yard and service details.');
+  } else if (estimateState.status === 'error') {
+    showResult('quoteResult', `<strong>Estimate unavailable.</strong><br>${escapeHtml(estimateState.error || 'Please try recalculating.')}`);
+  } else {
+    result.classList.add('hidden');
+  }
+}
+
+async function refreshEstimate(options = {}) {
+  const form = byId('quoteForm');
+  if (!form) return null;
+
+  const payload = buildQuotePayload(form);
+  const signature = estimateSignatureFromPayload(payload);
+  const current = state.currentEstimate;
+  if (!options.force && current?.status === 'fresh' && current.signature === signature) {
+    renderEstimateState();
+    if (options.navigate) showQuoteFlowStep('estimate');
+    return current;
+  }
+
+  if (Number(payload.mowAreaSqft || 0) <= 0) {
+    setEstimateState('empty', { signature, payload });
+    if (options.navigate) showMissingMowableAreaPrompt('quoteResult');
+    return null;
+  }
+
+  const requestSeq = ++estimateRequestSeq;
+  setEstimateState('updating', { signature, payload });
+
+  try {
+    const data = await api('/api/estimate', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    if (requestSeq !== estimateRequestSeq) return state.currentEstimate;
+
+    const latestSignature = currentEstimateSignature();
+    if (latestSignature !== signature) {
+      scheduleEstimateRefresh('changed-during-refresh');
+      return state.currentEstimate;
+    }
+
+    const freshPayload = { ...payload, estimate: data.estimate };
+    state.pendingQuote = freshPayload;
+    state.lastQuote = null;
+    saveQuoteDraft();
+    const estimateState = setEstimateState('fresh', {
+      signature,
+      payload: freshPayload,
+      estimate: data.estimate,
+    });
+    if (options.navigate) showQuoteFlowStep('estimate');
+    if (options.toast) showSuccess('Quote updated');
+    return estimateState;
+  } catch (error) {
+    if (requestSeq !== estimateRequestSeq) return state.currentEstimate;
+    setEstimateState('error', {
+      signature,
+      payload,
+      error: prettyApiError(error),
+    });
+    if (options.navigate) showQuoteFlowStep('estimate');
+    throw error;
+  }
+}
+
+function scheduleEstimateRefresh(reason = 'change', options = {}) {
+  const form = byId('quoteForm');
+  if (!form) return;
+  const payload = buildQuotePayload(form);
+  const signature = estimateSignatureFromPayload(payload);
+  const current = state.currentEstimate;
+
+  if (Number(payload.mowAreaSqft || 0) <= 0) {
+    if (estimateRefreshTimer) clearTimeout(estimateRefreshTimer);
+    setEstimateState('empty', { signature, payload });
+    return;
+  }
+
+  if (!options.force && current?.status === 'fresh' && current.signature === signature) {
+    renderEstimateState();
+    return;
+  }
+
+  setEstimateState('updating', { signature, payload, reason });
+  if (estimateRefreshTimer) clearTimeout(estimateRefreshTimer);
+  const delay = options.immediate ? 0 : ESTIMATE_DEBOUNCE_MS;
+  estimateRefreshTimer = setTimeout(() => {
+    estimateRefreshTimer = null;
+    refreshEstimate({ force: options.force }).catch((error) => {
+      showError(prettyApiError(error));
+    });
+  }, delay);
 }
 
 function updateQuoteFlowState(options = {}) {
@@ -1183,7 +1721,11 @@ function updateQuoteFlowState(options = {}) {
   const mowSelected = hasActiveMowableArea();
   const editing = state.quoteUiMode === 'editing' || state.quoteUiMode === 'deleting';
   const drawing = state.quoteUiMode === 'drawing';
-  const hasEstimate = mowSelected && state.pendingQuote?.estimate > 0;
+  const estimateState = state.currentEstimate || {};
+  const estimateFresh = mowSelected
+    && estimateState.status === 'fresh'
+    && estimateState.estimate > 0
+    && estimateState.signature === currentEstimateSignature();
 
   document.body.dataset.quoteState = editing
     ? 'editing'
@@ -1193,7 +1735,7 @@ function updateQuoteFlowState(options = {}) {
         ? 'parcel-loaded'
         : 'empty';
 
-  setElementVisible('mapToolsToggle', parcelLoaded && state.quoteFlowStep === 'draw');
+  setElementVisible('mapToolsToggle', parcelLoaded && state.quoteFlowStep === 'draw' && byId('mapToolsPanel')?.classList.contains('hidden'));
   if (!parcelLoaded || state.quoteFlowStep !== 'draw') setMapToolPanelOpen(false);
 
   setElementVisible('useParcelShapeBtn', parcelLoaded && !mowSelected && !editing && !drawing);
@@ -1218,8 +1760,12 @@ function updateQuoteFlowState(options = {}) {
   });
 
   const requestBtn = byId('requestServiceBtn');
-  if (requestBtn) requestBtn.classList.toggle('hidden', !hasEstimate);
-  byId('checkoutTestModeNote')?.classList.toggle('hidden', !hasEstimate);
+  if (requestBtn) {
+    requestBtn.classList.toggle('hidden', !mowSelected);
+    requestBtn.disabled = !estimateFresh;
+    requestBtn.classList.toggle('disabled', !estimateFresh);
+  }
+  byId('checkoutTestModeNote')?.classList.toggle('hidden', !estimateFresh);
 
   if (!options.skipStepper) updateQuoteStepper();
 }
@@ -1236,7 +1782,7 @@ async function aiDetectGrassDraft() {
   console.log('REAL AI grass detect fired');
 
   const parcelRings = state.parcelGeometry?.rings || state.parcelGeometry?.coordinates || [];
-  if (!parcelRings.length || !state.map || !state.drawGroup) {
+  if (!parcelRings.length || !state.map) {
     showResult(
       'parcelInfo',
       '<strong>No parcel shape yet.</strong><br>Lookup the parcel first.'
@@ -1268,7 +1814,7 @@ async function aiDetectGrassDraft() {
 
   state.mowUndoStack = [];
 
-  state.drawGroup.clearLayers();
+  clearMowableFeatures();
 
   try {
     showResult('parcelInfo', '<strong>AI detecting grass...</strong><br>Analyzing satellite imagery for likely mowable area.');
@@ -1288,9 +1834,9 @@ async function aiDetectGrassDraft() {
 
     updateMowAreaHelper(parcelSqFt, detectedSqFt);
     saveQuoteDraft();
-    await updateEstimatePreview();
+    await refreshEstimate({ force: true });
 
-    if (state.parcelLayer?.bringToBack) state.parcelLayer.bringToBack();
+    reorderMapOverlays();
 
     showResult(
       'parcelInfo',
@@ -1308,42 +1854,24 @@ function startDrawMowable() {
   if (!state.map) return;
   stopToolModes();
   state.quoteUiMode = 'drawing';
-
-  state.drawHandler = new L.Draw.Polygon(state.map, {
-    allowIntersection: false,
-    showArea: true,
-    repeatMode: false,
-    shapeOptions: {
-      color: '#16a34a',
-      weight: 3,
-      fillOpacity: 0.18,
-    },
-  });
-
-  state.drawHandler.enable();
-  setEditorModeLabel('Mode: Drawing mowable area');
+  if (window.TurfLynkLassoYard?.arm) window.TurfLynkLassoYard.arm();
+  setEditorModeLabel('Mode: Drag on map to draw');
   setMapToolPanelOpen(true);
   updateQuoteFlowState();
 }
 
 function startEditMowable() {
-  if (!state.map || !state.drawGroup || !getAllMowLayers().length) {
+  if (!state.map || !getAllMowLayers().length) {
     showResult('parcelInfo', '<strong>No mowable area to edit.</strong><br>Use Parcel Shape, Smart Draft, or Draw Area first.');
     return;
   }
 
   stopToolModes();
-
-  state.editHandler = new L.EditToolbar.Edit(state.map, {
-    featureGroup: state.drawGroup,
-    selectedPathOptions: {
-      maintainColor: true,
-    },
-  });
-
-  state.editHandler.enable();
+  setMapMode('edit');
   state.quoteUiMode = 'editing';
-  setEditorModeLabel('Mode: Drag vertices, or drag inside a green shape to move it');
+  state.editSnapshot = cloneFeatureCollection(state.mowableFeatureCollection).features;
+  buildEditHandles();
+  setEditorModeLabel('Mode: Drag green handles to adjust the mowable area');
   setMapToolPanelOpen(true);
   updateQuoteFlowState();
 }
@@ -1351,7 +1879,7 @@ function startEditMowable() {
 
 
 async function aiRefineMowableArea() {
-  if (!state.map || !state.drawGroup || !getAllMowLayers().length) {
+  if (!state.map || !getAllMowLayers().length) {
     showResult('parcelInfo', '<strong>No mowable area to refine.</strong>');
     return;
   }
@@ -1362,7 +1890,7 @@ async function aiRefineMowableArea() {
       '<strong>AI refining area...</strong><br>Looking for house, driveway, pool, shed, or other non-mowable areas.'
     );
 
-    const mowableFeatures = getAllMowLayers().map((layer) => layer.toGeoJSON());
+    const mowableFeatures = cloneFeatureCollection(state.mowableFeatureCollection).features;
     const parcelGeometry = exposeCurrentParcelGeometryForAi();
 
     const payload = {
@@ -1387,20 +1915,7 @@ async function aiRefineMowableArea() {
       return;
     }
 
-    state.aiCutoutGroup.clearLayers();
-
-    cutouts.forEach((feature) => {
-      const group = L.geoJSON(feature, {
-        style: {
-          color: '#ef4444',
-          weight: 3,
-          fillColor: '#ef4444',
-          fillOpacity: 0.25
-        }
-      });
-
-      group.eachLayer(layer => state.aiCutoutGroup.addLayer(layer));
-    });
+    setCutoutFeatures(cutouts);
 
     showResult(
       'parcelInfo',
@@ -1416,7 +1931,7 @@ async function aiRefineMowableArea() {
 }
 
 function applyAiCutouts() {
-  if (!state.aiCutoutGroup || !state.aiCutoutGroup.getLayers().length) {
+  if (!getCutoutFeatureCount()) {
     showResult('parcelInfo', '<strong>No AI cutouts to apply.</strong>');
     return;
   }
@@ -1425,34 +1940,32 @@ function applyAiCutouts() {
   state.skipNextCutUndoSnapshot = true;
 
   try {
-    state.aiCutoutGroup.getLayers().forEach(layer => {
-      applyCutToMowable(layer);
+    state.aiCutoutFeatureCollection.features.forEach(feature => {
+      applyCutToMowable(feature);
     });
   } finally {
     state.skipNextCutUndoSnapshot = false;
   }
 
-  state.aiCutoutGroup.clearLayers();
+  clearCutoutFeatures();
   syncMowAreaFromLayers();
 
   showResult('parcelInfo', '<strong>AI cutouts applied.</strong>');
 }
 
 function startDeleteMowable() {
-  if (!state.map || !state.drawGroup || !getAllMowLayers().length) {
+  if (!state.map || !getAllMowLayers().length) {
     showResult('parcelInfo', '<strong>No mowable area to delete.</strong>');
     return;
   }
 
   stopToolModes();
-
-  state.deleteHandler = new L.EditToolbar.Delete(state.map, {
-    featureGroup: state.drawGroup,
-  });
-
-  state.deleteHandler.enable();
-  state.quoteUiMode = 'deleting';
-  setEditorModeLabel('Mode: Delete mowable areas');
+  setMapMode('edit');
+  state.editSnapshot = null;
+  clearMowableFeatures();
+  syncMowAreaFromLayers();
+  state.quoteUiMode = 'idle';
+  setEditorModeLabel('Mode: Mowable areas deleted');
   setMapToolPanelOpen(true);
   updateQuoteFlowState();
 }
@@ -1464,11 +1977,11 @@ function applyCutToMowable(cutLayer) {
       snapshotMowLayersForUndo();
     }
 
-    const cutGeo = cutLayer.toGeoJSON();
-    const newLayers = [];
+    const cutGeo = asFeature(cutLayer);
+    if (!cutGeo) return;
+    const newFeatures = [];
 
-    getAllMowLayers().forEach((layer) => {
-      const gj = layer.toGeoJSON();
+    getAllMowLayers().forEach((gj) => {
 
       try {
         const diff = turf.difference(gj, cutGeo);
@@ -1476,23 +1989,16 @@ function applyCutToMowable(cutLayer) {
         if (!diff) return;
 
         if (diff.geometry.type === 'Polygon') {
-          newLayers.push(L.geoJSON(diff));
+          newFeatures.push(diff);
         } else if (diff.geometry.type === 'MultiPolygon') {
-          newLayers.push(L.geoJSON(diff));
+          newFeatures.push(diff);
         }
       } catch (err) {
         console.warn('Cut failed on layer', err);
       }
     });
 
-    state.drawGroup.clearLayers();
-
-    newLayers.forEach((l) => {
-      l.eachLayer((sub) => {
-        styleMowLayer(sub);
-        state.drawGroup.addLayer(sub);
-      });
-    });
+    setMowableFeatures(newFeatures);
 
     syncMowAreaFromLayers();
   } catch (err) {
@@ -1502,119 +2008,71 @@ function applyCutToMowable(cutLayer) {
 
 function initMap() {
   const mapEl = byId('quoteMap');
-  if (!mapEl || typeof L === 'undefined') return;
+  if (!mapEl || typeof maplibregl === 'undefined') return;
 
-  state.map = L.map('quoteMap', { tap: true }).setView(DEFAULT_MAP_CENTER, DEFAULT_MAP_ZOOM);
+  state.map = new maplibregl.Map({
+    container: 'quoteMap',
+    center: latLngToLngLat(DEFAULT_MAP_CENTER),
+    zoom: DEFAULT_MAP_ZOOM,
+    attributionControl: false,
+    style: {
+      version: 8,
+      sources: {
+        sat: {
+          type: 'raster',
+          tiles: [SATELLITE_TILE_URL],
+          tileSize: 256,
+          attribution: SATELLITE_TILE_ATTRIBUTION,
+        },
+      },
+      layers: [{ id: 'sat', type: 'raster', source: 'sat' }],
+    },
+  });
+  state.map.addControl(new maplibregl.AttributionControl({ compact: true }), 'bottom-right');
+  state.map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-left');
   setMapGestureCapture(false);
-  if (state.map.attributionControl) {
-    state.map.attributionControl.setPrefix(false);
-  }
-  installMowableMoveMapHandlers();
+  state.drawGroup = state.mowableFeatureCollection;
+  state.aiCutoutGroup = state.aiCutoutFeatureCollection;
+  state.buildingFootprintGroup = state.buildingFootprintFeatureCollection;
+
+  state.map.on('load', () => {
+    ensureMapLibreSourcesAndLayers();
+    installMowableMoveMapHandlers();
+    exposeTurfLynkMapGlobals();
+    exposeTurfLynkQuoteGlobals();
+  });
+
   exposeTurfLynkMapGlobals();
-  exposeTurfLynkQuoteGlobals();
-
-  const satellite = L.tileLayer(
-    'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-    {
-      maxZoom: 20,
-      attribution: 'Tiles Esri',
-    }
-  );
-
-  const streets = L.tileLayer(
-    'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-    {
-      maxZoom: 20,
-      attribution: 'OpenStreetMap',
-    }
-  );
-
-  satellite.addTo(state.map);
-
-  state.drawGroup = new L.FeatureGroup();
-  state.map.addLayer(state.drawGroup);
-  state.drawGroup.on('layeradd', (event) => {
-    if (event.layer?.setStyle || event.layer?.getLatLngs) {
-      event.layer._turflynkMowable = true;
-      attachMowableMoveHandlers(event.layer);
-    }
-  });
-  exposeTurfLynkMapGlobals();
-
-  state.aiCutoutGroup = new L.FeatureGroup();
-  state.map.addLayer(state.aiCutoutGroup);
-
-  state.buildingFootprintGroup = new L.FeatureGroup();
-  state.map.addLayer(state.buildingFootprintGroup);
-  reorderMapOverlays();
-
-  state.map.on(L.Draw.Event.CREATED, (e) => {
-  const layer = e.layer;
-
-  // ?? CUT MODE (red polygon)
-  if (layer.options?.color === '#ef4444') {
-    applyCutToMowable(layer);
-    setTimeout(() => {
-      startEditMowable();
-    }, 0);
-    return;
-  }
-
-  // ?? NORMAL DRAW
-  state.drawGroup.clearLayers();
-  styleMowLayer(layer);
-  state.drawGroup.addLayer(layer);
-
-  if (state.parcelLayer?.bringToBack) state.parcelLayer.bringToBack();
-  if (layer.bringToFront) layer.bringToFront();
-
-  syncMowAreaFromLayers();
-  setTimeout(() => {
-    startEditMowable();
-  }, 0);
-});
-
-  state.map.on(L.Draw.Event.EDITED, () => {
-    syncMowAreaFromLayers();
-    setEditorModeLabel('Mode: Drag vertices, or drag inside a green shape to move it');
-  });
-
-  state.map.on(L.Draw.Event.DELETED, () => {
-    syncMowAreaFromLayers();
-    setEditorModeLabel('Mode: Delete mowable areas');
-  });
-
-  state.drawGroup.on('click', () => {
-    startEditMowable();
-  });
 
   state.map.on('click', (e) => {
-    if (!state.parcelSelectMode) return;
-    if (state.drawHandler?._enabled) return;
-    applyParcelFromClick(e.latlng);
+    if (getMapMode() !== 'select' || !state.parcelSelectMode) return;
+    e.preventDefault?.();
+    applyParcelFromClick({ lat: e.lngLat.lat, lng: e.lngLat.lng });
   });
 
   state.map.on('dblclick', (e) => {
-    if (!state.parcelSelectMode) return;
-    if (state.drawHandler?._enabled) return;
-    L.DomEvent.stop(e);
+    if (getMapMode() !== 'select' || !state.parcelSelectMode) return;
+    e.preventDefault?.();
     state.parcelDblClick = true;
     if (state.pendingParcelFeature) {
       state.parcelDblClick = false;
       confirmParcelSelection();
     }
   });
-
-  state.streetLayer = streets;
-  state.satelliteLayer = satellite;
 }
 
 window.TurfLynkAppState = state;
-window.esriPolygonToLeafletLatLngs = esriPolygonToLeafletLatLngs;
+window.setTurfLynkMapMode = setMapMode;
+window.getTurfLynkMapMode = getMapMode;
+window.esriPolygonToLatLngPairs = esriPolygonToLatLngPairs;
+window.esriPolygonToGeoJSONFeature = esriPolygonToGeoJSONFeature;
 window.exposeCurrentParcelGeometryForAi = exposeCurrentParcelGeometryForAi;
 window.exposeTurfLynkMapGlobals = exposeTurfLynkMapGlobals;
 window.syncMowAreaFromLayers = syncMowAreaFromLayers;
 window.startEditMowable = startEditMowable;
+window.setTurfLynkMowableFeatures = setMowableFeatures;
+window.applyTurfLynkCutFeature = applyCutToMowable;
+window.setTurfLynkLassoTempLine = setLassoTempLine;
 window.updateEstimatePreview = updateEstimatePreview;
 window.showToast = showToast;
 window.showSuccess = showSuccess;
@@ -1629,7 +2087,7 @@ function setQuoteService(serviceType) {
   if (Array.from(select.options).some((option) => option.value === value)) {
     select.value = value;
     saveQuoteDraft();
-    updateEstimatePreview();
+    scheduleEstimateRefresh('service-change');
   }
 }
 
@@ -1641,7 +2099,7 @@ function setServiceFlow(flow) {
   byId('liveBidPanel')?.classList.toggle('hidden', instant);
   if (byId('viewTitle')) byId('viewTitle').textContent = instant ? 'Instant Mow Quote' : 'Live Bid Request';
   if (byId('mobileViewTitle')) byId('mobileViewTitle').textContent = instant ? 'Instant Mow' : 'Live Bid';
-  if (instant && state.map) setTimeout(() => state.map.invalidateSize(), 120);
+  if (instant && state.map) setTimeout(() => state.map.resize?.(), 120);
 }
 
 function hydrateLiveBidForm(serviceId) {
@@ -1658,8 +2116,9 @@ function hydrateLiveBidForm(serviceId) {
   const quoteForm = byId('quoteForm');
   if (quoteForm) {
     const q = formToObject(quoteForm);
+    const serviceAddress = getCurrentServiceAddress(q);
     ['address', 'city', 'state', 'zip'].forEach((name) => {
-      if (form.elements[name] && q[name]) form.elements[name].value = q[name];
+      if (form.elements[name]) form.elements[name].value = serviceAddress[name] || (name === 'state' ? 'AR' : '');
     });
     if (form.elements.customerName && q.name) form.elements.customerName.value = q.name;
     if (form.elements.customerPhone && q.phone) form.elements.customerPhone.value = q.phone;
@@ -1696,6 +2155,16 @@ function openAppDrawer() {
   byId('appDrawerOverlay')?.classList.remove('hidden');
 }
 
+function revealSecondarySectionForTarget(targetId) {
+  const target = byId(targetId);
+  const section = target?.closest?.('[data-secondary-home-section]');
+  if (!section) return target;
+  section.hidden = false;
+  section.classList.remove('hidden');
+  if (target && 'hidden' in target) target.hidden = false;
+  return target;
+}
+
 function navigateFromElement(el) {
   const view = el?.dataset?.jumpView || el?.dataset?.drawerView || el?.dataset?.view;
   let requestedFlow = null;
@@ -1720,7 +2189,8 @@ function navigateFromElement(el) {
     hydrateLiveBidForm(requestedService);
   }
   if (el?.dataset?.scrollTarget) {
-    setTimeout(() => byId(el.dataset.scrollTarget)?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 80);
+    const target = revealSecondarySectionForTarget(el.dataset.scrollTarget);
+    setTimeout(() => target?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 80);
   }
   if (el?.hasAttribute?.('data-drawer-contact') || el?.hasAttribute?.('data-mobile-contact')) {
     setActiveView('quote');
@@ -1732,6 +2202,7 @@ function navigateFromElement(el) {
 
 function setActiveView(view) {
   state.activeView = view;
+  document.body.dataset.activeView = view;
 
   $$('[data-view-panel]').forEach((el) => {
     const visible = el.dataset.viewPanel === view;
@@ -1763,7 +2234,7 @@ function setActiveView(view) {
   }
 
   if (view === 'quote' && state.map) {
-    setTimeout(() => state.map.invalidateSize(), 100);
+    setTimeout(() => state.map.resize?.(), 100);
     showQuoteFlowStep(state.quoteFlowStep || 'start', { scroll: false });
     updateQuoteFlowState();
   }
@@ -1863,6 +2334,36 @@ function renderCoverage() {
   });
 }
 
+function sanitizeCustomerName(fullName) {
+  const parts = String(fullName || '').trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return 'Customer';
+  const first = parts[0];
+  const lastInitial = parts.length > 1 ? `${parts[parts.length - 1].charAt(0).toUpperCase()}.` : '';
+  return [first, lastInitial].filter(Boolean).join(' ');
+}
+
+function sanitizeJobForPublic(job = {}) {
+  const city = String(job.city || '').trim();
+  const stateName = String(job.state || '').trim();
+  const region = regionLabel(job.regionId || job.region_id || '');
+  const location = [city, stateName].filter(Boolean).join(', ') || region || 'Service area';
+  const amount = Number(job.paymentAmount || job.payment_amount || job.budget || job.estimate || job.estimatedPrice || 0);
+  return {
+    id: job.id || '',
+    title: job.title || serviceLabel(job.serviceType || job.service_type || 'mowing'),
+    customerName: sanitizeCustomerName(job.customerName || job.customer_name || job.name || ''),
+    serviceType: job.serviceType || job.service_type || 'mowing',
+    region,
+    city,
+    state: stateName,
+    location,
+    amount,
+    status: job.status || 'open',
+    preferredDate: job.preferredDate || job.preferred_date || '',
+    postedAt: job.postedAt || job.createdAt || job.created_at || '',
+  };
+}
+
 function localContentData() {
   return window.TurfLynkLocalContent || { homepage: {}, cities: [], areas: [], services: [] };
 }
@@ -1907,8 +2408,8 @@ function renderHomepageContent() {
   const data = localContentData();
   const homepage = data.homepage || {};
 
-  if (byId('homeHeroTitle')) byId('homeHeroTitle').textContent = 'Book trusted lawn and outdoor services near you.';
-  if (byId('homeHeroSubtitle')) byId('homeHeroSubtitle').textContent = 'Get an instant mowing price or request a live bid for cleanup, trimming, landscaping, and more.';
+  if (byId('homeHeroTitle')) byId('homeHeroTitle').innerHTML = 'FAST LAWN QUOTES.<br>EASY ONLINE BOOKING.';
+  if (byId('homeHeroSubtitle')) byId('homeHeroSubtitle').innerHTML = 'No calls. No waiting.<br>Just simple, transparent pricing.';
   const tags = byId('homeServiceTags');
   if (tags) {
     tags.innerHTML = ['Mowing', 'Cleanup', 'Bush Trimming', 'Leaf Removal', 'Pressure Washing', 'Gutter Cleaning']
@@ -2083,6 +2584,7 @@ async function loadConfig() {
   const draft = loadQuoteDraft();
   if (draft && byId('quoteForm')) {
     fillForm(byId('quoteForm'), draft);
+    setCurrentServiceAddress(getQuoteFormServiceAddress(), 'quote-draft');
     clearStaleMowAreaWithoutPolygon(byId('quoteForm'));
   }
 
@@ -2091,7 +2593,7 @@ async function loadConfig() {
   renderLocalLandingFromPath();
   hydrateRegionEditor();
   hydrateServiceEditor();
-  updateEstimatePreview();
+  scheduleEstimateRefresh('app-load');
 }
 
 function toggleAuthPanel(forceOpen) {
@@ -2246,32 +2748,7 @@ async function loadProviderServiceAreas() {
 }
 
 async function updateEstimatePreview() {
-  const form = byId('quoteForm');
-  const preview = byId('quotePreview');
-  const mirror = byId('quotePreviewMirror');
-  if (!form || !preview) return;
-
-  const payload = buildQuotePayload(form);
-  if (Number(payload.mowAreaSqft || 0) <= 0) {
-    preview.textContent = 'Draw area';
-    if (mirror) mirror.textContent = 'Draw area';
-    updateQuoteFlowState();
-    return;
-  }
-
-  try {
-    const data = await api('/api/estimate', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    });
-    const formatted = money(data.estimate);
-    preview.textContent = formatted;
-    if (mirror) mirror.textContent = formatted;
-  } catch {
-    preview.textContent = 'Unavailable';
-    if (mirror) mirror.textContent = 'Unavailable';
-    showError('Could not update quote preview.');
-  }
+  return refreshEstimate({ force: true });
 }
 
 async function geocodeAddress() {
@@ -2299,6 +2776,7 @@ async function geocodeAddress() {
   }
 
   const { lat, lon } = data[0];
+  setCurrentServiceAddress(getQuoteFormServiceAddress(), 'typed-address');
   setLatLng(lat, lon);
   placeMarker(lat, lon);
 
@@ -2308,7 +2786,7 @@ async function geocodeAddress() {
   );
 }
 
-async function lookupParcel() {
+async function lookupParcel(options = {}) {
   const quoteForm = byId('quoteForm');
   const parcelInfo = byId('parcelInfo');
   if (!quoteForm || !parcelInfo) return;
@@ -2331,20 +2809,28 @@ async function lookupParcel() {
   const data = await api(`/api/parcel/lookup?${qs.toString()}`);
 
   if (!data.ok) {
-    parcelInfo.innerHTML = `
-      <strong>Parcel boundary not found.</strong><br>
-      Reason: ${escapeHtml(data.reason || 'unknown')}<br>
-      You can still draw the mowable area manually.
-    `;
+    const message = options.notFoundMessage || 'Parcel boundary not found. You can still draw the mowable area manually.';
+    parcelInfo.innerHTML = options.hideNotFoundDetails
+      ? `<strong>${escapeHtml(message)}</strong>`
+      : `
+        <strong>${escapeHtml(message)}</strong><br>
+        Reason: ${escapeHtml(data.reason || 'unknown')}<br>
+        You can still draw the mowable area manually.
+      `;
     parcelInfo.classList.remove('hidden');
     clearParcelLayer();
     updateQuoteFlowState();
-    showWarning('Parcel lookup failed. You can still draw the area manually.');
+    if (!options.suppressNotFoundToast) {
+      showWarning('Parcel lookup failed. You can still draw the area manually.');
+    }
     return;
   }
 
   const normalized = data.normalized || {};
   const attrs = normalized.attributes || {};
+  const parcelAddress = parcelAddressFromNormalized(normalized);
+  const fallbackAddress = options.allowAddressFallback === false ? {} : getQuoteFormServiceAddress();
+  const serviceAddress = hasServiceAddress(parcelAddress) ? parcelAddress : fallbackAddress;
 
   const parcelId = normalized.parcelId || attrs.parcelid || '';
   const ownerName = attrs.ownername || 'n/a';
@@ -2356,6 +2842,15 @@ async function lookupParcel() {
   quoteForm.elements.lotAreaSqft.value = '';
   quoteForm.elements.mowAreaSqft.value = '';
   if (quoteForm.elements.customerAdjustedMowableSqft) quoteForm.elements.customerAdjustedMowableSqft.value = '';
+  const serviceAddressSource = hasServiceAddress(serviceAddress)
+    ? `parcel-${data.method || 'lookup'}`
+    : options.allowAddressFallback === false
+      ? 'parcel-no-address'
+      : `parcel-${data.method || 'lookup'}`;
+  setCurrentServiceAddress(serviceAddress, serviceAddressSource, {
+    syncQuoteForm: true,
+    clearQuoteFormMissing: true,
+  });
 
   if (geometry) {
     drawParcel(geometry);
@@ -2363,7 +2858,7 @@ async function lookupParcel() {
       || (state.parcelLayer ? layerAreaSqFt(state.parcelLayer) : 0);
     quoteForm.elements.lotAreaSqft.value = parcelAreaSqft || '';
     renderSuggestedMowablePanel(null);
-    updateEstimatePreview();
+    scheduleEstimateRefresh('parcel-loaded');
     showSuccess('Property boundary loaded');
   }
 
@@ -2392,9 +2887,52 @@ async function lookupParcel() {
   parcelInfo.classList.remove('hidden');
 
   saveQuoteDraft();
-  await updateEstimatePreview();
+  scheduleEstimateRefresh('parcel-loaded');
   updateQuoteFlowState();
   showQuoteFlowStep('parcel');
+}
+
+async function lookupParcelByLatLng(lat, lng) {
+  setCurrentServiceAddress({}, 'gps-location', {
+    syncQuoteForm: true,
+    clearQuoteFormMissing: true,
+  });
+  setLatLng(lat, lng);
+  placeCurrentLocationMarker(lat, lng);
+  await lookupParcel({
+    notFoundMessage: 'We found your location, but could not match a parcel here. Try typing the address.',
+    hideNotFoundDetails: true,
+    suppressNotFoundToast: true,
+    allowAddressFallback: false,
+  });
+}
+
+function setGpsStatus(message) {
+  const statusEl = byId('gpsStatusMsg');
+  if (!statusEl) return;
+  statusEl.textContent = message || '';
+  statusEl.classList.toggle('hidden', !message);
+}
+
+function setGpsButtonLocating(isLocating) {
+  const btn = byId('useLocationBtn');
+  if (!btn) return;
+  if (isLocating) {
+    btn.dataset.originalText = btn.textContent || 'Use My Current Location';
+    btn.textContent = 'Finding your location...';
+    btn.disabled = true;
+    return;
+  }
+  btn.disabled = false;
+  btn.textContent = btn.dataset.originalText || 'Use My Current Location';
+  delete btn.dataset.originalText;
+}
+
+function gpsErrorMessage(error) {
+  if (error?.code === 1) {
+    return 'Location permission was denied. You can still type your address.';
+  }
+  return 'Could not get your location. Try again or type your address.';
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -2402,7 +2940,9 @@ async function lookupParcel() {
 ───────────────────────────────────────────────────────────────────────── */
 
 function enterParcelSelectMode() {
+  stopToolModes();
   state.parcelSelectMode = true;
+  setMapMode('select');
   if (state.drawHandler?._enabled) state.drawHandler.disable();
   if (state.editHandler?._enabled) state.editHandler.disable();
   setEditorModeLabel('Mode: Tap a parcel on the map to select it');
@@ -2414,9 +2954,9 @@ function enterParcelSelectMode() {
 function exitParcelSelectMode() {
   state.parcelSelectMode = false;
   state.parcelDblClick = false;
-  if (state.pendingParcelPreviewLayer && state.map) {
-    try { state.map.removeLayer(state.pendingParcelPreviewLayer); } catch {}
-  }
+  if (getMapMode() === 'select') setMapMode('idle');
+  state.pendingParcelPreviewFeature = null;
+  updatePreviewParcelSource();
   state.pendingParcelPreviewLayer = null;
   state.pendingParcelFeature = null;
   setEditorModeLabel('Mode: Ready');
@@ -2441,21 +2981,9 @@ async function applyParcelFromClick(latlng) {
     return;
   }
   const geometry = data.feature.geometry;
-  if (state.pendingParcelPreviewLayer && state.map) {
-    try { state.map.removeLayer(state.pendingParcelPreviewLayer); } catch {}
-  }
-  const rings = (geometry.rings || geometry.coordinates || [])
-    .map((ring) => ringToLeafletLatLngs(ring, geometry))
-    .filter((ring) => ring.length >= 3);
-  if (rings.length && state.map) {
-    state.pendingParcelPreviewLayer = L.polygon(rings, {
-      color: '#f59e0b',
-      weight: 3,
-      fillColor: '#f59e0b',
-      fillOpacity: 0.15,
-      interactive: false,
-    }).addTo(state.map);
-  }
+  state.pendingParcelPreviewFeature = esriPolygonToGeoJSONFeature(geometry, { role: 'parcel-preview' });
+  state.pendingParcelPreviewLayer = state.pendingParcelPreviewFeature;
+  updatePreviewParcelSource();
   state.pendingParcelFeature = data;
   if (state.parcelDblClick) {
     state.parcelDblClick = false;
@@ -2479,7 +3007,8 @@ function confirmParcelSelection() {
   const geometry = data.feature?.geometry;
   const normalized = data.normalized || {};
   const attrs = normalized.attributes || {};
-  if (state.drawGroup) state.drawGroup.clearLayers();
+  const parcelAddress = parcelAddressFromNormalized(normalized);
+  clearMowableFeatures();
   state.mowUndoStack = [];
   if (geometry) drawParcel(geometry);
   const quoteForm = byId('quoteForm');
@@ -2491,9 +3020,13 @@ function confirmParcelSelection() {
     quoteForm.elements.mowAreaSqft.value = '';
     if (quoteForm.elements.customerAdjustedMowableSqft)
       quoteForm.elements.customerAdjustedMowableSqft.value = '';
+    setCurrentServiceAddress(parcelAddress, 'manual-parcel-selection', {
+      syncQuoteForm: true,
+      clearQuoteFormMissing: true,
+    });
   }
   renderSuggestedMowablePanel(null);
-  updateEstimatePreview();
+  scheduleEstimateRefresh('parcel-selected');
   syncMowAreaFromLayers();
   saveQuoteDraft();
   updateQuoteFlowState();
@@ -2576,14 +3109,11 @@ async function loadJobs() {
   }
 
   data.jobs.forEach((job) => {
+    const safe = sanitizeJobForPublic(job);
     list.append(card(`
-      <h4>${escapeHtml(job.title)}</h4>
-      <div class="meta">${escapeHtml(regionLabel(job.regionId || job.region_id))} � ${escapeHtml(serviceLabel(job.serviceType || job.service_type))}</div>
-      <div class="meta">${escapeHtml(job.city || '')} ${escapeHtml(job.state || '')} � Budget ${money(job.budget)} � Preferred ${escapeHtml(job.preferredDate || 'Flexible')}</div>
-      <p>${escapeHtml(job.details || 'No extra details yet.')}</p>
-      <div class="job-photo-row">
-        ${(job.photos || []).map((p) => `<img src="${escapeHtml(p)}" alt="Job photo" class="job-photo" />`).join('')}
-      </div>
+      <h4>${escapeHtml(safe.title)}</h4>
+      <div class="meta">${escapeHtml(serviceLabel(safe.serviceType))} &middot; ${escapeHtml(safe.location)}</div>
+      <div class="meta">Estimate ${money(safe.amount)} &middot; Preferred ${escapeHtml(safe.preferredDate || 'Flexible')} &middot; ${statusBadge(safe.status)}</div>
     `));
   });
 }
@@ -2721,17 +3251,12 @@ async function loadProviderPaidJobs() {
     }
     list.innerHTML = '';
     data.jobs.forEach((job) => {
-      const addr = [job.address, job.city, job.state, job.zip].filter(Boolean).join(', ');
+      const safe = sanitizeJobForPublic(job);
       list.append(card(`
-        <h4 style="margin:0">${escapeHtml(job.title || 'Mowing job')}</h4>
-        <div class="meta">${escapeHtml(addr)}</div>
-        <div class="meta">Budget: <strong>${money(job.paymentAmount || job.budget)}</strong> &middot; ${escapeHtml(serviceLabel(job.serviceType))}</div>
-        ${job.grass_height_range ? `<div class="meta">Grass height: ${escapeHtml(job.grass_height_range)}</div>` : ''}
-        ${job.gate_size_category ? `<div class="meta">Gate: ${escapeHtml(job.gate_size_category)}</div>` : ''}
-        ${job.yard_access_notes ? `<div class="meta">Access: ${escapeHtml(job.yard_access_notes)}</div>` : ''}
-        ${job.preferredDate ? `<div class="meta">Preferred date: ${escapeHtml(job.preferredDate)}</div>` : ''}
-        <div class="meta">${statusBadge(job.status)}</div>
-        ${navLinksHtml(job)}
+        <h4 style="margin:0">${escapeHtml(safe.title || 'Mowing job')}</h4>
+        <div class="meta">${escapeHtml(serviceLabel(safe.serviceType))} &middot; ${escapeHtml(safe.location)}</div>
+        <div class="meta">Estimate: <strong>${money(safe.amount)}</strong> &middot; Preferred ${escapeHtml(safe.preferredDate || 'Flexible')}</div>
+        <div class="meta">${statusBadge(safe.status)}</div>
       `));
     });
   } catch (err) {
@@ -2770,8 +3295,10 @@ function bookingContactMissing(payload = {}) {
 }
 
 function normalizeBookingContact(payload = {}) {
+  const serviceAddress = getCurrentServiceAddress(payload);
   return {
     ...payload,
+    ...(hasServiceAddress(serviceAddress) ? serviceAddress : {}),
     name: payload.name || payload.customerName || '',
     phone: payload.phone || payload.customerPhone || '',
     email: payload.email || payload.customerEmail || '',
@@ -2925,16 +3452,17 @@ function showLeadRequestPanel(payload) {
   const estimate = payload.estimate || 0;
   const quoteForm = byId('quoteForm');
   const quoteFields = quoteForm ? formToObject(quoteForm) : {};
+  const serviceAddress = syncServiceAddressFields(payload);
 
   // Populate hidden fields from the estimate payload
   const set = (id, val) => { const el = byId(id); if (el) el.value = val || ''; };
   set('leadEstimatedPrice', estimate);
   set('leadMowAreaSqft', payload.mowAreaSqft || 0);
   set('leadLotAreaSqft', payload.lotAreaSqft || 0);
-  set('leadAddress', payload.address || '');
-  set('leadCity', payload.city || '');
-  set('leadState', payload.state || 'AR');
-  set('leadZip', payload.zip || '');
+  set('leadAddress', serviceAddress.address || '');
+  set('leadCity', serviceAddress.city || '');
+  set('leadState', serviceAddress.state || 'AR');
+  set('leadZip', serviceAddress.zip || '');
   set('leadRegionId', payload.regionId || '');
   set('leadServiceType', payload.serviceType || 'mowing');
   set('leadParcelAreaSqft', payload.parcelAreaSqft || quoteFields.parcelAreaSqft || '');
@@ -2964,7 +3492,7 @@ async function generateGuestEstimate(form) {
   const payload = buildQuotePayload(form);
   const _genLot = Number(payload.lotAreaSqft || 0);
   const _genMow = Number(payload.mowAreaSqft || 0);
-  const _genLayers = state.drawGroup?.getLayers()?.length ?? 0;
+  const _genLayers = getMowableFeatureCount();
   const _genPct = _genLot > 0 ? Math.round((_genMow / _genLot) * 100) : null;
   console.log('[TurfLynk Area Trace] D. generateGuestEstimate | mowAreaSqft=' + _genMow + ' lotAreaSqft=' + _genLot + (_genPct !== null ? ' (' + _genPct + '% of parcel)' : '') + ' layers=' + _genLayers + ' formFieldBeforeBuild=' + _preBuildFormMow + ' source=buildQuotePayload→drawGroup');
 
@@ -2982,25 +3510,12 @@ async function generateGuestEstimate(form) {
   }
 
   if (Number(payload.mowAreaSqft || 0) <= 0) {
-    state.pendingQuote = null;
+    setEstimateState('empty', { signature: estimateSignatureFromPayload(payload), payload });
     showMissingMowableAreaPrompt('quoteResult');
-    await updateEstimatePreview();
     return;
   }
 
-  const data = await api('/api/estimate', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
-
-  state.pendingQuote = { ...payload, estimate: data.estimate };
-  state.lastQuote = null;
-  renderEstimateResult(state.pendingQuote);
-  showQuoteFlowStep('estimate');
-  saveQuoteDraft();
-  await updateEstimatePreview();
-  updateQuoteFlowState();
-  showSuccess('Quote updated');
+  await refreshEstimate({ force: true, navigate: true, toast: true });
 }
 
 async function acceptPendingQuote() {
@@ -3070,7 +3585,6 @@ async function acceptPendingQuote() {
     byId('bookJobBtn')?.addEventListener('click', bookQuoteAsJob);
 
     saveQuoteDraft();
-    await updateEstimatePreview();
     if (isAdmin()) await loadAdmin().catch(() => {});
 
   } catch (error) {
@@ -3139,8 +3653,14 @@ byId('requestServiceBtn')?.addEventListener('click', async () => {
       showMissingMowableAreaPrompt('quoteResult');
       return;
     }
-    if (!state.pendingQuote?.estimate || Number(state.pendingQuote.mowAreaSqft || 0) !== currentDrawnMowAreaSqFt()) {
-      await generateGuestEstimate(form);
+    const signature = currentEstimateSignature();
+    if (
+      !state.pendingQuote?.estimate ||
+      !state.currentEstimate ||
+      state.currentEstimate.status !== 'fresh' ||
+      state.currentEstimate.signature !== signature
+    ) {
+      await refreshEstimate({ force: true, navigate: false });
     }
     showLeadRequestPanel(state.pendingQuote || buildQuotePayload(form));
   } catch (error) {
@@ -3152,27 +3672,26 @@ $$('[data-quote-back]').forEach((btn) => {
   btn.addEventListener('click', () => showQuoteFlowStep(btn.dataset.quoteBack || 'start'));
 });
 byId('saveAreaBtn')?.addEventListener('click', () => {
-  // Commit pending vertex edits before disabling the toolbar.
-  // L.EditToolbar.Edit.disable() reverts edits unless .save() is called first.
-  if (state.editHandler) {
-    try { state.editHandler.save(); } catch {}
-  }
   stopToolModes();
+  state.editSnapshot = null;
   syncMowAreaFromLayers();
   setMapToolPanelOpen(true);
   showSuccess('Area saved');
 });
 byId('cancelEditAreaBtn')?.addEventListener('click', () => {
-  // Explicitly revert any pending edits before disabling.
-  if (state.editHandler) {
-    try { state.editHandler.revertLayers(); } catch {}
-  }
+  const shouldRestoreEdit = state.quoteUiMode === 'editing' && Array.isArray(state.editSnapshot);
   stopToolModes();
+  if (shouldRestoreEdit) {
+    setMowableFeatures(state.editSnapshot);
+    state.editSnapshot = null;
+    syncMowAreaFromLayers();
+  }
   state.quoteUiMode = 'idle';
   updateQuoteFlowState();
   showInfo('Area editing closed');
 });
 byId('locateAddressBtn')?.addEventListener('click', async () => {
+  byId('gpsConfirmBar')?.classList.add('hidden');
   try {
     await geocodeAddress();
     await lookupParcel();
@@ -3182,16 +3701,68 @@ byId('locateAddressBtn')?.addEventListener('click', async () => {
 });
 
 byId('lookupParcelBtn')?.addEventListener('click', () => {
+  byId('gpsConfirmBar')?.classList.add('hidden');
   lookupParcel().catch((error) => showError(prettyApiError(error)));
+});
+
+byId('useLocationBtn')?.addEventListener('click', () => {
+  if (!navigator.geolocation) {
+    setGpsStatus('GPS location is not supported on this device/browser.');
+    return;
+  }
+
+  setGpsButtonLocating(true);
+  setGpsStatus('Finding your location...');
+
+  // Browser geolocation requires HTTPS in production, or localhost during development.
+  navigator.geolocation.getCurrentPosition(
+    async (position) => {
+      const { latitude: lat, longitude: lng } = position.coords;
+      setGpsStatus('Location found. Checking parcel...');
+      try {
+        await lookupParcelByLatLng(lat, lng);
+        if (state.parcelLayer) {
+          setGpsStatus('');
+        } else {
+          setGpsStatus('We found your location, but could not match a parcel here. Try typing the address.');
+        }
+      } catch (err) {
+        const message = prettyApiError(err) || 'Could not get your location. Try again or type your address.';
+        setGpsStatus(message);
+        showError(message);
+      } finally {
+        setGpsButtonLocating(false);
+      }
+    },
+    (geoError) => {
+      setGpsButtonLocating(false);
+      setGpsStatus(gpsErrorMessage(geoError));
+    },
+    { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
+  );
+});
+
+byId('gpsConfirmYesBtn')?.addEventListener('click', () => {
+  byId('gpsConfirmBar')?.classList.add('hidden');
+  showQuoteFlowStep('draw');
+});
+
+byId('gpsConfirmNoBtn')?.addEventListener('click', () => {
+  byId('gpsConfirmBar')?.classList.add('hidden');
+  clearParcelLayer();
+  clearMowLayer();
+  byId('gpsStatusMsg')?.classList.add('hidden');
+  showQuoteFlowStep('start');
 });
 byId('aiDetectGrassBtn')?.addEventListener('click', aiDetectGrassDraft);
 byId('useParcelShapeBtn')?.addEventListener('click', cloneParcelAsMowable);
 byId('lassoYardBtn')?.addEventListener('click', () => {
+  if (state.parcelSelectMode) exitParcelSelectMode();
   state.quoteUiMode = 'drawing';
   updateQuoteFlowState();
 });
 byId('drawMowableBtn')?.addEventListener('click', () => {
-  if (state.drawGroup?.getLayers?.().length) clearMowLayer();
+  if (getMowableFeatureCount()) clearMowLayer();
   startDrawMowable();
 });
 byId('editMowableBtn')?.addEventListener('click', startEditMowable);
@@ -3208,24 +3779,33 @@ byId('clearQuoteDraftBtn')?.addEventListener('click', () => {
   byId('quoteResult')?.classList.add('hidden');
   byId('leadRequestPanel')?.classList.add('hidden');
   renderSuggestedMowablePanel(null);
-  updateEstimatePreview();
+  setCurrentServiceAddress({}, 'quote-reset', {
+    syncQuoteForm: false,
+    clearQuoteFormMissing: false,
+  });
+  setEstimateState('empty', { signature: '', payload: null });
   showQuoteFlowStep('start');
 });
 
-byId('quoteForm')?.addEventListener('input', () => {
+function quoteAddressFieldChanged(event) {
+  if (!['address', 'city', 'state', 'zip'].includes(event?.target?.name || '')) return;
+  setCurrentServiceAddress(getQuoteFormServiceAddress(), 'quote-form-input');
+}
+
+byId('quoteForm')?.addEventListener('input', (event) => {
+  quoteAddressFieldChanged(event);
   saveQuoteDraft();
-  updateEstimatePreview();
-  updateQuoteFlowState();
+  scheduleEstimateRefresh('input');
 });
 
-byId('quoteForm')?.addEventListener('change', () => {
+byId('quoteForm')?.addEventListener('change', (event) => {
+  quoteAddressFieldChanged(event);
   saveQuoteDraft();
-  updateEstimatePreview();
+  scheduleEstimateRefresh('change');
   updateMowAreaHelper(
     Number(byId('quoteForm')?.elements?.lotAreaSqft?.value || 0),
     Number(byId('quoteForm')?.elements?.mowAreaSqft?.value || 0)
   );
-  updateQuoteFlowState();
 });
 
 byId('providerForm')?.addEventListener('submit', async (event) => {
@@ -3478,6 +4058,7 @@ byId('leadRequestForm')?.addEventListener('submit', async (e) => {
 
   try {
     const form = e.target;
+    const currentServiceAddress = syncServiceAddressFields();
     const fd = new FormData(form);
     const payload = Object.fromEntries(fd.entries());
     const requestAvailableDays = checkedValues('available_days_json', form);
@@ -3490,10 +4071,10 @@ byId('leadRequestForm')?.addEventListener('submit', async (e) => {
         showMissingMowableAreaPrompt('quoteResult');
         return;
       }
-      payload.address = payload.address || qd.address || '';
-      payload.city = payload.city || qd.city || '';
-      payload.state = payload.state || qd.state || 'AR';
-      payload.zip = payload.zip || qd.zip || '';
+      payload.address = currentServiceAddress.address || payload.address || qd.address || '';
+      payload.city = currentServiceAddress.city || payload.city || qd.city || '';
+      payload.state = currentServiceAddress.state || payload.state || qd.state || 'AR';
+      payload.zip = currentServiceAddress.zip || payload.zip || qd.zip || '';
       payload.regionId = payload.regionId || qd.regionId || '';
       payload.serviceType = payload.serviceType || qd.serviceType || 'mowing';
       payload.mowAreaSqft = qd.mowAreaSqft;
@@ -3788,7 +4369,18 @@ function resetParcelQuoteStateForNewAddress() {
 
   updateMowAreaHelper(0, 0);
   renderSuggestedMowablePanel(null);
-  updateEstimatePreview();
+  setEstimateState('empty', { signature: '', payload: null });
+  setCurrentServiceAddress({}, 'address-reset', {
+    syncQuoteForm: false,
+    clearQuoteFormMissing: false,
+  });
+}
+
+function selectedPlaceIsInArkansas(place) {
+  const stateComponent = (place?.address_components || [])
+    .find((component) => component.types?.includes('administrative_area_level_1'));
+
+  return stateComponent?.short_name === 'AR' || stateComponent?.long_name === 'Arkansas';
 }
 
 function initAddressAutocomplete() {
@@ -3801,9 +4393,13 @@ function initAddressAutocomplete() {
     return;
   }
 
+  // Google componentRestrictions only restricts by country. Arkansas state limiting
+  // is done with bounds/strictBounds plus a post-selection state check.
   const autocomplete = new google.maps.places.Autocomplete(input, {
     componentRestrictions: { country: 'us' },
-    fields: ['formatted_address', 'geometry', 'address_components'],
+    bounds: ARKANSAS_BOUNDS,
+    strictBounds: true,
+    fields: ['formatted_address', 'geometry', 'address_components', 'place_id'],
     types: ['address'],
   });
 
@@ -3812,6 +4408,11 @@ function initAddressAutocomplete() {
 
     const place = autocomplete.getPlace();
     if (!place?.geometry?.location) return;
+
+    if (!selectedPlaceIsInArkansas(place)) {
+      showWarning('Please choose an Arkansas address for now.');
+      return;
+    }
 
     const form = byId('quoteForm');
     if (!form) return;
@@ -3839,6 +4440,7 @@ function initAddressAutocomplete() {
       getShort('administrative_area_level_1') || 'AR';
 
     form.elements.zip.value = getLong('postal_code') || '';
+    setCurrentServiceAddress(getQuoteFormServiceAddress(), 'google-places');
 
     const lat = place.geometry.location.lat();
     const lng = place.geometry.location.lng();
@@ -3846,7 +4448,7 @@ function initAddressAutocomplete() {
     setLatLng(lat, lng);
     placeMarker(lat, lng);
     saveQuoteDraft();
-    updateEstimatePreview();
+    scheduleEstimateRefresh('address-autocomplete');
 
     setTimeout(() => {
       lookupParcel().catch((error) => {
@@ -4079,13 +4681,7 @@ async function bookQuoteAsJob(explicitBtn) {
     console.log('[MowNWA Checkout Debug] checkout API response | ok=' + checkout.ok + ' session=' + (checkout.checkoutSessionId ? checkout.checkoutSessionId.slice(0, 12) + '...' : 'none') + ' url=' + (checkout.checkoutUrl ? 'present' : 'missing'));
     if (checkout.checkoutUrl) {
       if (btn) { btn.disabled = false; btn.textContent = btn.id === 'leadSubmitBtn' ? 'Book & Pay Securely' : (btn.textContent || 'Book & Pay Securely'); }
-      if (getAuthToken()) {
-        // Already logged in — link job to user; go straight to Stripe
-        window.location.href = checkout.checkoutUrl;
-        return;
-      }
-      // Guest — recommend account creation before redirect
-      showAccountRecommend(checkout.checkoutUrl, q.estimate);
+      window.location.href = checkout.checkoutUrl;
       return;
     }
     payload.payment_status = checkout.paymentStatus || 'checkout_pending';
@@ -4130,7 +4726,7 @@ async function bookQuoteAsJob(explicitBtn) {
       'quoteResult',
       `<strong>Job booked!</strong><br>
        Job ID: ${escapeHtml(data.job.id)}<br>
-       Address: ${escapeHtml(data.job.address)}<br>
+       Service area: ${escapeHtml(sanitizeJobForPublic(data.job).location)}<br>
        Price: <strong>${money(data.job.budget)}</strong><br>
        Status: <span class="status-badge ${escapeHtml(data.job.status)}">${escapeHtml(data.job.status)}</span>${extraBidMessage}<br><br>
        <button class="btn secondary small" type="button"
@@ -4292,13 +4888,12 @@ async function loadMyJobs() {
     }
 
     data.jobs.forEach((job) => {
+      const safe = sanitizeJobForPublic(job);
       const c = card(`
-        <h4>${escapeHtml(job.title || 'Lawn Service')}</h4>
-        <div class="meta">${escapeHtml(job.address || '')} ${escapeHtml(job.city || '')} ${escapeHtml(job.state || '')}</div>
-        <div class="meta">Price: <strong>${money(job.budget)}</strong> &nbsp;·&nbsp; ${statusBadge(job.status)}</div>
-        ${job.details ? `<p>${escapeHtml(job.details)}</p>` : ''}
-        <div class="meta" style="font-size:.85rem">Booked: ${job.postedAt ? new Date(job.postedAt).toLocaleDateString() : 'n/a'}</div>
-        ${navLinksHtml(job)}
+        <h4>${escapeHtml(safe.title || 'Lawn Service')}</h4>
+        <div class="meta">${escapeHtml(serviceLabel(safe.serviceType))} &middot; ${escapeHtml(safe.location)}</div>
+        <div class="meta">Price: <strong>${money(safe.amount)}</strong> &nbsp;&middot;&nbsp; ${statusBadge(safe.status)}</div>
+        <div class="meta" style="font-size:.85rem">Booked: ${safe.postedAt ? new Date(safe.postedAt).toLocaleDateString() : 'n/a'}</div>
       `);
       list.append(c);
     });
@@ -4323,21 +4918,14 @@ async function loadOpenJobsForProvider() {
     }
 
     data.jobs.forEach((job) => {
+      const safe = sanitizeJobForPublic(job);
       const isProvider = state.currentUser?.role === 'provider';
-      const access = buildAccessSummary(job);
-      const schedule = buildScheduleSummary(job);
-      const equipment = equipmentRecommendation(job);
       const c = card(`
-        <h4>${escapeHtml(job.title || 'Lawn Service')}</h4>
-        <div class="meta">${escapeHtml(job.address || '')} ${escapeHtml(job.city || '')} ${escapeHtml(job.state || '')}</div>
-        <div class="meta">Budget: <strong>${money(job.budget)}</strong> &nbsp;·&nbsp; ${statusBadge(job.status)}</div>
-        ${access ? `<div class="meta">${escapeHtml(access)}</div>` : ''}
-        ${schedule ? `<div class="meta">${escapeHtml(schedule)}</div>` : ''}
-        ${equipment ? `<div class="meta">${escapeHtml(equipment)}</div>` : ''}
-        ${job.details ? `<p>${escapeHtml(job.details.slice(0, 200))}</p>` : ''}
-        <div class="meta" style="font-size:.85rem">Posted: ${job.postedAt ? new Date(job.postedAt).toLocaleDateString() : 'n/a'}</div>
-        ${isProvider ? navLinksHtml(job) : ''}
-        ${isProvider ? `<button class="btn primary small" data-accept-job="${escapeHtml(job.id)}" style="margin-top:8px">Accept Job</button>` : ''}
+        <h4>${escapeHtml(safe.title || 'Lawn Service')}</h4>
+        <div class="meta">${escapeHtml(serviceLabel(safe.serviceType))} &middot; ${escapeHtml(safe.location)}</div>
+        <div class="meta">Estimate: <strong>${money(safe.amount)}</strong> &nbsp;&middot;&nbsp; ${statusBadge(safe.status)}</div>
+        <div class="meta" style="font-size:.85rem">Posted: ${safe.postedAt ? new Date(safe.postedAt).toLocaleDateString() : 'n/a'}</div>
+        ${isProvider ? `<button class="btn primary small" data-accept-job="${escapeHtml(safe.id)}" style="margin-top:8px">Accept Job</button>` : ''}
       `);
       list.append(c);
     });
@@ -4488,16 +5076,26 @@ function renderCheckoutSuccess(session) {
   const acresLocal = (n) => n > 0 ? `${(n / 43560).toFixed(3)} acres` : '';
   const moneyLocal = (n) => n > 0 ? `$${Number(n).toFixed(2)}` : '';
 
-  const addr = [job.address || svc.address, job.city || svc.city, job.state || svc.state, job.zip || svc.zip].filter(Boolean).join(', ');
+  const safeJob = sanitizeJobForPublic({
+    ...svc,
+    ...job,
+    city: job.city || svc.city,
+    state: job.state || svc.state,
+    serviceType: job.serviceType || svc.serviceType,
+    budget: s.amount || job.budget || svc.estimate,
+  });
   const mowSqft = Number(svc.mowAreaSqft || 0);
   const lotSqft = Number(svc.lotAreaSqft || 0);
   const isGuest = !getAuthToken();
+  const accountSetup = s.accountSetup || {};
+  const canSetPassword = Boolean(accountSetup.token);
+  const setupEmail = accountSetup.email || customer.email || '';
 
   contentEl.innerHTML = `
     <div class="estimate-card" style="margin:0">
       <div class="estimate-head">
         <div>
-          <span class="pill">Booking confirmed</span>
+          <span class="pill">Your booking is confirmed</span>
           <h3>${moneyLocal(s.amount) || 'Payment received'}</h3>
           <p>Payment status: <strong>${escapeHtml(s.status || 'paid')}</strong></p>
         </div>
@@ -4505,31 +5103,92 @@ function renderCheckoutSuccess(session) {
       </div>
       <div style="margin-top:12px;display:grid;gap:6px">
         ${s.job_id ? `<div><span class="meta">Booking ID:</span> <strong>${escapeHtml(s.job_id)}</strong></div>` : ''}
-        ${addr ? `<div><span class="meta">Address:</span> ${escapeHtml(addr)}</div>` : ''}
-        ${job.serviceType || svc.serviceType ? `<div><span class="meta">Service:</span> ${escapeHtml((job.serviceType || svc.serviceType || '').replace(/_/g, ' '))}</div>` : ''}
+        ${safeJob.location ? `<div><span class="meta">Service area:</span> ${escapeHtml(safeJob.location)}</div>` : ''}
+        ${safeJob.serviceType ? `<div><span class="meta">Service:</span> ${escapeHtml(serviceLabel(safeJob.serviceType))}</div>` : ''}
         ${mowSqft > 0 ? `<div><span class="meta">Mowable area:</span> ${formatSqftLocal(mowSqft)}${acresLocal(mowSqft) ? ` (${acresLocal(mowSqft)})` : ''}</div>` : ''}
         ${lotSqft > 0 ? `<div><span class="meta">Lot area:</span> ${formatSqftLocal(lotSqft)}</div>` : ''}
-        ${customer.name ? `<div><span class="meta">Name:</span> ${escapeHtml(customer.name)}</div>` : ''}
-        ${customer.email ? `<div><span class="meta">Email:</span> ${escapeHtml(customer.email)}</div>` : ''}
+        ${customer.name ? `<div><span class="meta">Name:</span> ${escapeHtml(sanitizeCustomerName(customer.name))}</div>` : ''}
         ${(job.preferredDate || svc.preferredDate) ? `<div><span class="meta">Preferred date:</span> ${escapeHtml(job.preferredDate || svc.preferredDate)}</div>` : ''}
         ${s.paid_at ? `<div><span class="meta">Paid:</span> ${escapeHtml(new Date(s.paid_at).toLocaleString())}</div>` : ''}
         ${job.status ? `<div><span class="meta">Job status:</span> <span class="status-badge ${escapeHtml(job.status)}">${escapeHtml(job.status)}</span></div>` : ''}
       </div>
       <div class="final-review" style="margin-top:12px">
-        <h4>Next steps</h4>
-        <p class="meta">We'll review your access details and schedule your mow. You'll be contacted to confirm the appointment.</p>
+        <h4>${canSetPassword ? 'Set your password to manage your jobs' : getAuthToken() ? 'Manage your booking' : accountSetup.existingUser ? 'Log in to manage your jobs' : 'Next steps'}</h4>
+        <p class="meta">${canSetPassword
+          ? `We created an account for ${escapeHtml(setupEmail)} after payment. Set a password to view this booking, receipts, and future jobs.`
+          : accountSetup.existingUser
+            ? `This booking is linked to ${escapeHtml(setupEmail)}. Log in to manage your jobs.`
+            : `We'll review your access details and schedule your mow. You'll be contacted to confirm the appointment.`}</p>
+        ${canSetPassword ? `
+          <button class="btn primary small" type="button" id="successCreateAccountBtn">Create Account / Set Password</button>
+          <form id="successSetPasswordForm" class="stack hidden" style="gap:10px;margin-top:12px">
+            <input type="hidden" name="token" value="${escapeHtml(accountSetup.token)}" />
+            <label><span>Password</span><input name="password" type="password" autocomplete="new-password" required minlength="8" /></label>
+            <label><span>Confirm Password</span><input name="confirmPassword" type="password" autocomplete="new-password" required minlength="8" /></label>
+            <button class="btn primary" type="submit" id="successSetPasswordSubmitBtn">Set Password</button>
+            <div id="successSetPasswordResult" class="result hidden"></div>
+          </form>
+        ` : ''}
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
         ${getAuthToken() ? `<button class="btn secondary small" type="button" onclick="setActiveView('jobs')">View My Bookings</button>` : ''}
-        ${isGuest ? `<button class="btn secondary small" type="button" id="successCreateAccountBtn">Create Account to Track This Booking</button>` : ''}
+        ${isGuest && !canSetPassword ? `<button class="btn secondary small" type="button" id="successCreateAccountBtn">Log In / Create Account</button>` : ''}
         <button class="btn ghost small" type="button" onclick="setActiveView('quote')">Return Home</button>
       </div>
     </div>`;
 
-  if (isGuest) {
+  if (canSetPassword) {
+    byId('successCreateAccountBtn')?.addEventListener('click', () => {
+      byId('successSetPasswordForm')?.classList.toggle('hidden');
+    });
+    byId('successSetPasswordForm')?.addEventListener('submit', submitSuccessSetPassword);
+  } else if (isGuest) {
     byId('successCreateAccountBtn')?.addEventListener('click', () => {
       byId('openAuth')?.click();
     });
+  }
+}
+
+async function submitSuccessSetPassword(event) {
+  event.preventDefault();
+  const form = event.target;
+  const btn = byId('successSetPasswordSubmitBtn');
+  const result = byId('successSetPasswordResult');
+  const fd = new FormData(form);
+  const password = String(fd.get('password') || '');
+  const confirmPassword = String(fd.get('confirmPassword') || '');
+
+  if (password !== confirmPassword) {
+    if (result) {
+      result.innerHTML = '<strong>Passwords do not match.</strong>';
+      result.classList.remove('hidden');
+    }
+    return;
+  }
+
+  if (btn) { btn.disabled = true; btn.textContent = 'Setting password...'; }
+  try {
+    const data = await api('/api/auth/set-password', {
+      method: 'POST',
+      body: JSON.stringify({ token: fd.get('token'), password }),
+    });
+    setAuthToken(data.token);
+    state.currentUser = data.user;
+    updateSessionStatus(data.user);
+    applyRoleVisibility();
+    if (result) {
+      result.innerHTML = '<strong>Password set.</strong> You can now manage your bookings.';
+      result.classList.remove('hidden');
+    }
+    form.querySelectorAll('input,button').forEach((el) => { el.disabled = true; });
+    await loadMyJobs().catch(() => {});
+    showSuccess('Account ready');
+  } catch (error) {
+    if (result) {
+      result.innerHTML = `<strong>Could not set password:</strong> ${escapeHtml(prettyApiError(error))}`;
+      result.classList.remove('hidden');
+    }
+    if (btn) { btn.disabled = false; btn.textContent = 'Set Password'; }
   }
 }
 
@@ -4585,7 +5244,7 @@ function renderCheckoutSuccess(session) {
     lookupParcel().catch((error) => showWarning(prettyApiError(error)));
   } else {
     updateMowAreaHelper(0, 0);
-    showQuoteFlowStep('start', { scroll: false });
+    showQuoteFlowStep(state.quoteFlowStep || 'start', { scroll: false });
   }
   updateQuoteFlowState();
 })();

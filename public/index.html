@@ -5,19 +5,17 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>MowNWA | Fast Lawn Mowing Quotes in Northwest Arkansas</title>
   <meta name="description" content="Get fast lawn mowing quotes in Northwest Arkansas. Enter your address, estimate your yard, and request mowing or yard cleanup service in minutes." />
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
-  <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" />
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" crossorigin="" />
   <link rel="icon" href="/assets/brand/mownwa_logo.png">
   <link rel="stylesheet" href="/styles.css" />
 </head>
 
-<body>
+<body data-active-view="dashboard">
 <div id="toastLayer" class="toast-layer" aria-live="polite" aria-atomic="true"></div>
 
 <header class="app-topbar">
   <button class="app-brand-btn" type="button" data-jump-view="quote" aria-label="MowNWA home">
-    <img src="/assets/brand/mownwa_logo.png" alt="MowNWA / TurfLynk logo" class="app-brand-logo">
-    <strong class="app-brand-wordmark">MowNWA</strong>
+    <img src="/assets/brand/mownwa-logo-desktop.png" alt="MowNWA logo" class="app-brand-logo">
   </button>
   <span id="mobileViewTitle" class="topbar-view-chip"></span>
   <div class="app-topbar-actions">
@@ -68,7 +66,7 @@
     <h4 class="drawer-section-label">My Account</h4>
     <button type="button" data-drawer-view="jobs" class="drawer-btn">
       <svg class="drawer-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v2"/></svg>
-      My Bookings
+      Recent Jobs
     </button>
   </div>
 
@@ -92,7 +90,7 @@
       <svg class="drawer-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
       Provider Dashboard
     </button>
-    <button type="button" data-drawer-view="jobs" class="drawer-btn">Open Jobs</button>
+    <button type="button" data-drawer-view="jobs" class="drawer-btn">Recent Jobs</button>
   </div>
 
   <!-- Admin — shown to admin role only -->
@@ -102,16 +100,16 @@
       <svg class="drawer-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
       Admin Login
     </button>
-    <button type="button" class="admin-only-nav drawer-btn" data-drawer-view="admin" style="display:none">Leads / Jobs</button>
-    <button type="button" class="admin-only-nav drawer-btn" data-drawer-view="admin" style="display:none">Pricing</button>
-    <button type="button" class="admin-only-nav drawer-btn" data-drawer-view="admin" style="display:none">Services</button>
-    <button type="button" class="admin-only-nav drawer-btn" data-drawer-view="admin" style="display:none">Regions</button>
+    <button type="button" class="admin-only-nav drawer-btn" data-drawer-view="admin" data-scroll-target="adminRecentActivityPanel" style="display:none">Recent Activity</button>
+    <button type="button" class="admin-only-nav drawer-btn" data-drawer-view="admin" data-scroll-target="adminRecentJobsPanel" style="display:none">Recent Jobs</button>
+    <button type="button" class="admin-only-nav drawer-btn" data-drawer-view="admin" data-scroll-target="leadsPanel" style="display:none">Leads / Jobs</button>
+    <button type="button" class="admin-only-nav drawer-btn" data-drawer-view="admin" data-scroll-target="adminControlsWrap" style="display:none">Pricing</button>
   </div>
 </aside>
 
 <div class="auth-bar">
   <div class="mobile-brand">MowNWA</div>
-  <button id="openAuth" class="btn secondary" type="button">Login / Signup</button>
+  <button class="btn secondary" type="button" data-open-auth>Login / Signup</button>
 </div>
 
 <!-- Auth-gate modal: shown when a non-logged-in user tries to book a service -->
@@ -176,11 +174,13 @@
       </div>
 
       <nav class="side-nav" aria-label="Main">
-        <button class="nav-btn" data-view="dashboard">Home</button>
-        <button class="nav-btn active" data-view="quote">Get a Quote</button>
-        <button class="nav-btn" data-view="jobs">Jobs</button>
+        <button class="nav-btn active" data-view="dashboard">Home</button>
+        <button class="nav-btn" data-view="quote">Get a Quote</button>
+        <button class="nav-btn" data-view="jobs">Recent Jobs</button>
         <button class="nav-btn" data-view="providers">Providers</button>
         <button class="nav-btn admin-only-nav" data-view="admin" style="display:none">Admin</button>
+        <button class="nav-btn admin-only-nav" data-view="admin" data-scroll-target="adminRecentActivityPanel" style="display:none">Recent Activity</button>
+        <button class="nav-btn admin-only-nav" data-view="admin" data-scroll-target="adminRecentJobsPanel" style="display:none">Recent Jobs</button>
       </nav>
 
       <div class="sidebar-card">
@@ -201,98 +201,127 @@
         </div>
       </header>
 
-      <section class="view" data-view-panel="dashboard">
+      <section class="view active" data-view-panel="dashboard">
+        <!-- JS-filled local city panel -->
         <section class="panel local-landing-panel hidden" id="localLandingPanel" style="margin-bottom:20px"></section>
 
-        <div class="section-grid dashboard-grid">
-          <section class="panel hero-panel mownwa-hero">
-            <div class="pill">Northwest Arkansas</div>
-            <h2 id="homeHeroTitle">Fast Lawn Mowing Quotes in Northwest Arkansas</h2>
-            <p class="section-copy" id="homeHeroSubtitle">Enter your address, estimate your yard, and request mowing or yard cleanup service in minutes. No account required to get started.</p>
-            <div class="hero-actions">
-              <button class="btn primary hero-cta" type="button" data-jump-view="quote">Get My Lawn Quote</button>
-              <button class="btn secondary" type="button" data-jump-view="quote" data-service-type="yard_cleanup">Request Yard Cleanup</button>
+        <div class="mownwa-landing" aria-label="MowNWA landing page">
+          <header class="mownwa-landing-header">
+            <div class="mownwa-landing-inner mownwa-landing-header-inner">
+              <img src="/assets/brand/mownwa-logo-desktop.png" alt="MowNWA" class="mownwa-landing-logo">
+              <button id="openAuth" class="mownwa-login-btn" type="button">Login</button>
             </div>
-            <div class="service-tags" id="homeServiceTags">
-              <span class="pill muted">Mowing</span>
-              <span class="pill muted">Edging</span>
-              <span class="pill muted">Leaf Cleanup</span>
-              <span class="pill muted">Brush Cleanup</span>
-              <span class="pill muted">Yard Cleanup</span>
-              <span class="pill muted">Landscaping</span>
-              <span class="pill muted">Hauling</span>
-            </div>
-          </section>
+          </header>
 
-          <section class="panel metrics-panel admin-only">
-            <div id="adminMetrics" class="metrics"></div>
-          </section>
+          <main class="mownwa-landing-main">
+            <section class="mownwa-hero" aria-label="Fast lawn quotes">
+              <picture class="mownwa-hero-picture">
+                <source srcset="/assets/brand/hero-mobile.png" media="(max-width: 767px)">
+                <img src="/assets/brand/hero-desktop.png" alt="Freshly mowed Northwest Arkansas lawn" class="mownwa-hero-img">
+              </picture>
+              <div class="mownwa-landing-inner mownwa-hero-overlay">
+                <div class="mownwa-hero-copy">
+                  <h2 id="homeHeroTitle">FAST LAWN QUOTES.<br>EASY ONLINE BOOKING.</h2>
+                  <p id="homeHeroSubtitle">No calls. No waiting.<br>Just simple, transparent pricing.</p>
+                </div>
+              </div>
+            </section>
+
+            <section class="mownwa-feature-strip" aria-label="MowNWA benefits">
+              <article class="mownwa-feature">
+                <svg class="mownwa-feature-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 10c0 5.25-8 11-8 11S4 15.25 4 10a8 8 0 1 1 16 0Z"/><circle cx="12" cy="10" r="2.6"/></svg>
+                <h3>Map Your Yard</h3>
+                <p>Trace the mowable area online.</p>
+              </article>
+              <article class="mownwa-feature">
+                <svg class="mownwa-feature-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2v4"/><path d="M16 2v4"/><rect x="3" y="4" width="18" height="18" rx="3"/><path d="M3 10h18"/><path d="m9 16 2 2 4-5"/></svg>
+                <h3>Pick a Time</h3>
+                <p>Choose service when it works.</p>
+              </article>
+              <article class="mownwa-feature">
+                <svg class="mownwa-feature-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/><path d="m9 12 2 2 4-5"/></svg>
+                <h3>Book Securely</h3>
+                <p>Transparent pricing before you book.</p>
+              </article>
+              <article class="mownwa-feature mownwa-nwa-panel">
+                <img src="/assets/brand/Arkansas.png" alt="Arkansas" class="mownwa-nwa-map">
+                <div class="mownwa-nwa-copy">
+                  <span>Proudly Serving</span>
+                  <strong>Northwest Arkansas</strong>
+                  <p>Bentonville &bull; Rogers &bull; Springdale</p>
+                  <p>Fayetteville &amp; Surrounding Areas</p>
+                </div>
+              </article>
+            </section>
+
+            <section class="mownwa-steps" aria-label="Get your lawn quote in 3 simple steps">
+              <div class="mownwa-landing-inner">
+                <h2>GET YOUR LAWN QUOTE IN 3 SIMPLE STEPS</h2>
+                <div class="mownwa-step-grid">
+                  <article class="mownwa-step-card">
+                    <div class="mownwa-step-number">1</div>
+                    <svg class="mownwa-step-icon" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 31 18 10l22 8-8 21-24-8Z"/><path d="m18 10 5 22"/><path d="m40 18-17 14"/><circle cx="18" cy="10" r="2"/><circle cx="40" cy="18" r="2"/><circle cx="32" cy="39" r="2"/><circle cx="8" cy="31" r="2"/></svg>
+                    <h3>Draw Your Area</h3>
+                    <p>Use the map tool to outline the lawn you want mowed.</p>
+                  </article>
+                  <article class="mownwa-step-card">
+                    <div class="mownwa-step-number">2</div>
+                    <svg class="mownwa-step-icon" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M24 6v36"/><path d="M31 13H20a7 7 0 0 0 0 14h8a7 7 0 0 1 0 14H16"/></svg>
+                    <h3>Review Your Quote</h3>
+                    <p>See a clear price based on your yard and selected service.</p>
+                  </article>
+                  <article class="mownwa-step-card">
+                    <div class="mownwa-step-number">3</div>
+                    <svg class="mownwa-step-icon" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5v8"/><path d="M33 5v8"/><rect x="7" y="9" width="34" height="34" rx="5"/><path d="M7 19h34"/><path d="m17 31 5 5 10-12"/></svg>
+                    <h3>Choose a Time</h3>
+                    <p>Send the request and let a local crew handle the rest.</p>
+                  </article>
+                </div>
+              </div>
+            </section>
+
+            <section class="mownwa-start-cta" aria-label="Start your quote">
+              <button class="mownwa-start-btn" type="button" data-jump-view="quote">START YOUR QUOTE</button>
+            </section>
+          </main>
         </div>
 
-        <div class="section-grid two-up">
-          <section class="panel">
-            <div class="panel-head">
-              <h3>NWA Service Area</h3>
-              <span class="pill muted">Company mode</span>
-            </div>
-            <div id="nwaTownsList" class="nwa-towns-grid">
-              <span>Fayetteville</span><span>Springdale</span><span>Rogers</span><span>Bentonville</span>
-              <span>Bella Vista</span><span>Lowell</span><span>Centerton</span><span>Farmington</span>
-              <span>Prairie Grove</span><span>Siloam Springs</span><span>Cave Springs</span><span>Pea Ridge</span>
-              <span>Tontitown</span><span>Johnson</span><span>Elkins</span><span>Greenland</span>
-            </div>
-            <div id="coverageGrid" class="card-grid" style="margin-top:12px"></div>
-          </section>
+        <!-- Hidden secondary anchors preserved for existing JS-rendered local content. -->
+        <section class="homepage-secondary-content hidden" data-secondary-home-section hidden aria-label="Secondary homepage content">
+          <div id="homeServiceTags" hidden></div>
+          <div id="nwaTownsList" class="nwa-towns-grid" hidden></div>
+          <div id="coverageGrid" class="card-grid" hidden></div>
+        </section>
 
-          <section class="panel admin-only">
-            <div class="panel-head">
-              <h3>Recent Activity</h3>
-              <button class="btn secondary small" id="refreshAdmin" type="button">Refresh</button>
-            </div>
-            <div class="stack-cols">
-              <div>
-                <h4>Latest Quotes</h4>
-                <div id="latestQuotes" class="card-list compact"></div>
+        <!-- ── Secondary local content (mobile/services-linked, hidden on initial homepage) ── -->
+        <section class="homepage-secondary-content hidden" data-secondary-home-section hidden aria-label="Local lawn care service details">
+          <div class="section-grid two-up local-content-grid" style="margin-top:20px">
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Popular Lawn Care Services</h3>
+                <span class="pill muted">Estimate first</span>
               </div>
-              <div>
-                <h4>Latest Jobs</h4>
-                <div id="latestJobs" class="card-list compact"></div>
+              <div id="popularServicesGrid" class="card-grid"></div>
+            </section>
+            <section class="panel">
+              <div class="panel-head">
+                <h3>How TurfLynk Works</h3>
+                <span class="pill muted">No signup to estimate</span>
               </div>
-              <div>
-                <h4>Latest Providers</h4>
-                <div id="latestProviders" class="card-list compact"></div>
-              </div>
-            </div>
-          </section>
-        </div>
-
-        <div class="section-grid two-up local-content-grid">
-          <section class="panel">
-            <div class="panel-head">
-              <h3>Popular Lawn Care Services</h3>
-              <span class="pill muted">Estimate first</span>
-            </div>
-            <div id="popularServicesGrid" class="card-grid"></div>
-          </section>
-
-          <section class="panel">
-            <div class="panel-head">
-              <h3>How TurfLynk Works</h3>
-              <span class="pill muted">No signup to estimate</span>
-            </div>
-            <div id="howItWorksGrid" class="card-list compact"></div>
-          </section>
-        </div>
-
-        <section class="panel local-faq-panel">
-          <div class="panel-head">
-            <h3>Lawn Care Estimate FAQ</h3>
+              <div id="howItWorksGrid" class="card-list compact"></div>
+            </section>
           </div>
-          <div id="homeFaqGrid" class="card-grid"></div>
+
+          <section class="panel local-faq-panel" style="margin-top:20px">
+            <div class="panel-head">
+              <h3>Lawn Care Estimate FAQ</h3>
+            </div>
+            <div id="homeFaqGrid" class="card-grid"></div>
+          </section>
         </section>
       </section>
 
-      <section class="view active" data-view-panel="quote">
+      <section class="view" data-view-panel="quote">
         <div class="quote-stepper" id="quoteStepper" aria-label="Quote progress" role="progressbar">
           <div class="qs-step qs-active" data-qs-step="1"><div class="qs-dot">1</div><div class="qs-label">Address</div></div>
           <div class="qs-line"></div>
@@ -330,13 +359,14 @@
             <input type="hidden" name="parcelId" />
 
             <section class="quote-flow-screen is-active" id="quoteStartScreen" data-quote-step-panel="start">
-              <div class="start-hero quote-hero-cover">
-                <div class="quote-hero-inner">
-                  <img src="/assets/brand/mownwa_logo.png" alt="MowNWA / TurfLynk logo" class="quote-hero-logo">
+              <div class="quote-hero-card">
+                <div class="quote-hero-copy">
+                  <img src="/assets/brand/mownwa_logo.png" alt="MowNWA logo" class="quote-hero-logo">
                   <h2>Fast lawn mowing estimates</h2>
                   <p>Draw the area you want mowed, review the price, and request service.</p>
                   <div class="quote-hero-badge">Northwest Arkansas lawn care made simple</div>
                 </div>
+                <img src="/assets/brand/mownwa_cover_photo.png" alt="Lawn mowing in Northwest Arkansas" class="quote-hero-photo">
               </div>
 
               <div class="flow-card">
@@ -349,15 +379,27 @@
                   <button class="btn primary" type="button" id="locateAddressBtn">Get Estimate</button>
                   <button class="btn ghost" type="button" id="clearQuoteDraftBtn">Reset</button>
                 </div>
+                <div class="gps-location-row">
+                  <button class="btn ghost gps-btn" type="button" id="useLocationBtn">Use My Current Location</button>
+                  <p class="gps-helper-text">Works best when you're at the property.</p>
+                </div>
+                <div id="gpsStatusMsg" class="gps-status hidden"></div>
               </div>
             </section>
 
-            <section class="quote-flow-screen" id="quoteParcelScreen" data-quote-step-panel="parcel">
+            <section class="quote-flow-screen hidden" id="quoteParcelScreen" data-quote-step-panel="parcel" hidden>
               <div class="flow-screen-head">
                 <button class="flow-back-btn" type="button" data-quote-back="start">Back</button>
                 <div>
                   <h2>Parcel Found</h2>
                   <p>Confirm the property before drawing your mowing area.</p>
+                </div>
+              </div>
+              <div id="gpsConfirmBar" class="gps-confirm-bar hidden">
+                <p class="gps-confirm-msg">We found a parcel near your current location. Is this the property?</p>
+                <div class="gps-confirm-actions">
+                  <button class="btn primary" type="button" id="gpsConfirmYesBtn">Yes, use this parcel</button>
+                  <button class="btn ghost" type="button" id="gpsConfirmNoBtn">No, search manually</button>
                 </div>
               </div>
               <div id="parcelInfo" class="parcel-found-card result hidden"></div>
@@ -375,7 +417,9 @@
               </div>
             </section>
 
-            <section class="quote-flow-screen draw-screen" id="quoteDrawScreen" data-quote-step-panel="draw">
+            <section class="quote-flow-screen draw-screen hidden" id="quoteDrawScreen" data-quote-step-panel="draw" hidden>
+              <div id="mowAreaHelper" class="draw-helper-text">Drag around the grass area. Lift your finger to finish.</div>
+
               <div class="map-stage">
                 <div id="quoteMap" class="map-panel"></div>
                 <div id="useThisParcelBar" class="use-parcel-bar hidden">
@@ -385,45 +429,42 @@
                     <button class="btn ghost small" type="button" id="useThisParcelCancelBtn">Cancel</button>
                   </div>
                 </div>
-                <div class="map-credit">Map powered by Leaflet. Imagery/map data &copy; respective providers.</div>
+                <div class="map-credit">Map powered by MapLibre. Tiles Esri.</div>
               </div>
 
               <button class="btn secondary map-tools-toggle hidden" type="button" id="mapToolsToggle">Adjust Area</button>
               <div class="map-tools-panel" id="mapToolsPanel">
-                <div class="map-tools-head">
-                  <div>
-                    <strong>Draw Mowable Area</strong>
-                    <span>Trace only the lawn that should be priced.</span>
-                  </div>
+                <div class="map-tools-status">
+                  <div id="mowEditorMode" class="status-chip">Mode: Ready</div>
                   <button class="app-icon-btn" type="button" id="closeMapTools">Close</button>
                 </div>
-                <div class="editor-status-row">
-                  <div id="mowEditorMode" class="status-chip">Mode: Ready</div>
-                  <div id="mowAreaHelper" class="status-chip wide">Tap Draw Area, trace the lawn, then continue.</div>
-                </div>
                 <div class="tool-row major-tools">
-                  <button class="btn secondary" type="button" id="useParcelShapeBtn">Use Parcel</button>
                   <button class="btn primary" type="button" id="lassoYardBtn">Draw Area</button>
-                  <button class="btn secondary" type="button" id="finishLassoBtn">Finish</button>
                   <button class="btn secondary" type="button" id="drawMowableBtn">Redraw</button>
                   <button class="btn secondary" type="button" id="editMowableBtn">Edit Area</button>
-                  <button class="btn secondary" type="button" id="deleteMowableBtn">Delete Area</button>
                   <button class="btn secondary utility-only" type="button" id="cutMowableBtn">Cut Out</button>
-                  <button class="btn primary" type="button" id="saveAreaBtn">Save</button>
-                  <button class="btn secondary" type="button" id="cancelEditAreaBtn">Cancel</button>
+                  <button class="btn secondary" type="button" id="deleteMowableBtn">Delete Area</button>
                   <button class="btn ghost" type="button" id="clearMowAreaBtn">Clear</button>
                   <button class="btn ghost utility-only" type="button" id="undoCutBtn">Undo Cut</button>
+                  <button class="btn secondary" type="button" id="finishLassoBtn">Finish</button>
+                  <button class="btn secondary" type="button" id="useParcelShapeBtn">Use Parcel</button>
+                  <button class="btn primary" type="button" id="saveAreaBtn">Save</button>
+                  <button class="btn secondary" type="button" id="cancelEditAreaBtn">Cancel</button>
                   <button class="btn secondary" type="button" id="aiRefineMowableBtn" style="display:none;">AI Refine Area</button>
                   <button class="btn secondary" id="applyAiCutoutsBtn" style="display:none;">Apply Cutouts</button>
                   <button class="btn secondary" type="button" id="editAiCutoutsBtn" style="display:none;">Edit AI Cutouts</button>
                   <button id="aiDetectGrassBtn" style="display:none;">AI Detect Grass</button>
                   <div id="aiDetectGrassStatus" style="display:none;"></div>
                 </div>
-                <button class="btn primary bottom-sheet-continue" type="button" id="drawContinueBtn">Continue</button>
+              </div>
+
+              <div class="draw-action-bar">
+                <button class="btn secondary" type="button" data-quote-back="parcel">Back</button>
+                <button class="btn primary" type="button" id="drawContinueBtn">Next</button>
               </div>
             </section>
 
-            <section class="quote-flow-screen" id="quoteEstimateScreen" data-quote-step-panel="estimate">
+            <section class="quote-flow-screen hidden" id="quoteEstimateScreen" data-quote-step-panel="estimate" hidden>
               <div class="flow-screen-head">
                 <button class="flow-back-btn" type="button" data-quote-back="draw">Back</button>
                 <div>
@@ -541,12 +582,27 @@
               </section>
 
               <button class="btn primary request-service-cta hidden" type="button" id="requestServiceBtn">Continue to Secure Checkout</button>
+              <div class="quote-help-inline" aria-label="Quote help links">
+                <span>Questions?</span>
+                <a href="https://wa.me/1XXXXXXXXXX?text=Hi%20I%20have%20a%20question%20about%20my%20quote" target="_blank" rel="noopener" aria-label="Ask a question on WhatsApp">
+                  <svg class="contact-icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M12.04 2a9.9 9.9 0 0 0-8.46 15.02L2.4 21.6l4.69-1.12A9.93 9.93 0 1 0 12.04 2Zm0 1.85a8.08 8.08 0 1 1-4.14 15l-.3-.18-2.53.6.64-2.45-.2-.32a8.08 8.08 0 0 1 6.53-12.65Zm-3.55 4.4c-.18 0-.47.07-.72.34-.24.27-.94.92-.94 2.24s.97 2.6 1.1 2.78c.14.18 1.87 2.99 4.62 4.06 2.28.89 2.75.71 3.24.67.5-.05 1.6-.65 1.83-1.29.22-.63.22-1.17.16-1.28-.07-.12-.25-.18-.52-.32-.27-.13-1.6-.79-1.85-.88-.25-.09-.43-.13-.61.14-.18.26-.7.87-.86 1.05-.16.18-.32.2-.59.07-.27-.14-1.14-.42-2.17-1.34-.8-.71-1.34-1.6-1.5-1.86-.16-.27-.02-.42.12-.55.12-.12.27-.32.4-.47.14-.16.18-.27.27-.45.09-.18.05-.34-.02-.47-.07-.14-.61-1.47-.84-2.01-.22-.52-.45-.45-.61-.46h-.52Z"/>
+                  </svg>
+                  <span>WhatsApp</span>
+                </a>
+                <a href="https://m.me/YOUR_PAGE_NAME" target="_blank" rel="noopener" aria-label="Ask a question on Messenger">
+                  <svg class="contact-icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M12 2C6.48 2 2.25 6.03 2.25 11.47c0 2.84 1.16 5.3 3.04 7l-.63 3.34 3.39-1.86c1.17.43 2.5.67 3.95.67 5.52 0 9.75-4.03 9.75-9.47S17.52 2 12 2Zm1 12.75-2.5-2.66-4.88 2.66 5.35-5.67 2.56 2.66 4.81-2.66L13 14.75Z"/>
+                  </svg>
+                  <span>Messenger</span>
+                </a>
+              </div>
               <p class="meta hidden" id="checkoutTestModeNote" style="margin:8px 0 0">Stripe test checkout enabled. Use card 4242 4242 4242 4242.</p>
-              <button class="btn primary" type="submit" id="getEstimateBtn">Refresh Estimate</button>
+              <button class="btn primary" type="submit" id="getEstimateBtn">Recalculate</button>
             </section>
           </form>
 
-          <section id="leadRequestPanel" class="quote-flow-screen lead-request-panel hidden" data-quote-step-panel="request">
+          <section id="leadRequestPanel" class="quote-flow-screen lead-request-panel hidden" data-quote-step-panel="request" hidden>
             <div class="flow-screen-head">
               <button class="flow-back-btn" type="button" data-quote-back="estimate">Back</button>
               <div>
@@ -1009,6 +1065,37 @@
           <button class="btn primary" type="button" onclick="document.getElementById('openAuth').click()">Log In</button>
         </div>
 
+        <section class="panel admin-only" id="adminMetricsPanel" style="margin-bottom:20px">
+          <div class="panel-head">
+            <h2>Admin Metrics</h2>
+          </div>
+          <div id="adminMetrics" class="metrics"></div>
+        </section>
+
+        <section class="panel admin-only" id="adminRecentActivityPanel" style="margin-bottom:20px">
+          <div class="panel-head">
+            <div>
+              <h2>Recent Activity</h2>
+              <p class="section-copy" style="margin:0">Admin-only quote and provider activity.</p>
+            </div>
+            <button class="btn secondary small" id="refreshAdmin" type="button">Refresh</button>
+          </div>
+          <div class="stack-cols">
+            <div><h4>Latest Quotes</h4><div id="latestQuotes" class="card-list compact"></div></div>
+            <div><h4>Latest Providers</h4><div id="latestProviders" class="card-list compact"></div></div>
+          </div>
+        </section>
+
+        <section class="panel admin-only" id="adminRecentJobsPanel" style="margin-bottom:20px">
+          <div class="panel-head">
+            <div>
+              <h2>Recent Jobs</h2>
+              <p class="section-copy" style="margin:0">Admin-only recent job history.</p>
+            </div>
+          </div>
+          <div id="latestJobs" class="card-list compact"></div>
+        </section>
+
         <!-- Paid Jobs panel -->
         <section class="panel" id="adminPaidJobsPanel" style="margin-bottom:20px">
           <div class="panel-head">
@@ -1091,6 +1178,21 @@
           </section>
         </div><!-- /adminControlsWrap -->
       </section>
+      <footer class="site-footer-contact" aria-label="Support links">
+        <span>Need help?</span>
+        <a href="https://wa.me/1XXXXXXXXXX?text=Hi%20I%20have%20a%20question%20about%20my%20quote" target="_blank" rel="noopener" aria-label="Contact TurfLynk on WhatsApp">
+          <svg class="contact-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12.04 2a9.9 9.9 0 0 0-8.46 15.02L2.4 21.6l4.69-1.12A9.93 9.93 0 1 0 12.04 2Zm0 1.85a8.08 8.08 0 1 1-4.14 15l-.3-.18-2.53.6.64-2.45-.2-.32a8.08 8.08 0 0 1 6.53-12.65Zm-3.55 4.4c-.18 0-.47.07-.72.34-.24.27-.94.92-.94 2.24s.97 2.6 1.1 2.78c.14.18 1.87 2.99 4.62 4.06 2.28.89 2.75.71 3.24.67.5-.05 1.6-.65 1.83-1.29.22-.63.22-1.17.16-1.28-.07-.12-.25-.18-.52-.32-.27-.13-1.6-.79-1.85-.88-.25-.09-.43-.13-.61.14-.18.26-.7.87-.86 1.05-.16.18-.32.2-.59.07-.27-.14-1.14-.42-2.17-1.34-.8-.71-1.34-1.6-1.5-1.86-.16-.27-.02-.42.12-.55.12-.12.27-.32.4-.47.14-.16.18-.27.27-.45.09-.18.05-.34-.02-.47-.07-.14-.61-1.47-.84-2.01-.22-.52-.45-.45-.61-.46h-.52Z"/>
+          </svg>
+          <span>WhatsApp</span>
+        </a>
+        <a href="https://m.me/YOUR_PAGE_NAME" target="_blank" rel="noopener" aria-label="Contact TurfLynk on Messenger">
+          <svg class="contact-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 2C6.48 2 2.25 6.03 2.25 11.47c0 2.84 1.16 5.3 3.04 7l-.63 3.34 3.39-1.86c1.17.43 2.5.67 3.95.67 5.52 0 9.75-4.03 9.75-9.47S17.52 2 12 2Zm1 12.75-2.5-2.66-4.88 2.66 5.35-5.67 2.56 2.66 4.81-2.66L13 14.75Z"/>
+          </svg>
+          <span>Messenger</span>
+        </a>
+      </footer>
     </main>
   </div>
 
@@ -1115,10 +1217,13 @@
       <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
       Admin
     </button>
+    <button class="nav-btn admin-only-nav" data-view="admin" data-scroll-target="adminRecentActivityPanel" style="display:none">
+      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19V5"/><path d="M8 19V9"/><path d="M12 19V7"/><path d="M16 19v-5"/><path d="M20 19V11"/></svg>
+      Activity
+    </button>
   </nav>
 
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
-  <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js" crossorigin=""></script>
   <script src="https://cdn.jsdelivr.net/npm/proj4@2.11.0/dist/proj4.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
   

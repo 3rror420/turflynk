@@ -20,3 +20,22 @@ test('config endpoint works', async ({ request }) => {
   const body = await res.json();
   expect(body.siteBrand || body.appName).toBeTruthy();
 });
+
+test('quote flow only shows active step', async ({ page }) => {
+  await page.goto('http://127.0.0.1:3000/');
+
+  await page.evaluate(() => {
+    window.setActiveView?.('quote');
+    window.showQuoteFlowStep?.('start', { scroll: false });
+  });
+
+  await expect(page.locator('#quoteStartScreen')).toBeVisible();
+  await expect(page.locator('#quoteEstimateScreen')).toBeHidden();
+
+  await page.evaluate(() => {
+    window.showQuoteFlowStep?.('estimate', { scroll: false });
+  });
+
+  await expect(page.locator('#quoteStartScreen')).toBeHidden();
+  await expect(page.locator('#quoteEstimateScreen')).toBeVisible();
+});

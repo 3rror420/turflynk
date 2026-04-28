@@ -8,6 +8,12 @@ const EPSG26915 = '+proj=utm +zone=15 +datum=NAD83 +units=m +no_defs';
 const PARCEL_FIT_OPTIONS = { padding: [40, 40], maxZoom: 18 };
 const DEFAULT_MAP_CENTER = [36.1867, -94.1288];
 const DEFAULT_MAP_ZOOM = 11;
+const ARKANSAS_BOUNDS = {
+  south: 33.0041,
+  west: -94.6179,
+  north: 36.4996,
+  east: -89.6448,
+};
 const MOWABLE_ESTIMATE_FIELDS = [
   'parcelAreaSqft',
   'buildingFootprintSqft',

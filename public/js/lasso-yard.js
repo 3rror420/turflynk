@@ -1,49 +1,26 @@
 (function () {
   let armed = false;
   let drawing = false;
+  let drawPurpose = 'mowable';
   let points = [];
-  let tempLine = null;
-  let scrollLocked = false;
-  let savedScrollY = 0;
-  let activeLayer = null;
+  let activePointerId = null;
 
   const SNAP_DIST_METERS = 4;
   const EDGE_RUN_MIN_POINTS = 3;
-  const CLOSE_DIST_METERS = 5;
   const MIN_POINT_SPACING_METERS = 1.25;
   const SMOOTH_TOLERANCE_METERS = 1.75;
   const STRONG_SMOOTH_TOLERANCE_METERS = 2.75;
   const MAX_POINTS = 48;
 
   function getMap() {
-    return window.map ||
-      (window.TurfLynkAppState && window.TurfLynkAppState.map) ||
-      null;
-  }
-
-  function getGroup() {
-    return window.drawnItems ||
-      window.mowLayerGroup ||
-      (window.TurfLynkAppState && window.TurfLynkAppState.drawGroup) ||
-      null;
+    return window.map || window.TurfLynkAppState?.map || null;
   }
 
   function getParcel() {
-    // Prefer live layer (most accurate)
-    if (window.parcelLayer && window.parcelLayer.toGeoJSON) {
-      return window.parcelLayer.toGeoJSON();
-    }
     const appState = window.TurfLynkAppState;
-    if (appState && appState.parcelLayer && appState.parcelLayer.toGeoJSON) {
-      return appState.parcelLayer.toGeoJSON();
-    }
-    // Fall back to raw geometry stored by exposeCurrentParcelGeometryForAi
+    if (appState?.parcelFeature) return appState.parcelFeature;
     const geom = window.currentParcelGeometry || window.parcelGeometry;
-    if (geom) {
-      return geom.type === 'Feature'
-        ? geom
-        : { type: 'Feature', geometry: geom, properties: {} };
-    }
+    if (geom) return geom.type === 'Feature' ? geom : { type: 'Feature', properties: {}, geometry: geom };
     return null;
   }
 
@@ -52,56 +29,81 @@
     if (el) el.textContent = text;
   }
 
-  function recalc() {
-    if (typeof window.syncMowAreaFromLayers === 'function') {
-      var _grp = getGroup();
-      var _layerCount = _grp ? _grp.getLayers().length : 0;
-      console.log('[TurfLynk Area Trace] A. lasso recalc() → syncMowAreaFromLayers | layers=' + _layerCount + ' source=lasso-yard.js');
-      window.syncMowAreaFromLayers();
-      return;
-    }
-    // Fallback: manual area calc
-    const group = getGroup();
-    const form = document.getElementById('quoteForm');
-    if (!group || !form) return;
-    let totalSqFt = 0;
-    group.getLayers().forEach(function (layer) {
-      try {
-        if (!layer.toGeoJSON || !window.turf) return;
-        totalSqFt += Math.round(turf.area(layer.toGeoJSON()) * 10.7639);
-      } catch {}
-    });
-    console.log('[TurfLynk Area Trace] A. lasso recalc() fallback | layers=' + group.getLayers().length + ' totalSqFt=' + totalSqFt + ' source=lasso-yard.js');
-    if (form.elements.mowAreaSqft) form.elements.mowAreaSqft.value = totalSqFt || '';
-    if (typeof window.updateEstimatePreview === 'function') window.updateEstimatePreview();
+  function setAppMapMode(mode) {
+    if (typeof window.setTurfLynkMapMode === 'function') window.setTurfLynkMapMode(mode);
+    else if (window.TurfLynkAppState) window.TurfLynkAppState.mapMode = mode;
+    document.body.dataset.mapMode = mode;
   }
 
-  // Use position:fixed scroll lock to avoid layout shift / map resize
+  function getAppMapMode() {
+    if (typeof window.getTurfLynkMapMode === 'function') return window.getTurfLynkMapMode();
+    return window.TurfLynkAppState?.mapMode || 'idle';
+  }
+
+  function setAppQuoteUiMode(mode) {
+    if (window.TurfLynkAppState) window.TurfLynkAppState.quoteUiMode = mode;
+    if (typeof window.updateQuoteFlowState === 'function') {
+      try { window.updateQuoteFlowState(); } catch {}
+    }
+  }
+
+  function setLassoTempLine(nextPoints = []) {
+    if (typeof window.setTurfLynkLassoTempLine === 'function') {
+      window.setTurfLynkLassoTempLine(nextPoints);
+    }
+  }
+
+  function setMapDrawingGestures(enabled) {
+    const map = getMap();
+    if (!map) return;
+    try {
+      if (enabled) map.dragPan.disable();
+      else map.dragPan.enable();
+    } catch {}
+    try {
+      if (enabled) map.doubleClickZoom.disable();
+      else map.doubleClickZoom.enable();
+    } catch {}
+    try {
+      if (enabled) map.dragRotate.disable();
+      else map.dragRotate.enable();
+    } catch {}
+  }
+
   function lockScroll() {
-    if (scrollLocked) return;
-    scrollLocked = true;
-    savedScrollY = window.scrollY || 0;
-    document.body.style.position = 'fixed';
-    document.body.style.top = '-' + savedScrollY + 'px';
-    document.body.style.width = '100%';
+    document.body.dataset.lassoDrawing = 'true';
   }
 
   function unlockScroll() {
-    if (!scrollLocked) return;
-    scrollLocked = false;
-    document.body.style.position = '';
-    document.body.style.top = '';
-    document.body.style.width = '';
-    window.scrollTo(0, savedScrollY);
-    // Repair Leaflet map size after body reflow
+    delete document.body.dataset.lassoDrawing;
     const map = getMap();
-    if (map) setTimeout(function () { map.invalidateSize(); }, 60);
+    if (map) setTimeout(function () { map.resize(); }, 60);
   }
 
-  // ── Parcel geometry helpers ───────────────────────────────────────────────
+  function setArmedState(nextArmed) {
+    armed = nextArmed;
+    if (nextArmed) document.body.dataset.lassoArmed = 'true';
+    else delete document.body.dataset.lassoArmed;
+  }
+
+  function isLassoMode() {
+    return armed && getAppMapMode() === 'lasso';
+  }
+
+  function recalc() {
+    if (typeof window.syncMowAreaFromLayers === 'function') {
+      window.syncMowAreaFromLayers();
+      return;
+    }
+    const appState = window.TurfLynkAppState;
+    const form = document.getElementById('quoteForm');
+    if (!appState?.mowableFeatureCollection || !form || !window.turf) return;
+    const totalSqFt = Math.round(turf.area(appState.mowableFeatureCollection) * 10.7639);
+    if (form.elements.mowAreaSqft) form.elements.mowAreaSqft.value = totalSqFt || '';
+  }
 
   function getParcelRing(parcel) {
-    if (!parcel || !parcel.geometry) return null;
+    if (!parcel?.geometry) return null;
     if (parcel.geometry.type === 'Polygon') return parcel.geometry.coordinates[0];
     if (parcel.geometry.type === 'MultiPolygon') return parcel.geometry.coordinates[0][0];
     return null;
@@ -112,42 +114,51 @@
     try { return turf.polygonToLine(parcel); } catch { return null; }
   }
 
-  function nearestBoundaryInfo(latlng, parcelLine) {
+  function nearestBoundaryInfo(point, parcelLine) {
     if (!window.turf || !parcelLine) return null;
-    const snapped = turf.nearestPointOnLine(
-      parcelLine,
-      turf.point([latlng.lng, latlng.lat]),
-      { units: 'meters' }
-    );
+    const snapped = turf.nearestPointOnLine(parcelLine, turf.point([point.lng, point.lat]), { units: 'meters' });
     return {
       dist: snapped.properties.dist,
       index: snapped.properties.index || 0,
-      coord: snapped.geometry.coordinates
+      coord: snapped.geometry.coordinates,
     };
   }
 
-  function snapPointLive(latlng) {
+  function snapPointLive(point) {
     const line = getParcelLine(getParcel());
-    if (!line) return latlng;
-    const info = nearestBoundaryInfo(latlng, line);
-    if (!info || info.dist > SNAP_DIST_METERS) return latlng;
-    return L.latLng(info.coord[1], info.coord[0]);
+    if (!line) return point;
+    const info = nearestBoundaryInfo(point, line);
+    if (!info || info.dist > SNAP_DIST_METERS) return point;
+    return { lng: info.coord[0], lat: info.coord[1] };
   }
 
   function sameCoord(a, b) {
     return Math.abs(a[0] - b[0]) < 0.00000001 && Math.abs(a[1] - b[1]) < 0.00000001;
   }
 
-  function pathDistance(coords) {
+  function distanceMeters(a, b) {
     const map = getMap();
-    if (!map) return 999999;
-    let total = 0;
-    for (let i = 1; i < coords.length; i++) {
-      total += map.distance(
-        L.latLng(coords[i - 1][1], coords[i - 1][0]),
-        L.latLng(coords[i][1], coords[i][0])
-      );
+    if (map) {
+      const pa = map.project([a.lng, a.lat]);
+      const pb = map.project([b.lng, b.lat]);
+      const metersPerPixel = 40075016.686 * Math.cos((a.lat * Math.PI) / 180) / Math.pow(2, map.getZoom() + 8);
+      return Math.hypot(pb.x - pa.x, pb.y - pa.y) * metersPerPixel;
     }
+    const lat1 = (a.lat * Math.PI) / 180;
+    const lat2 = (b.lat * Math.PI) / 180;
+    const dLat = lat2 - lat1;
+    const dLng = ((b.lng - a.lng) * Math.PI) / 180;
+    const x = dLng * Math.cos((lat1 + lat2) / 2);
+    return Math.sqrt(x * x + dLat * dLat) * 6371008.8;
+  }
+
+  function coordDistanceMeters(a, b) {
+    return distanceMeters({ lng: a[0], lat: a[1] }, { lng: b[0], lat: b[1] });
+  }
+
+  function pathDistance(coords) {
+    let total = 0;
+    for (let i = 1; i < coords.length; i++) total += coordDistanceMeters(coords[i - 1], coords[i]);
     return total;
   }
 
@@ -189,35 +200,35 @@
     return pathDistance(forward) <= pathDistance(backward) ? forward : backward;
   }
 
-  function snapFullEdges(latlngs) {
+  function snapFullEdges(inputPoints) {
     const parcel = getParcel();
     const ring = getParcelRing(parcel);
     const line = getParcelLine(parcel);
-    if (!parcel || !ring || !line || !window.turf) return latlngs;
+    if (!parcel || !ring || !line || !window.turf) return inputPoints;
 
-    const records = latlngs.map(function (p) {
-      const info = nearestBoundaryInfo(p, line);
-      return { latlng: p, info: info, near: info && info.dist <= SNAP_DIST_METERS };
+    const records = inputPoints.map(function (point) {
+      const info = nearestBoundaryInfo(point, line);
+      return { point, info, near: info && info.dist <= SNAP_DIST_METERS };
     });
 
     const output = [];
     let i = 0;
     while (i < records.length) {
       if (!records[i].near) {
-        output.push(records[i].latlng);
+        output.push(records[i].point);
         i++;
         continue;
       }
       let j = i;
       while (j < records.length && records[j].near) j++;
       if (j - i >= EDGE_RUN_MIN_POINTS) {
-        boundarySegment(ring, records[i].info, records[j - 1].info).forEach(function (c) {
-          output.push(L.latLng(c[1], c[0]));
+        boundarySegment(ring, records[i].info, records[j - 1].info).forEach(function (coord) {
+          output.push({ lng: coord[0], lat: coord[1] });
         });
       } else {
         for (let k = i; k < j; k++) {
-          const c = records[k].info.coord;
-          output.push(L.latLng(c[1], c[0]));
+          const coord = records[k].info.coord;
+          output.push({ lng: coord[0], lat: coord[1] });
         }
       }
       i = j;
@@ -225,384 +236,309 @@
     return output;
   }
 
-  function distanceMeters(a, b) {
-    const map = getMap();
-    if (map) return map.distance(a, b);
-    const lat1 = (a.lat * Math.PI) / 180;
-    const lat2 = (b.lat * Math.PI) / 180;
-    const dLat = lat2 - lat1;
-    const dLng = ((b.lng - a.lng) * Math.PI) / 180;
-    const x = dLng * Math.cos((lat1 + lat2) / 2);
-    const y = dLat;
-    return Math.sqrt(x * x + y * y) * 6371008.8;
-  }
-
-  function perpendicularDistanceMeters(p, a, b) {
-    const midLat = (((a.lat + b.lat + p.lat) / 3) * Math.PI) / 180;
+  function perpendicularDistanceMeters(point, a, b) {
+    const midLat = (((a.lat + b.lat + point.lat) / 3) * Math.PI) / 180;
     const metersPerDegLat = 111320;
     const metersPerDegLng = 111320 * Math.cos(midLat);
     const ax = a.lng * metersPerDegLng, ay = a.lat * metersPerDegLat;
     const bx = b.lng * metersPerDegLng, by = b.lat * metersPerDegLat;
-    const px = p.lng * metersPerDegLng, py = p.lat * metersPerDegLat;
+    const px = point.lng * metersPerDegLng, py = point.lat * metersPerDegLat;
     const dx = bx - ax, dy = by - ay;
     if (dx === 0 && dy === 0) return Math.hypot(px - ax, py - ay);
     const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)));
     return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
   }
 
-  function dropTinySteps(latlngs, minDistanceMeters) {
-    if (latlngs.length < 3) return latlngs;
-    const out = [latlngs[0]];
-    for (let i = 1; i < latlngs.length - 1; i++) {
-      if (distanceMeters(out[out.length - 1], latlngs[i]) >= minDistanceMeters) {
-        out.push(latlngs[i]);
-      }
+  function dropTinySteps(inputPoints, minDistanceMeters) {
+    if (inputPoints.length < 3) return inputPoints;
+    const out = [inputPoints[0]];
+    for (let i = 1; i < inputPoints.length - 1; i++) {
+      if (distanceMeters(out[out.length - 1], inputPoints[i]) >= minDistanceMeters) out.push(inputPoints[i]);
     }
-    const last = latlngs[latlngs.length - 1];
+    const last = inputPoints[inputPoints.length - 1];
     if (distanceMeters(out[out.length - 1], last) >= minDistanceMeters * 0.5) out.push(last);
-    return out.length >= 3 ? out : latlngs;
+    return out.length >= 3 ? out : inputPoints;
   }
 
-  function douglasPeucker(pointsIn, toleranceMeters) {
-    if (pointsIn.length <= 3) return pointsIn;
+  function douglasPeucker(inputPoints, toleranceMeters) {
+    if (inputPoints.length <= 3) return inputPoints;
     let maxDist = 0, index = 0;
-    const start = pointsIn[0], end = pointsIn[pointsIn.length - 1];
-    for (let i = 1; i < pointsIn.length - 1; i++) {
-      const dist = perpendicularDistanceMeters(pointsIn[i], start, end);
+    const start = inputPoints[0], end = inputPoints[inputPoints.length - 1];
+    for (let i = 1; i < inputPoints.length - 1; i++) {
+      const dist = perpendicularDistanceMeters(inputPoints[i], start, end);
       if (dist > maxDist) { index = i; maxDist = dist; }
     }
     if (maxDist > toleranceMeters) {
-      const left = douglasPeucker(pointsIn.slice(0, index + 1), toleranceMeters);
-      const right = douglasPeucker(pointsIn.slice(index), toleranceMeters);
+      const left = douglasPeucker(inputPoints.slice(0, index + 1), toleranceMeters);
+      const right = douglasPeucker(inputPoints.slice(index), toleranceMeters);
       return left.slice(0, -1).concat(right);
     }
     return [start, end];
   }
 
-  function simplifyLatLngs(latlngs, toleranceMeters) {
-    if (latlngs.length < 4) return latlngs;
+  function simplifyPoints(inputPoints, toleranceMeters) {
+    if (inputPoints.length < 4) return inputPoints;
     try {
-      const opened = dropTinySteps(latlngs, MIN_POINT_SPACING_METERS);
+      const opened = dropTinySteps(inputPoints, MIN_POINT_SPACING_METERS);
       const simplified = douglasPeucker(opened, toleranceMeters || SMOOTH_TOLERANCE_METERS);
-      return simplified.length >= 3 ? simplified : latlngs;
-    } catch { return latlngs; }
+      return simplified.length >= 3 ? simplified : inputPoints;
+    } catch {
+      return inputPoints;
+    }
   }
 
-  function clipToParcel(latlngs) {
-    const parcel = getParcel();
-    if (!parcel || !window.turf || latlngs.length < 4) return latlngs;
-    try {
-      const coords = latlngs.map(function (p) { return [p.lng, p.lat]; });
-      coords.push(coords[0]);
-      const poly = turf.polygon([coords]);
-      let clipped = null;
-      try { clipped = turf.intersect(poly, parcel); } catch {
-        clipped = turf.intersect(turf.featureCollection([poly, parcel]));
-      }
-      if (!clipped) return latlngs;
-      if (clipped.geometry.type === 'Polygon') {
-        return clipped.geometry.coordinates[0].slice(0, -1).map(function (c) {
-          return L.latLng(c[1], c[0]);
-        });
-      }
-      if (clipped.geometry.type === 'MultiPolygon') {
-        const biggest = clipped.geometry.coordinates
-          .map(function (c) { return turf.polygon(c); })
-          .sort(function (a, b) { return turf.area(b) - turf.area(a); })[0];
-        return biggest.geometry.coordinates[0].slice(0, -1).map(function (c) {
-          return L.latLng(c[1], c[0]);
-        });
-      }
-    } catch {}
-    return latlngs;
-  }
-
-  function polygonFeatureFromLatLngs(latlngs) {
-    if (!window.turf || !latlngs || latlngs.length < 3) return null;
-    const coords = latlngs.map(function (p) { return [p.lng, p.lat]; });
+  function polygonFeatureFromPoints(inputPoints) {
+    if (!window.turf || !inputPoints || inputPoints.length < 3) return null;
+    const coords = inputPoints.map(function (point) { return [point.lng, point.lat]; });
     coords.push(coords[0]);
     try {
-      return turf.polygon([coords], { source: 'mowable_lasso' });
+      return turf.polygon([coords], { source: drawPurpose === 'cut' ? 'mowable_cut' : 'mowable_lasso' });
     } catch {
       return null;
     }
   }
 
   function largestPolygonFeature(feature) {
-    if (!feature || !feature.geometry || !window.turf) return null;
+    if (!feature?.geometry || !window.turf) return null;
     if (feature.geometry.type === 'Polygon') return feature;
     if (feature.geometry.type !== 'MultiPolygon') return null;
-
     return feature.geometry.coordinates
-      .map(function (coords) {
-        return turf.polygon(coords, feature.properties || {});
-      })
-      .sort(function (a, b) {
-        return turf.area(b) - turf.area(a);
-      })[0] || null;
+      .map(function (coords) { return turf.polygon(coords, feature.properties || {}); })
+      .sort(function (a, b) { return turf.area(b) - turf.area(a); })[0] || null;
   }
 
-  function selectedMowableFeatureFromLasso(latlngs) {
-    const lasso = polygonFeatureFromLatLngs(latlngs);
+  function selectedMowableFeatureFromLasso(inputPoints) {
+    const lasso = polygonFeatureFromPoints(inputPoints);
     const parcel = getParcel();
-    if (!lasso || !window.turf || !parcel) return lasso;
+    if (!lasso || !window.turf || !parcel || drawPurpose === 'cut') return lasso;
 
     try {
       let clipped = null;
       try { clipped = turf.intersect(parcel, lasso); } catch {
         clipped = turf.intersect(turf.featureCollection([parcel, lasso]));
       }
-
       const selected = largestPolygonFeature(clipped);
       if (!selected) return lasso;
-
       const lassoArea = turf.area(lasso);
       const selectedArea = turf.area(selected);
       const parcelArea = turf.area(parcel);
-
-      console.log('[TurfLynk Area Trace] A. lasso intersect: lassoArea=' + Math.round(lassoArea * 10.7639) + ' selectedArea=' + Math.round(selectedArea * 10.7639) + ' parcelArea=' + Math.round(parcelArea * 10.7639) + ' sqft | source=selectedMowableFeatureFromLasso');
-
-      // Guard 1: A true intersection cannot be materially larger than the lasso.
-      // If Turf returns a parcel-sized shape from an invalid/self-crossed trace,
-      // keep the user-drawn lasso instead of pricing the inverse area.
-      if (lassoArea > 0 && selectedArea > lassoArea * 1.15 && selectedArea > parcelArea * 0.5) {
-        console.log('[TurfLynk Area Trace] A. guard1 fired: intersection bigger than lasso, using lasso sqft=' + Math.round(lassoArea * 10.7639));
-        return lasso;
-      }
-
-      // Guard 2: If the user drew a clearly smaller lasso (≤90% of parcel) but the
-      // intersection returned nearly the full parcel (≥95%), bad geometry occurred.
-      // Keep the original lasso polygon instead of pricing the whole lot.
-      if (parcelArea > 0 && lassoArea <= parcelArea * 0.90 && selectedArea >= parcelArea * 0.95) {
-        console.log('[TurfLynk Area Trace] A. guard2 fired: small lasso produced full-parcel intersection, using lasso sqft=' + Math.round(lassoArea * 10.7639));
-        return lasso;
-      }
-
+      if (lassoArea > 0 && selectedArea > lassoArea * 1.15 && selectedArea > parcelArea * 0.5) return lasso;
+      if (parcelArea > 0 && lassoArea <= parcelArea * 0.90 && selectedArea >= parcelArea * 0.95) return lasso;
       return selected;
     } catch {
       return lasso;
     }
   }
 
-  // ── Drawing state helpers ─────────────────────────────────────────────────
-
-  function stopTempLine() {
-    const map = getMap();
-    if (tempLine && map) map.removeLayer(tempLine);
-    tempLine = null;
-  }
-
-  function isNearStart(latlng) {
-    const map = getMap();
-    if (!map || points.length < 8) return false;
-    return map.distance(points[0], latlng) <= CLOSE_DIST_METERS;
-  }
-
-  // ── Edit mode ─────────────────────────────────────────────────────────────
-
-  function disableActiveEditing() {
-    if (activeLayer && activeLayer.editing) {
-      try { activeLayer.editing.disable(); } catch {}
-    }
-    activeLayer = null;
-    // Also clear any app-level edit toolbar handler
-    const appState = window.TurfLynkAppState;
-    if (appState && appState.editHandler) {
-      try { appState.editHandler.disable(); } catch {}
-      appState.editHandler = null;
-    }
-  }
-
-  function enableEditing(layer) {
-    disableActiveEditing();
-    activeLayer = layer;
-    // Prefer direct polygon editing (no Save/Cancel toolbar required)
-    if (layer.editing) {
-      try {
-        layer.editing.enable();
-        layer.on('edit', recalc);
-        setStatus('Mode: Drag vertices to adjust — draw again to replace');
-        return;
-      } catch (e) {
-        console.warn('lasso: direct editing failed', e);
-      }
-    }
-    // Fallback: use the app-level L.EditToolbar.Edit
-    if (typeof window.startEditMowable === 'function') {
-      setTimeout(window.startEditMowable, 100);
-    }
-  }
-
-  // ── Core lasso actions ────────────────────────────────────────────────────
-
-  function clearMowAreas() {
-    disableActiveEditing();
-    stopTempLine();
+  function cancelLasso() {
     points = [];
     drawing = false;
-    armed = false;
+    activePointerId = null;
+    setLassoTempLine([]);
+    setArmedState(false);
     unlockScroll();
-    const map = getMap();
-    if (map) {
-      map.dragging.enable();
-      map.doubleClickZoom.enable();
-      if (map.touchZoom) map.touchZoom.enable();
-    }
-    const group = getGroup();
-    if (group) group.clearLayers();
+    setMapDrawingGestures(false);
+    setAppQuoteUiMode('idle');
+    setAppMapMode('idle');
+  }
+
+  function clearMowAreas() {
+    cancelLasso();
+    if (typeof window.setTurfLynkMowableFeatures === 'function') window.setTurfLynkMowableFeatures([]);
     recalc();
     setStatus('Mode: Ready');
   }
 
   function finishLasso() {
-    const map = getMap();
-    const group = getGroup();
-    if (!map || !group) return;
-
-    armed = false;
-    drawing = false;
-    unlockScroll();
-    map.dragging.enable();
-    map.doubleClickZoom.enable();
-    if (map.touchZoom) map.touchZoom.enable();
-    stopTempLine();
-
     if (points.length < 6) {
-      points = [];
-      setStatus('Mode: Area too small — try again');
+      cancelLasso();
+      setStatus('Mode: Area too small - try again');
       return;
     }
 
-    let cleaned = points.slice();
-    cleaned = simplifyLatLngs(cleaned, SMOOTH_TOLERANCE_METERS);
-    if (cleaned.length > MAX_POINTS) cleaned = simplifyLatLngs(cleaned, STRONG_SMOOTH_TOLERANCE_METERS);
-    if (cleaned.length > MAX_POINTS) cleaned = simplifyLatLngs(cleaned, STRONG_SMOOTH_TOLERANCE_METERS + 1.5);
-
-    if (cleaned.length < 3) {
-      points = [];
-      setStatus('Mode: Could not close shape — try again');
-      return;
-    }
+    let cleaned = snapFullEdges(points.slice());
+    cleaned = simplifyPoints(cleaned, SMOOTH_TOLERANCE_METERS);
+    if (cleaned.length > MAX_POINTS) cleaned = simplifyPoints(cleaned, STRONG_SMOOTH_TOLERANCE_METERS);
+    if (cleaned.length > MAX_POINTS) cleaned = simplifyPoints(cleaned, STRONG_SMOOTH_TOLERANCE_METERS + 1.5);
 
     const selectedFeature = selectedMowableFeatureFromLasso(cleaned);
+    cancelLasso();
+
     if (!selectedFeature) {
-      points = [];
-      setStatus('Mode: Could not close shape — try again');
+      setStatus('Mode: Could not close shape - try again');
       return;
     }
 
-    // Replace any previous lasso — one active mowable polygon at a time
-    disableActiveEditing();
-    group.clearLayers();
-    let activeMowableLayer = null;
-    L.geoJSON(selectedFeature, {
-      style: {
-        color: '#16a34a',
-        weight: 3,
-        fillOpacity: 0.22
-      }
-    }).eachLayer(function (layer) {
-      activeMowableLayer = activeMowableLayer || layer;
-      group.addLayer(layer);
-    });
-
-    const appState = window.TurfLynkAppState;
-    if (appState && appState.parcelLayer && appState.parcelLayer.bringToBack) {
-      appState.parcelLayer.bringToBack();
+    if (drawPurpose === 'cut') {
+      if (typeof window.applyTurfLynkCutFeature === 'function') window.applyTurfLynkCutFeature(selectedFeature);
+      setStatus('Mode: Cut applied');
+      return;
     }
-    if (activeMowableLayer && activeMowableLayer.bringToFront) activeMowableLayer.bringToFront();
 
+    if (typeof window.setTurfLynkMowableFeatures === 'function') window.setTurfLynkMowableFeatures([selectedFeature]);
     recalc();
-    points = [];
-
-    // Auto-enable vertex editing so the polygon is immediately adjustable
-    if (activeMowableLayer) setTimeout(function () { enableEditing(activeMowableLayer); }, 150);
+    setTimeout(function () {
+      if (typeof window.startEditMowable === 'function') window.startEditMowable();
+    }, 120);
   }
 
-  function armLasso() {
+  function armLasso(purpose) {
     const map = getMap();
     if (!map) { setStatus('Mode: Map not ready'); return; }
-    disableActiveEditing();
-    armed = true;
+    drawPurpose = purpose || 'mowable';
+    setAppMapMode('lasso');
+    setArmedState(true);
     drawing = false;
+    activePointerId = null;
     points = [];
-    stopTempLine();
-    setStatus('Mode: Click map to START drawing');
-
-    // Update the helper text if available
+    setLassoTempLine([]);
+    setMapDrawingGestures(true);
+    setAppQuoteUiMode('drawing');
+    setStatus(drawPurpose === 'cut' ? 'Mode: Drag to cut out area' : 'Mode: Drag on map to draw');
     const helper = document.getElementById('mowAreaHelper');
-    if (helper) helper.textContent = 'Click once to start. Move cursor/finger to trace the yard. Click again to finish.';
+    if (helper) helper.textContent = drawPurpose === 'cut'
+      ? 'Drag around the area to remove from mowing.'
+      : 'Drag around the grass area. Lift your finger to finish.';
   }
 
-  function startDrawing(latlng) {
+  function eventToLngLat(event) {
     const map = getMap();
-    if (!map) return;
+    if (!map) return null;
+    const rect = map.getCanvas().getBoundingClientRect();
+    return map.unproject([event.clientX - rect.left, event.clientY - rect.top]);
+  }
+
+  function startDrawing(point) {
     drawing = true;
-    points = [snapPointLive(latlng)];
+    points = [snapPointLive(point)];
     lockScroll();
-    map.dragging.disable();
-    map.doubleClickZoom.disable();
-    if (map.touchZoom) map.touchZoom.disable();
-    setStatus('Mode: Drawing — move to trace, click to finish');
+    setMapDrawingGestures(true);
+    setAppMapMode('lasso');
+    setStatus(drawPurpose === 'cut' ? 'Mode: Cutting' : 'Mode: Drawing');
   }
 
-  function addPoint(latlng) {
+  function addPoint(point) {
     if (!drawing) return;
-    const map = getMap();
-    if (!map) return;
-
-    latlng = snapPointLive(latlng);
+    const snapped = snapPointLive(point);
     const last = points[points.length - 1];
-    if (last && map.distance(last, latlng) < 0.8) return;
-
-    if (isNearStart(latlng)) {
-      finishLasso();
-      return;
-    }
-
-    points.push(latlng);
-
-    if (!tempLine) {
-      tempLine = L.polyline(points, { color: '#22c55e', weight: 3, opacity: 0.9 }).addTo(map);
-    } else {
-      tempLine.setLatLngs(points);
-    }
+    if (last && distanceMeters(last, snapped) < 0.8) return;
+    points.push(snapped);
+    setLassoTempLine(points);
   }
 
-  // ── Map event handlers ────────────────────────────────────────────────────
+  function handlePointerDown(event) {
+    if (!isLassoMode()) return;
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    const point = eventToLngLat(event);
+    if (!point) return;
+    event.preventDefault();
+    event.stopPropagation();
+    activePointerId = event.pointerId;
+    try { event.currentTarget.setPointerCapture(activePointerId); } catch {}
+    startDrawing({ lng: point.lng, lat: point.lat });
+  }
 
-  function handleMapClick(e) {
-    if (!armed) return;
-    if (!drawing) { startDrawing(e.latlng); return; }
+  function handlePointerMove(event) {
+    if (!drawing || getAppMapMode() !== 'lasso' || event.pointerId !== activePointerId) return;
+    const point = eventToLngLat(event);
+    if (!point) return;
+    event.preventDefault();
+    event.stopPropagation();
+    addPoint({ lng: point.lng, lat: point.lat });
+  }
+
+  function handlePointerUp(event) {
+    if (!drawing || getAppMapMode() !== 'lasso' || event.pointerId !== activePointerId) return;
+    const point = eventToLngLat(event);
+    if (point) addPoint({ lng: point.lng, lat: point.lat });
+    event.preventDefault();
+    event.stopPropagation();
+    try { event.currentTarget.releasePointerCapture(activePointerId); } catch {}
     finishLasso();
   }
 
-  function handleMove(e) {
-    if (!drawing) return;
-    addPoint(e.latlng);
+  function handlePointerCancel(event) {
+    if (!drawing || event.pointerId !== activePointerId) return;
+    cancelLasso();
+    setStatus('Mode: Ready');
   }
 
-  function handleTouchMove(e) {
-    if (!drawing || !e.originalEvent || !e.originalEvent.touches || !e.originalEvent.touches.length) return;
-    const map = getMap();
-    if (!map) return;
-    const touch = e.originalEvent.touches[0];
-    const containerPoint = map.mouseEventToContainerPoint(touch);
-    const latlng = map.containerPointToLatLng(containerPoint);
-    addPoint(latlng);
+  function handleMouseDown(event) {
+    if (!isLassoMode() || drawing || event.button !== 0) return;
+    const point = eventToLngLat(event);
+    if (!point) return;
+    event.preventDefault();
+    event.stopPropagation();
+    activePointerId = 'mouse';
+    startDrawing({ lng: point.lng, lat: point.lat });
   }
 
-  // ── Attach ────────────────────────────────────────────────────────────────
+  function handleMouseMove(event) {
+    if (!drawing || activePointerId !== 'mouse' || getAppMapMode() !== 'lasso') return;
+    const point = eventToLngLat(event);
+    if (!point) return;
+    event.preventDefault();
+    event.stopPropagation();
+    addPoint({ lng: point.lng, lat: point.lat });
+  }
+
+  function handleMouseUp(event) {
+    if (!drawing || activePointerId !== 'mouse' || getAppMapMode() !== 'lasso') return;
+    const point = eventToLngLat(event);
+    if (point) addPoint({ lng: point.lng, lat: point.lat });
+    event.preventDefault();
+    event.stopPropagation();
+    finishLasso();
+  }
+
+  function touchPoint(event) {
+    const touch = event.changedTouches?.[0] || event.touches?.[0];
+    return touch ? eventToLngLat(touch) : null;
+  }
+
+  function handleTouchStart(event) {
+    if (!isLassoMode() || drawing || event.touches.length !== 1) return;
+    const point = touchPoint(event);
+    if (!point) return;
+    event.preventDefault();
+    event.stopPropagation();
+    activePointerId = 'touch';
+    startDrawing({ lng: point.lng, lat: point.lat });
+  }
+
+  function handleTouchMove(event) {
+    if (!drawing || activePointerId !== 'touch' || getAppMapMode() !== 'lasso' || event.touches.length !== 1) return;
+    const point = touchPoint(event);
+    if (!point) return;
+    event.preventDefault();
+    event.stopPropagation();
+    addPoint({ lng: point.lng, lat: point.lat });
+  }
+
+  function handleTouchEnd(event) {
+    if (!drawing || activePointerId !== 'touch' || getAppMapMode() !== 'lasso') return;
+    const point = touchPoint(event);
+    if (point) addPoint({ lng: point.lng, lat: point.lat });
+    event.preventDefault();
+    event.stopPropagation();
+    finishLasso();
+  }
+
+  function handleTouchCancel(event) {
+    if (!drawing || activePointerId !== 'touch') return;
+    event.preventDefault();
+    event.stopPropagation();
+    cancelLasso();
+    setStatus('Mode: Ready');
+  }
 
   function attach() {
     const map = getMap();
-    if (!map) {
-      // Retry once if map isn't ready yet
+    if (!map?.getCanvas) {
       setTimeout(attach, 600);
       return;
     }
 
-    // Suppress AI grass UI (not yet implemented)
     ['aiDetectGrassBtn', 'detectGrassBtn', 'autoDetectGrassBtn', 'aiGrassBtn'].forEach(function (id) {
       const el = document.getElementById(id);
       if (el) el.style.display = 'none';
@@ -612,19 +548,27 @@
     });
     window.TURFLYNK_AI_GRASS_ENABLED = false;
 
-    const container = map.getContainer();
-    container.addEventListener('touchmove', function (e) {
-      if (drawing) e.preventDefault();
-    }, { passive: false });
-
-    map.on('click', handleMapClick);
-    map.on('mousemove', handleMove);
-    map.on('touchmove', handleTouchMove);
-    container.addEventListener('pointercancel', unlockScroll);
-    container.addEventListener('pointerleave', function () {
-      // Only unlock on pointer leave if we're drawing (not editing)
-      if (drawing) unlockScroll();
-    });
+    const canvas = map.getCanvas();
+    if (!canvas.dataset.turflynkLassoBound) {
+      canvas.dataset.turflynkLassoBound = '1';
+      canvas.addEventListener('touchmove', function (event) {
+        if (drawing && getAppMapMode() === 'lasso' && event.touches.length === 1) {
+          event.preventDefault();
+          event.stopPropagation();
+        }
+      }, { passive: false });
+      canvas.addEventListener('pointerdown', handlePointerDown, { passive: false });
+      canvas.addEventListener('pointermove', handlePointerMove, { passive: false });
+      canvas.addEventListener('pointerup', handlePointerUp, { passive: false });
+      canvas.addEventListener('pointercancel', handlePointerCancel, { passive: false });
+      canvas.addEventListener('mousedown', handleMouseDown, { passive: false });
+      window.addEventListener('mousemove', handleMouseMove, { passive: false });
+      window.addEventListener('mouseup', handleMouseUp, { passive: false });
+      canvas.addEventListener('touchstart', handleTouchStart, { passive: false });
+      canvas.addEventListener('touchmove', handleTouchMove, { passive: false });
+      canvas.addEventListener('touchend', handleTouchEnd, { passive: false });
+      canvas.addEventListener('touchcancel', handleTouchCancel, { passive: false });
+    }
 
     function bindBtn(id, fn) {
       const el = document.getElementById(id);
@@ -634,16 +578,18 @@
       }
     }
 
-    bindBtn('lassoYardBtn', armLasso);
+    bindBtn('lassoYardBtn', function () { armLasso('mowable'); });
     bindBtn('finishLassoBtn', finishLasso);
     bindBtn('clearMowAreaBtn', clearMowAreas);
 
     window.TurfLynkLassoYard = {
-      arm: armLasso,
+      arm: function () { armLasso('mowable'); },
+      armCut: function () { armLasso('cut'); },
       finish: finishLasso,
       clear: clearMowAreas,
-      enableEditing: enableEditing,
-      disableEditing: disableActiveEditing
+      cancel: cancelLasso,
+      enableEditing: function () {},
+      disableEditing: function () {},
     };
   }
 
