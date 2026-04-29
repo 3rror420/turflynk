@@ -2,6 +2,7 @@
 // Must load before app.js. All values are read-only constants.
 
 const QUOTE_DRAFT_KEY = 'turflynk.quoteDraft.v5';
+const GOOGLE_LOGIN_ENABLED = false;
 
 const EPSG4326 = 'EPSG:4326';
 const EPSG26915 = '+proj=utm +zone=15 +datum=NAD83 +units=m +no_defs';

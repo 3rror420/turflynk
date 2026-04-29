@@ -10,6 +10,9 @@ const state = {
   gpsMarker: null,
   parcelLayer: null,
   parcelFeature: null,
+  parcelProperties: null,
+  selectedParcel: null,
+  selectedParcelProperties: null,
   parcelGeometry: null,
   drawGroup: null,
   mowableFeatureCollection: { type: 'FeatureCollection', features: [] },
@@ -38,8 +41,8 @@ const state = {
   pendingParcelPreviewLayer: null,
   pendingParcelPreviewFeature: null,
   parcelDblClick: false,
-  quoteFlowStep: 'start',
+  quoteFlowStep: 'property',
   pendingCheckoutUrl: null,
 };
 
-const QUOTE_STEP_ORDER = ['start', 'parcel', 'draw', 'estimate', 'request'];
+const QUOTE_STEP_ORDER = ['property', 'draw', 'estimate', 'request'];

@@ -10,7 +10,7 @@
   <link rel="stylesheet" href="/styles.css" />
 </head>
 
-<body data-active-view="dashboard">
+<body data-active-view="dashboard" data-session-state="logged-out">
 <div id="toastLayer" class="toast-layer" aria-live="polite" aria-atomic="true"></div>
 
 <header class="app-topbar">
@@ -19,10 +19,14 @@
   </button>
   <span id="mobileViewTitle" class="topbar-view-chip"></span>
   <div class="app-topbar-actions">
-    <button class="app-icon-btn" id="mobileAuthBtn" type="button" aria-label="Account">
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>
+    <button class="app-icon-btn" id="mobileAuthBtn" type="button" aria-label="Login or sign up" aria-haspopup="dialog">
+      <span id="mobileAccountAvatar" class="account-avatar compact" aria-hidden="true">
+        <img data-avatar-img alt="" hidden />
+        <span data-avatar-initials>G</span>
+      </span>
+      <span id="mobileAuthLabel" class="mobile-auth-label">Login</span>
     </button>
-    <button class="app-icon-btn" id="openAppDrawer" type="button" aria-label="Open menu">
+    <button class="app-icon-btn" id="openAppDrawer" type="button" aria-label="Open menu" aria-controls="appDrawer" aria-expanded="false">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
     </button>
   </div>
@@ -59,14 +63,46 @@
       <svg class="drawer-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07A19.5 19.5 0 013.07 9.81a19.79 19.79 0 01-3.07-8.72A2 2 0 012 .82h3a2 2 0 012 1.72c.13 1.04.35 2.06.67 3.06a2 2 0 01-.45 2.11L6.09 8.91a16 16 0 006 6l1.2-1.2a2 2 0 012.11-.45c1 .32 2.02.55 3.06.67A2 2 0 0122 16.92z"/></svg>
       Contact
     </button>
+    <div id="drawerContactPanel" class="drawer-contact-panel" aria-label="Contact options">
+      <a href="https://wa.me/1XXXXXXXXXX?text=Hi%20I%20have%20a%20question%20about%20my%20quote" target="_blank" rel="noopener" aria-label="Contact TurfLynk on WhatsApp">
+        <svg class="contact-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12.04 2a9.9 9.9 0 0 0-8.46 15.02L2.4 21.6l4.69-1.12A9.93 9.93 0 1 0 12.04 2Zm0 1.85a8.08 8.08 0 1 1-4.14 15l-.3-.18-2.53.6.64-2.45-.2-.32a8.08 8.08 0 0 1 6.53-12.65Zm-3.55 4.4c-.18 0-.47.07-.72.34-.24.27-.94.92-.94 2.24s.97 2.6 1.1 2.78c.14.18 1.87 2.99 4.62 4.06 2.28.89 2.75.71 3.24.67.5-.05 1.6-.65 1.83-1.29.22-.63.22-1.17.16-1.28-.07-.12-.25-.18-.52-.32-.27-.13-1.6-.79-1.85-.88-.25-.09-.43-.13-.61.14-.18.26-.7.87-.86 1.05-.16.18-.32.2-.59.07-.27-.14-1.14-.42-2.17-1.34-.8-.71-1.34-1.6-1.5-1.86-.16-.27-.02-.42.12-.55.12-.12.27-.32.4-.47.14-.16.18-.27.27-.45.09-.18.05-.34-.02-.47-.07-.14-.61-1.47-.84-2.01-.22-.52-.45-.45-.61-.46h-.52Z"/>
+        </svg>
+        <span>WhatsApp</span>
+      </a>
+      <a href="https://m.me/YOUR_PAGE_NAME" target="_blank" rel="noopener" aria-label="Contact TurfLynk on Messenger">
+        <svg class="contact-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 2C6.48 2 2.25 6.03 2.25 11.47c0 2.84 1.16 5.3 3.04 7l-.63 3.34 3.39-1.86c1.17.43 2.5.67 3.95.67 5.52 0 9.75-4.03 9.75-9.47S17.52 2 12 2Zm1 12.75-2.5-2.66-4.88 2.66 5.35-5.67 2.56 2.66 4.81-2.66L13 14.75Z"/>
+        </svg>
+        <span>Messenger</span>
+      </a>
+    </div>
   </div>
 
   <!-- My Account — shown only when logged in -->
   <div class="drawer-section customer-logged-in-nav" style="display:none">
     <h4 class="drawer-section-label">My Account</h4>
+    <div class="drawer-account-summary">
+      <span id="drawerAccountAvatar" class="account-avatar" aria-hidden="true">
+        <img data-avatar-img alt="" hidden />
+        <span data-avatar-initials>G</span>
+      </span>
+      <span>
+        <strong id="drawerAccountName">Account</strong>
+        <small id="drawerAccountMeta"></small>
+      </span>
+    </div>
+    <button type="button" data-account-panel class="drawer-btn">
+      <svg class="drawer-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 21a8 8 0 0 0-16 0"/><circle cx="12" cy="7" r="4"/></svg>
+      Account Settings
+    </button>
     <button type="button" data-drawer-view="jobs" class="drawer-btn">
       <svg class="drawer-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v2"/></svg>
       Recent Jobs
+    </button>
+    <button type="button" id="drawerLogoutBtn" class="drawer-btn">
+      <svg class="drawer-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 17l5-5-5-5"/><path d="M15 12H3"/><path d="M21 19V5a2 2 0 00-2-2h-6"/></svg>
+      Sign Out
     </button>
   </div>
 
@@ -94,7 +130,7 @@
   </div>
 
   <!-- Admin — shown to admin role only -->
-  <div class="drawer-section">
+  <div class="drawer-section admin-only-nav" style="display:none">
     <h4 class="drawer-section-label">Admin</h4>
     <button type="button" data-open-auth id="drawerAdminLogin" class="drawer-btn">
       <svg class="drawer-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
@@ -138,13 +174,28 @@
 </div>
 
 <div id="authPanel" class="auth-panel hidden">
-  <h3>Account</h3>
-  <div id="sessionStatus" class="session-chip">Guest mode</div>
+  <div class="auth-panel-head">
+    <span id="authPanelAvatar" class="account-avatar" aria-hidden="true">
+      <img data-avatar-img alt="" hidden />
+      <span data-avatar-initials>G</span>
+    </span>
+    <div>
+      <h3>Account</h3>
+      <div id="sessionStatus" class="session-chip">Guest mode</div>
+    </div>
+  </div>
+
+  <div id="authSignedInNotice">
+    <p class="meta" style="margin:0 0 10px">You are signed in. Use the button below to switch accounts.</p>
+    <button type="button" id="authPanelSignOutBtn" class="btn ghost" style="width:100%">Sign Out</button>
+  </div>
 
   <div class="tabs">
     <button onclick="showAuthTab('login')">Login</button>
     <button onclick="showAuthTab('register')">Sign Up</button>
   </div>
+
+  <a class="facebook-login-link" href="/api/auth/facebook?source=account">Continue with Facebook</a>
 
   <form id="loginForm" class="auth-tab">
     <input name="email" type="email" placeholder="Email" autocomplete="email" required />
@@ -201,6 +252,21 @@
         </div>
       </header>
 
+      <div id="accountPanel" class="panel hidden">
+        <div class="account-header">
+          <h2>My Account</h2>
+          <div id="accountUserInfo"></div>
+        </div>
+
+        <div class="account-menu" id="accountMenu"></div>
+
+        <div class="account-content" id="accountContent"></div>
+
+        <div class="account-logout">
+          <button id="logoutBtn" type="button">Log Out</button>
+        </div>
+      </div>
+
       <section class="view active" data-view-panel="dashboard">
         <!-- JS-filled local city panel -->
         <section class="panel local-landing-panel hidden" id="localLandingPanel" style="margin-bottom:20px"></section>
@@ -244,12 +310,18 @@
                 <p>Transparent pricing before you book.</p>
               </article>
               <article class="mownwa-feature mownwa-nwa-panel">
-                <img src="/assets/brand/Arkansas.png" alt="Arkansas" class="mownwa-nwa-map">
-                <div class="mownwa-nwa-copy">
-                  <span>Proudly Serving</span>
-                  <strong>Northwest Arkansas</strong>
-                  <p>Bentonville &bull; Rogers &bull; Springdale</p>
-                  <p>Fayetteville &amp; Surrounding Areas</p>
+                <div class="service-area-card">
+                  <div class="service-area-main">
+                    <img class="service-area-arkansas" src="/assets/brand/Arkansas.gif" alt="Arkansas service area" />
+                    <div class="service-area-copy">
+                      <div class="service-area-kicker">Proudly Serving</div>
+                      <div class="service-area-title">Northwest Arkansas</div>
+                    </div>
+                  </div>
+                  <div class="service-area-towns">
+                    Bentonville &bull; Rogers &bull; Springdale<br />
+                    Fayetteville &amp; Surrounding Areas
+                  </div>
                 </div>
               </article>
             </section>
@@ -323,15 +395,13 @@
 
       <section class="view" data-view-panel="quote">
         <div class="quote-stepper" id="quoteStepper" aria-label="Quote progress" role="progressbar">
-          <div class="qs-step qs-active" data-qs-step="1"><div class="qs-dot">1</div><div class="qs-label">Address</div></div>
+          <div class="qs-step qs-active" data-qs-step="1"><div class="qs-dot">1</div><div class="qs-label">Property</div></div>
           <div class="qs-line"></div>
-          <div class="qs-step" data-qs-step="2"><div class="qs-dot">2</div><div class="qs-label">Parcel</div></div>
+          <div class="qs-step" data-qs-step="2"><div class="qs-dot">2</div><div class="qs-label">Lawn Area</div></div>
           <div class="qs-line"></div>
-          <div class="qs-step" data-qs-step="3"><div class="qs-dot">3</div><div class="qs-label">Draw</div></div>
+          <div class="qs-step" data-qs-step="3"><div class="qs-dot">3</div><div class="qs-label">Estimate</div></div>
           <div class="qs-line"></div>
-          <div class="qs-step" data-qs-step="4"><div class="qs-dot">4</div><div class="qs-label">Estimate</div></div>
-          <div class="qs-line"></div>
-          <div class="qs-step" data-qs-step="5"><div class="qs-dot">5</div><div class="qs-label">Request</div></div>
+          <div class="qs-step" data-qs-step="4"><div class="qs-dot">4</div><div class="qs-label">Request</div></div>
         </div>
 
         <section class="quote-app" aria-label="Customer quote flow">
@@ -358,12 +428,12 @@
             <input type="hidden" name="mowAreaSqft" />
             <input type="hidden" name="parcelId" />
 
-            <section class="quote-flow-screen is-active" id="quoteStartScreen" data-quote-step-panel="start">
+            <section class="quote-flow-screen is-active" id="quoteStartScreen" data-quote-step-panel="property">
               <div class="quote-hero-card">
                 <div class="quote-hero-copy">
                   <img src="/assets/brand/mownwa_logo.png" alt="MowNWA logo" class="quote-hero-logo">
-                  <h2>Fast lawn mowing estimates</h2>
-                  <p>Draw the area you want mowed, review the price, and request service.</p>
+                  <h2>Confirm your property</h2>
+                  <p>Search your address or use your current location, then confirm the parcel before drawing the lawn area.</p>
                   <div class="quote-hero-badge">Northwest Arkansas lawn care made simple</div>
                 </div>
                 <img src="/assets/brand/mownwa_cover_photo.png" alt="Lawn mowing in Northwest Arkansas" class="quote-hero-photo">
@@ -376,30 +446,28 @@
                   <label><span>ZIP</span><input name="zip" inputmode="numeric" autocomplete="postal-code" /></label>
                 </div>
                 <div class="tool-row address-tools" id="addressToolRow">
-                  <button class="btn primary" type="button" id="locateAddressBtn">Get Estimate</button>
+                  <button class="btn primary" type="button" id="locateAddressBtn">Find Property</button>
                   <button class="btn ghost" type="button" id="clearQuoteDraftBtn">Reset</button>
                 </div>
                 <div class="gps-location-row">
-                  <button class="btn ghost gps-btn" type="button" id="useLocationBtn">Use My Current Location</button>
+                  <button class="btn ghost gps-btn" type="button" id="useLocationBtn" data-use-current-location>Use Current Location</button>
                   <p class="gps-helper-text">Works best when you're at the property.</p>
                 </div>
                 <div id="gpsStatusMsg" class="gps-status hidden"></div>
               </div>
-            </section>
 
-            <section class="quote-flow-screen hidden" id="quoteParcelScreen" data-quote-step-panel="parcel" hidden>
+              <div id="quoteParcelScreen" class="property-confirmation-panel hidden">
               <div class="flow-screen-head">
-                <button class="flow-back-btn" type="button" data-quote-back="start">Back</button>
                 <div>
-                  <h2>Parcel Found</h2>
-                  <p>Confirm the property before drawing your mowing area.</p>
+                  <h2>Parcel found</h2>
+                  <p>Confirm this is the property before drawing your lawn area.</p>
                 </div>
               </div>
               <div id="gpsConfirmBar" class="gps-confirm-bar hidden">
                 <p class="gps-confirm-msg">We found a parcel near your current location. Is this the property?</p>
                 <div class="gps-confirm-actions">
-                  <button class="btn primary" type="button" id="gpsConfirmYesBtn">Yes, use this parcel</button>
-                  <button class="btn ghost" type="button" id="gpsConfirmNoBtn">No, search manually</button>
+                  <button class="btn primary" type="button" id="gpsConfirmYesBtn">Yes, use this property</button>
+                  <button class="btn ghost" type="button" id="gpsConfirmNoBtn">Search again</button>
                 </div>
               </div>
               <div id="parcelInfo" class="parcel-found-card result hidden"></div>
@@ -410,10 +478,13 @@
                   <div><span>Mowable</span><strong id="mowAreaAcresDisplay">Draw next</strong></div>
                 </div>
                 <div class="hero-actions">
-                  <button class="btn primary" type="button" id="continueToDrawBtn">Continue</button>
-                  <button class="btn secondary" type="button" id="lookupParcelBtn">Retry Parcel Lookup</button>
+                  <button class="btn primary" type="button" id="continueToDrawBtn">Yes, use this property</button>
+                  <button class="btn secondary" type="button" id="lookupParcelBtn">Search again</button>
+                  <button class="btn ghost gps-btn" type="button" data-use-current-location>Use Current Location</button>
                   <button class="btn ghost" type="button" id="selectParcelBtn">Select Different Parcel</button>
+                  <button class="btn ghost" type="button" id="propertyManualQuoteBtn">Request in-person quote</button>
                 </div>
+              </div>
               </div>
             </section>
 
@@ -459,7 +530,7 @@
               </div>
 
               <div class="draw-action-bar">
-                <button class="btn secondary" type="button" data-quote-back="parcel">Back</button>
+                <button class="btn secondary" type="button" data-quote-back="property">Back</button>
                 <button class="btn primary" type="button" id="drawContinueBtn">Next</button>
               </div>
             </section>
@@ -582,25 +653,60 @@
               </section>
 
               <button class="btn primary request-service-cta hidden" type="button" id="requestServiceBtn">Continue to Secure Checkout</button>
-              <div class="quote-help-inline" aria-label="Quote help links">
-                <span>Questions?</span>
-                <a href="https://wa.me/1XXXXXXXXXX?text=Hi%20I%20have%20a%20question%20about%20my%20quote" target="_blank" rel="noopener" aria-label="Ask a question on WhatsApp">
-                  <svg class="contact-icon" viewBox="0 0 24 24" aria-hidden="true">
-                    <path d="M12.04 2a9.9 9.9 0 0 0-8.46 15.02L2.4 21.6l4.69-1.12A9.93 9.93 0 1 0 12.04 2Zm0 1.85a8.08 8.08 0 1 1-4.14 15l-.3-.18-2.53.6.64-2.45-.2-.32a8.08 8.08 0 0 1 6.53-12.65Zm-3.55 4.4c-.18 0-.47.07-.72.34-.24.27-.94.92-.94 2.24s.97 2.6 1.1 2.78c.14.18 1.87 2.99 4.62 4.06 2.28.89 2.75.71 3.24.67.5-.05 1.6-.65 1.83-1.29.22-.63.22-1.17.16-1.28-.07-.12-.25-.18-.52-.32-.27-.13-1.6-.79-1.85-.88-.25-.09-.43-.13-.61.14-.18.26-.7.87-.86 1.05-.16.18-.32.2-.59.07-.27-.14-1.14-.42-2.17-1.34-.8-.71-1.34-1.6-1.5-1.86-.16-.27-.02-.42.12-.55.12-.12.27-.32.4-.47.14-.16.18-.27.27-.45.09-.18.05-.34-.02-.47-.07-.14-.61-1.47-.84-2.01-.22-.52-.45-.45-.61-.46h-.52Z"/>
-                  </svg>
-                  <span>WhatsApp</span>
-                </a>
-                <a href="https://m.me/YOUR_PAGE_NAME" target="_blank" rel="noopener" aria-label="Ask a question on Messenger">
-                  <svg class="contact-icon" viewBox="0 0 24 24" aria-hidden="true">
-                    <path d="M12 2C6.48 2 2.25 6.03 2.25 11.47c0 2.84 1.16 5.3 3.04 7l-.63 3.34 3.39-1.86c1.17.43 2.5.67 3.95.67 5.52 0 9.75-4.03 9.75-9.47S17.52 2 12 2Zm1 12.75-2.5-2.66-4.88 2.66 5.35-5.67 2.56 2.66 4.81-2.66L13 14.75Z"/>
-                  </svg>
-                  <span>Messenger</span>
-                </a>
-              </div>
+              <button class="btn secondary manual-quote-cta hidden" type="button" id="manualQuoteBtn">
+                <span>Request In-Person Quote</span>
+                <small>Want us to check it in person? No payment required.</small>
+              </button>
               <p class="meta hidden" id="checkoutTestModeNote" style="margin:8px 0 0">Stripe test checkout enabled. Use card 4242 4242 4242 4242.</p>
               <button class="btn primary" type="submit" id="getEstimateBtn">Recalculate</button>
             </section>
           </form>
+
+          <section id="manualQuotePanel" class="quote-flow-screen lead-request-panel manual-quote-panel hidden" hidden>
+            <div class="flow-screen-head">
+              <button class="flow-back-btn" type="button" id="closeManualQuotePanel">Back</button>
+              <div>
+                <h2>Request In-Person Quote</h2>
+                <p>Want us to check it in person? No payment required.</p>
+              </div>
+            </div>
+            <div class="price-hero compact">
+              <span>Estimate</span>
+              <strong id="manualQuoteEstimateDisplay">-</strong>
+            </div>
+            <div class="quote-auth-options" data-auth-options="manual">
+              <div>
+                <strong>Continue with your account</strong>
+                <p class="meta">Use an account to keep this request connected to your booking history.</p>
+              </div>
+              <div class="quote-auth-actions">
+                <button class="social-auth-btn google" type="button" data-social-auth="google" data-auth-return-step="manual">
+                  <span class="provider-mark">G</span>
+                  <span>Continue with Google</span>
+                </button>
+                <button class="social-auth-btn facebook" type="button" data-social-auth="facebook" data-auth-return-step="manual">
+                  <span class="provider-mark">f</span>
+                  <span>Continue with Facebook</span>
+                </button>
+                <button class="social-auth-btn email" type="button" data-email-auth-target="manualQuoteForm">
+                  <span class="provider-mark">@</span>
+                  <span>Continue with Email</span>
+                </button>
+              </div>
+            </div>
+            <form id="manualQuoteForm" class="stack request-form" style="gap:14px">
+              <div class="grid-2">
+                <label><span>Your Name</span><input name="name" placeholder="Jane Smith" autocomplete="name" required /></label>
+                <label><span>Phone</span><input name="phone" type="tel" placeholder="555-555-5555" autocomplete="tel" required /></label>
+              </div>
+              <label><span>Email <em>optional</em></span><input name="email" type="email" placeholder="you@example.com" autocomplete="email" /></label>
+              <label><span>Preferred day/time <em>optional</em></span><input name="preferredDayTime" placeholder="Tuesday morning, after 3 PM, flexible" /></label>
+              <label><span>Notes <em>optional</em></span><textarea name="notes" rows="4" placeholder="Anything we should check in person?"></textarea></label>
+              <button class="btn primary" type="submit" id="manualQuoteSubmitBtn">Submit Request</button>
+              <button class="btn ghost" type="button" id="cancelManualQuotePanel">Cancel</button>
+            </form>
+            <div id="manualQuoteResult" class="result hidden" style="margin-top:12px"></div>
+          </section>
 
           <section id="leadRequestPanel" class="quote-flow-screen lead-request-panel hidden" data-quote-step-panel="request" hidden>
             <div class="flow-screen-head">
@@ -613,6 +719,26 @@
             <div class="price-hero compact">
               <span>Estimate</span>
               <strong id="leadEstimateDisplay">-</strong>
+            </div>
+            <div class="quote-auth-options" data-auth-options="request">
+              <div>
+                <strong>Continue with your account</strong>
+                <p class="meta">Choose an account option, then finish your contact and service details.</p>
+              </div>
+              <div class="quote-auth-actions">
+                <button class="social-auth-btn google" type="button" data-social-auth="google" data-auth-return-step="request">
+                  <span class="provider-mark">G</span>
+                  <span>Continue with Google</span>
+                </button>
+                <button class="social-auth-btn facebook" type="button" data-social-auth="facebook" data-auth-return-step="request">
+                  <span class="provider-mark">f</span>
+                  <span>Continue with Facebook</span>
+                </button>
+                <button class="social-auth-btn email" type="button" data-email-auth-target="leadRequestForm">
+                  <span class="provider-mark">@</span>
+                  <span>Continue with Email</span>
+                </button>
+              </div>
             </div>
             <form id="leadRequestForm" class="stack request-form" style="gap:14px">
                 <input type="hidden" name="estimatedPrice" id="leadEstimatedPrice" />
@@ -630,7 +756,7 @@
                 <input type="hidden" name="customerAdjustedMowableSqft" id="leadCustomerAdjustedMowableSqft" />
               <div class="grid-2">
                 <label><span>Your Name</span><input name="customerName" placeholder="Jane Smith" autocomplete="name" required /></label>
-                <label><span>Phone</span><input name="customerPhone" type="tel" placeholder="555-555-5555" autocomplete="tel" required /></label>
+                <label><span>Phone</span><input name="customerPhone" id="leadPhone" type="tel" placeholder="555-555-5555" autocomplete="tel" required /></label>
               </div>
               <label><span>Email</span><input name="customerEmail" type="email" placeholder="you@example.com" autocomplete="email" required /></label>
               <label><span>Service Address</span><input name="address" id="leadAddress" placeholder="123 Main St" autocomplete="street-address" required /></label>
@@ -693,7 +819,17 @@
                 <li>Manage future mowing requests faster</li>
                 <li>Get updates about scheduling and completed work</li>
               </ul>
-              <button class="btn primary" type="button" id="accountRecommendCreateBtn" style="margin-top:8px">Create Account &amp; Continue</button>
+              <div class="quote-auth-actions account-recommend-auth">
+                <button class="social-auth-btn google" type="button" data-social-auth="google" data-auth-return-step="request">
+                  <span class="provider-mark">G</span>
+                  <span>Continue with Google</span>
+                </button>
+                <button class="social-auth-btn facebook" type="button" data-social-auth="facebook" data-auth-return-step="request">
+                  <span class="provider-mark">f</span>
+                  <span>Continue with Facebook</span>
+                </button>
+                <button class="btn primary" type="button" id="accountRecommendCreateBtn">Continue with Email</button>
+              </div>
               <button class="btn ghost" type="button" id="accountRecommendGuestBtn">Continue as Guest</button>
             </div>
             <div id="accountRecommendAuthForm" class="hidden" style="margin-top:16px">
@@ -764,6 +900,9 @@
                   <label><span>City</span><input name="city" /></label>
                   <label><span>State</span><input name="state" value="AR" /></label>
                   <label><span>ZIP</span><input name="zip" inputmode="numeric" autocomplete="postal-code" /></label>
+                </div>
+                <div class="gps-location-row">
+                  <button class="btn ghost gps-btn" type="button" data-use-current-location>Use Current Location</button>
                 </div>
                 <section class="intake-section">
                   <div class="section-label">Requested work</div>
@@ -1192,11 +1331,14 @@
           </svg>
           <span>Messenger</span>
         </a>
+        <a href="/privacy.html">Privacy</a>
+        <a href="/terms.html">Terms</a>
+        <a href="/data-deletion.html">Data Deletion</a>
       </footer>
     </main>
   </div>
 
-  <nav class="mobile-nav" aria-label="Mobile">
+  <nav class="mobile-nav mobile-bottom-nav" aria-label="Mobile">
     <button class="nav-btn active" data-view="quote">
       <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
       Quote
@@ -1234,9 +1376,9 @@
   <script src="/js/auth/admin-visibility.js"></script>
 
   <script src="/data/local-content.js"></script>
-  <script src="/app.js"></script>
+  <script src="/app.js?v=service-address-single-source-v4"></script>
   <script src="/js/ai-detect-grass.js"></script>
-  <script src="/js/lasso-yard.js"></script>
+  <script src="/js/lasso-yard.js?v=boundary-fix-v5-exit-enter-fat-thumb"></script>
 
 </body>
 </html>

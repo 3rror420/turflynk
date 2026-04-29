@@ -31,7 +31,100 @@ function getAuthToken() {
   return localStorage.getItem('turflynk.authToken') || '';
 }
 
+function hasActiveSession() {
+  return Boolean(getAuthToken() || state.currentUser?.id);
+}
+
+const ACCOUNT_SECTIONS = [
+  { id: 'overview', label: 'Overview' },
+  { id: 'profile', label: 'Profile' },
+  { id: 'properties', label: 'Properties' },
+  { id: 'quotes', label: 'Quotes' },
+  { id: 'jobs', label: 'Jobs' },
+  { id: 'payments', label: 'Payments' },
+  { id: 'reputation', label: 'Reputation' },
+  { id: 'support', label: 'Support' },
+  { id: 'settings', label: 'Settings' },
+];
+
 // isAdmin, showAdminControls, hideAdminControls → public/js/auth/admin-visibility.js
+
+function getCurrentUser() {
+  return state.currentUser || state.user || null;
+}
+
+function accountDisplayName(user = getCurrentUser()) {
+  return user?.name
+    || user?.fullName
+    || user?.displayName
+    || user?.profile?.name
+    || user?.email
+    || '';
+}
+
+function accountAvatarUrl(user = getCurrentUser()) {
+  return user?.picture
+    || user?.avatar
+    || user?.avatarUrl
+    || user?.avatar_url
+    || user?.photoURL
+    || user?.photoUrl
+    || user?.profile_pic
+    || user?.profilePicture
+    || user?.photo
+    || user?.profile?.picture
+    || user?.profile?.avatar
+    || '';
+}
+
+function accountInitials(user = getCurrentUser()) {
+  const label = accountDisplayName(user);
+  const source = label || 'Guest';
+  const parts = String(source).replace(/@.*/, '').split(/\s+/).filter(Boolean);
+  const chars = parts.length > 1
+    ? [parts[0][0], parts[parts.length - 1][0]]
+    : [source[0] || 'G'];
+  return chars.join('').toUpperCase().slice(0, 2);
+}
+
+function renderAvatarElement(root, user = getCurrentUser()) {
+  if (!root) return;
+  const img = root.querySelector('[data-avatar-img]');
+  const initials = root.querySelector('[data-avatar-initials]');
+  const url = accountAvatarUrl(user);
+  const loggedIn = Boolean(user?.email || user?.id);
+  root.classList.toggle('is-logged-in', loggedIn);
+  root.classList.toggle('has-image', Boolean(url));
+  if (initials) initials.textContent = accountInitials(user);
+  if (!img) return;
+  if (url) {
+    img.src = url;
+    img.alt = accountDisplayName(user) ? `${accountDisplayName(user)} profile picture` : 'Profile picture';
+    img.hidden = false;
+  } else {
+    img.removeAttribute('src');
+    img.alt = '';
+    img.hidden = true;
+  }
+}
+
+function updateAccountAvatar(user = getCurrentUser()) {
+  ['mobileAccountAvatar', 'authPanelAvatar', 'drawerAccountAvatar'].forEach((id) => {
+    renderAvatarElement(byId(id), user);
+  });
+  const loggedIn = Boolean(user?.id || user?.email);
+  const label = byId('mobileAuthLabel');
+  if (label) label.textContent = loggedIn ? 'Account' : 'Login';
+  const mobileAuth = byId('mobileAuthBtn');
+  if (mobileAuth) {
+    mobileAuth.setAttribute('aria-label', loggedIn ? 'Open account settings' : 'Login or sign up');
+    mobileAuth.dataset.authState = loggedIn ? 'logged-in' : 'logged-out';
+  }
+  const drawerName = byId('drawerAccountName');
+  if (drawerName) drawerName.textContent = accountDisplayName(user) || 'Account';
+  const drawerMeta = byId('drawerAccountMeta');
+  if (drawerMeta) drawerMeta.textContent = user?.email ? `${user.email}${user.role ? ` - ${user.role}` : ''}` : '';
+}
 
 function prettyApiError(error) {
   try {
@@ -42,31 +135,882 @@ function prettyApiError(error) {
   }
 }
 
+function phoneDigits(value) {
+  return String(value || '').replace(/\D/g, '');
+}
+
+function isValidLookingPhone(value) {
+  const digits = phoneDigits(value);
+  return digits.length >= 10 && digits.length <= 15;
+}
+
+function bookingPhoneValue(payload = {}) {
+  return String(payload.phone || payload.customerPhone || '').trim();
+}
+
+function focusBookingPhoneField() {
+  const phoneField = byId('leadPhone')
+    || byId('leadRequestForm')?.elements?.customerPhone
+    || byId('manualQuoteForm')?.elements?.phone
+    || byId('quoteForm')?.elements?.phone
+    || null;
+  phoneField?.focus?.();
+}
+
+function showPhoneRequiredError(resultId = 'leadRequestResult') {
+  const message = 'Enter a valid phone number before booking or payment.';
+  const result = byId(resultId);
+  if (result) {
+    result.innerHTML = `<strong>Phone needed.</strong><br>${escapeHtml(message)}`;
+    result.classList.remove('hidden');
+  }
+  showError(message);
+  focusBookingPhoneField();
+}
+
+function rememberProfilePhoneIfBlank(phone) {
+  const trimmed = String(phone || '').trim();
+  if (!trimmed || !state.currentUser || String(state.currentUser.phone || '').trim()) return;
+  state.currentUser = { ...state.currentUser, phone: trimmed };
+  hydrateLeadFormFromUser(state.currentUser);
+}
+
 function updateSessionStatus(user) {
   const el = byId('sessionStatus');
-  const mobileAuth = byId('mobileAuthBtn');
+  if (user !== undefined) {
+    state.currentUser = user || null;
+    state.user = user || null;
+  }
+  const currentUser = getCurrentUser();
+  updateAccountAvatar(currentUser || null);
+
+  const loggedIn = Boolean(currentUser?.id || currentUser?.email);
+  document.body.dataset.sessionState = loggedIn ? 'logged-in' : 'logged-out';
+  const landingLogin = byId('openAuth');
+  if (landingLogin) {
+    landingLogin.hidden = loggedIn;
+    landingLogin.style.display = loggedIn ? 'none' : '';
+  }
+  if (loggedIn) {
+    console.info('[Auth UI] logged in user=' + (currentUser.email || currentUser.id));
+  }
+  if (typeof applyRoleVisibility === 'function') applyRoleVisibility();
+
   if (!el) return;
+  if (currentUser?.email) {
+    el.textContent = `${accountDisplayName(currentUser)} - ${currentUser.role || 'user'}`;
+    el.classList.add('ok');
+    return;
+  }
   const token = getAuthToken();
   if (!token) {
     el.textContent = 'Guest mode';
     el.classList.remove('ok');
-    if (mobileAuth) mobileAuth.textContent = 'Login';
-    return;
-  }
-  if (user?.email) {
-    el.textContent = `${user.email} - ${user.role || 'user'}`;
-    el.classList.add('ok');
-    if (mobileAuth) mobileAuth.textContent = user.role === 'admin' ? 'Admin' : 'Account';
     return;
   }
   el.textContent = 'Session saved';
   el.classList.add('ok');
-  if (mobileAuth) mobileAuth.textContent = 'Account';
+}
+
+function accountUser() {
+  return getCurrentUser();
+}
+
+function renderAccountUserInfo() {
+  const el = byId('accountUserInfo');
+  if (!el) return;
+  const user = accountUser();
+  if (!user) {
+    el.innerHTML = '<div class="meta">Guest mode</div>';
+    return;
+  }
+  const name = accountDisplayName(user) || getUserDisplayName(user) || 'Account';
+  const role = user.role ? ` - ${user.role}` : '';
+  el.innerHTML = `
+    <div class="account-user-name">${escapeHtml(name)}</div>
+    <div class="meta">${escapeHtml(user.email || '')}${escapeHtml(role)}</div>
+  `;
+}
+
+function hideAllPanels() {
+  $$('[data-view-panel]').forEach((panel) => {
+    panel.classList.remove('active');
+    panel.style.display = 'none';
+  });
+  const accountPanel = byId('accountPanel');
+  if (accountPanel) accountPanel.classList.add('hidden');
+  byId('authPanel')?.classList.add('hidden');
+}
+
+function showAccountPanel(section = 'overview') {
+  if (!hasActiveSession()) {
+    closeAppDrawer?.();
+    toggleAuthPanel?.(true);
+    return;
+  }
+
+  const activeSection = ACCOUNT_SECTIONS.some((s) => s.id === section) ? section : 'overview';
+  hideAllPanels();
+  state.activeView = 'account';
+  document.body.dataset.activeView = 'account';
+  byId('accountPanel')?.classList.remove('hidden');
+  if (byId('viewTitle')) byId('viewTitle').textContent = 'My Account';
+  if (byId('mobileViewTitle')) byId('mobileViewTitle').textContent = 'My Account';
+  $$('[data-view]').forEach((btn) => {
+    btn.classList.remove('active');
+    btn.setAttribute('aria-current', 'false');
+  });
+  closeAppDrawer?.();
+  renderAccountUserInfo();
+  renderAccountMenu(activeSection);
+  renderAccountSection(activeSection);
+  byId('accountPanel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function renderAccountMenu(active) {
+  const menu = byId('accountMenu');
+  if (!menu) return;
+  menu.innerHTML = ACCOUNT_SECTIONS.map((s) => `
+    <button class="account-menu-item ${s.id === active ? 'active' : ''}"
+      onclick="showAccountPanel('${s.id}')">
+      ${s.label}
+    </button>
+  `).join('');
+}
+
+function accountEmptyMessage(text) {
+  return `<div class="account-empty">${escapeHtml(text)}</div>`;
+}
+
+function renderAccountSection(section) {
+  const el = byId('accountContent');
+  if (!el) return;
+  el.innerHTML = '';
+  const user = accountUser() || {};
+  const name = getUserDisplayName(user) || accountDisplayName(user);
+  const phone = user.phone || user.phoneNumber || user.mobilePhone || '';
+
+  if (section === 'overview') {
+    el.innerHTML = `
+      <h3>Overview</h3>
+      <div id="accountOverview" class="account-overview-grid">
+        <div class="account-summary-card">
+          <span>Profile</span>
+          <strong>${escapeHtml(name || 'Signed in')}</strong>
+        </div>
+        <div class="account-summary-card">
+          <span>Email</span>
+          <strong>${escapeHtml(user.email || 'Not added')}</strong>
+        </div>
+        <div class="account-summary-card">
+          <span>Phone</span>
+          <strong>${escapeHtml(phone || 'Not added')}</strong>
+        </div>
+      </div>
+    `;
+  } else if (section === 'profile') {
+    el.innerHTML = `
+      <h3>Profile</h3>
+      <div class="account-card">
+        <div class="account-field"><span class="field-label">Name</span><strong>${escapeHtml(name || 'Not set')}</strong></div>
+        <div class="account-field"><span class="field-label">Email</span><strong>${escapeHtml(user.email || 'Not set')}</strong></div>
+        <div class="account-field"><span class="field-label">Phone</span><strong>${escapeHtml(phone || 'Not set')}</strong></div>
+      </div>
+    `;
+  } else if (section === 'jobs') {
+    el.innerHTML = '<h3>Jobs</h3><div id="accountJobs" class="card-list"></div>';
+    loadMyJobs('accountJobs');
+  } else if (section === 'quotes') {
+    el.innerHTML = '<h3>Quotes</h3><div id="accountQuotes" class="card-list"></div>';
+    loadMyQuotes();
+  } else if (section === 'payments') {
+    el.innerHTML = `<h3>Payments</h3><div id="accountPayments" class="account-card">${accountEmptyMessage('No payment history yet.')}</div>`;
+  } else if (section === 'reputation') {
+    el.innerHTML = `
+      <h3>Reputation</h3>
+      <div id="accountReputation" class="account-card">${accountEmptyMessage('Reputation details will appear here after completed jobs.')}</div>
+    `;
+  } else if (section === 'properties') {
+    el.innerHTML = `<h3>Properties</h3><div id="accountProperties" class="account-card">${accountEmptyMessage('Saved service properties will appear here.')}</div>`;
+  } else if (section === 'support') {
+    el.innerHTML = `
+      <h3>Support</h3>
+      <div class="account-card">${accountEmptyMessage('Need help? Use the Contact option in the menu to reach MowNWA support.')}</div>
+    `;
+  } else if (section === 'settings') {
+    el.innerHTML = `
+      <h3>Settings</h3>
+      <div class="account-card">${accountEmptyMessage('Notification and privacy settings coming soon.')}</div>
+    `;
+  }
+}
+
+async function loadMyQuotes() {
+  const list = byId('accountQuotes');
+  if (!list) return;
+
+  if (!hasActiveSession()) {
+    list.innerHTML = accountEmptyMessage('Sign in to see your quotes.');
+    return;
+  }
+
+  list.innerHTML = accountEmptyMessage('Loading quotes...');
+
+  try {
+    const data = await api('/api/quotes');
+    const quotes = data.quotes || data.latestQuotes || [];
+    list.innerHTML = '';
+
+    if (!quotes.length) {
+      list.innerHTML = accountEmptyMessage('No quotes yet.');
+      return;
+    }
+
+    quotes.forEach((quote) => {
+      const service = quote.serviceType || quote.service_type || '';
+      const region = quote.regionId || quote.region_id || '';
+      const estimate = quote.estimate || quote.amount || quote.price || 0;
+      list.append(card(`
+        <h4>${escapeHtml(quote.name || quote.title || 'Lawn Quote')}</h4>
+        <div class="meta">${escapeHtml(serviceLabel(service))} &middot; ${escapeHtml(regionLabel(region))}</div>
+        <div class="meta">${escapeHtml(quote.address || '')}</div>
+        <div class="meta">Estimate: <strong>${money(estimate)}</strong></div>
+      `));
+    });
+  } catch {
+    list.innerHTML = accountEmptyMessage('Quotes are not available yet.');
+  }
+}
+
+function getUserDisplayName(user) {
+  if (!user) return '';
+  return user.fullName
+    || user.displayName
+    || user.name
+    || [user.given_name, user.family_name].filter(Boolean).join(' ')
+    || [user.first_name, user.last_name].filter(Boolean).join(' ')
+    || user.profile?.name
+    || user.facebook?.name
+    || user.raw?.name
+    || '';
+}
+
+function hydrateLeadFormFromUser(user) {
+  if (!user) return;
+  const userKeys = Object.keys(user).join(', ');
+  const name = getUserDisplayName(user);
+  const email = user.email || '';
+  const phone = user.phone || user.phoneNumber || '';
+
+  console.info('[Auth Hydrate] user keys=' + userKeys);
+  console.info('[Auth Hydrate] resolved name=' + (name || '(empty)') + ' email=' + (email ? 'yes' : 'no') + ' phone=' + (phone ? 'yes' : 'no'));
+
+  let filled = false;
+  const fillBlank = (el, value) => {
+    if (el && value && !el.value) { el.value = value; filled = true; }
+  };
+
+  const leadForm = byId('leadRequestForm');
+  if (leadForm) {
+    fillBlank(leadForm.elements.customerName, name);
+    fillBlank(leadForm.elements.customerEmail, email);
+    fillBlank(leadForm.elements.customerPhone, phone);
+  }
+
+  const manualForm = byId('manualQuoteForm');
+  if (manualForm) {
+    fillBlank(manualForm.elements.name, name);
+    fillBlank(manualForm.elements.email, email);
+    fillBlank(manualForm.elements.phone, phone);
+  }
+
+  if (filled) {
+    console.info('[Auth Hydrate] filled name/email/phone blanks from user profile', {
+      name: Boolean(name), email: Boolean(email), phone: Boolean(phone),
+    });
+  }
+}
+
+function getCheckoutAddressFieldElements() {
+  const form = byId('leadRequestForm');
+  return {
+    addressEl: byId('leadAddress') || form?.elements?.address || null,
+    cityEl: byId('leadCity') || form?.elements?.city || null,
+    stateEl: byId('leadState') || form?.elements?.state || null,
+    zipEl: byId('leadZip') || form?.elements?.zip || null,
+  };
+}
+
+function propText(props = {}, ...keys) {
+  if (!props || typeof props !== 'object') return '';
+  for (const key of keys) {
+    if (!key) continue;
+    const direct = firstTextValue(props[key]);
+    if (direct) return direct;
+    const foundKey = Object.keys(props).find((candidate) => candidate.toLowerCase() === String(key).toLowerCase());
+    const found = foundKey ? firstTextValue(props[foundKey]) : '';
+    if (found) return found;
+  }
+  return '';
+}
+
+function propTextByNormalizedKeys(props = {}, keys = []) {
+  if (!props || typeof props !== 'object') return '';
+  const wanted = new Set(keys.map((key) => String(key).toLowerCase().replace(/[^a-z0-9]/g, '')));
+  for (const [key, value] of Object.entries(props)) {
+    const normalized = String(key).toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (wanted.has(normalized)) {
+      const text = firstTextValue(value);
+      if (text) return text;
+    }
+  }
+  return '';
+}
+
+function propTextByAddressIntent(props = {}, intent = '') {
+  if (!props || typeof props !== 'object') return '';
+  const nonServiceKey = /(owner|mail|mailing|billing|tax|payer|grantee|grantor)/i;
+  const matchers = {
+    city: (key) => (
+      key.includes('city') ||
+      key.includes('municipality') ||
+      key === 'mun' ||
+      key.startsWith('muni') ||
+      key.startsWith('mun')
+    ),
+    state: (key) => key.includes('state') || key === 'st',
+    zip: (key) => key.includes('zip') || key.includes('postal') || key.includes('postcode'),
+  };
+  const matches = matchers[intent];
+  if (!matches) return '';
+
+  for (const [key, value] of Object.entries(props)) {
+    if (nonServiceKey.test(String(key))) continue;
+    const normalized = String(key).toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (matches(normalized)) {
+      const text = firstTextValue(value);
+      if (intent === 'city' && !/[A-Za-z]/.test(text)) continue;
+      if (intent === 'state' && !/[A-Za-z]/.test(text)) continue;
+      if (intent === 'zip' && !/\d{5}/.test(text)) continue;
+      if (text) return text;
+    }
+  }
+  return '';
+}
+
+function parcelAddressFieldCandidates(props = {}) {
+  if (!props || typeof props !== 'object') return [];
+  const addressKey = /(city|zip|postal|situs|site|physical|location|mun|municipality|mail|adr)/i;
+  return Object.entries(props)
+    .filter(([key, value]) => addressKey.test(String(key)) && firstTextValue(value))
+    .map(([key, value]) => ({ key, value }));
+}
+
+function parcelFullAddressFromProps(props = {}) {
+  return propText(
+    props,
+    'adrlabel',
+    'adr_label',
+    'situsaddress',
+    'situs_address',
+    'situsaddr',
+    'situs_addr',
+    'situsfulladdress',
+    'situs_full_address',
+    'siteaddress',
+    'site_address',
+    'siteaddr',
+    'site_addr',
+    'physicaladdress',
+    'physical_address',
+    'locationaddress',
+    'location_address',
+    'propertyaddress',
+    'property_address',
+    'fulladdress',
+    'fullAddress',
+    'full_address',
+    'address'
+  ).replace(/\s+/g, ' ').trim();
+}
+
+function parcelStructuredAddressFromProps(props = {}) {
+  const city = firstTextValue(
+    propTextByNormalizedKeys(props, [
+      'adrcity', 'adr_city', 'situscity', 'situs_city', 'sitecity', 'site_city',
+      'physicalcity', 'physical_city', 'locationcity', 'location_city',
+      'propertycity', 'property_city', 'servicecity', 'service_city',
+      'municipality', 'muni', 'munname', 'muniname', 'locality', 'city'
+    ]),
+    propTextByAddressIntent(props, 'city')
+  );
+  const stateValue = firstTextValue(
+    propTextByNormalizedKeys(props, [
+      'adrstate', 'adr_state', 'situsstate', 'situs_state', 'sitestate', 'site_state',
+      'physicalstate', 'physical_state', 'locationstate', 'location_state',
+      'propertystate', 'property_state', 'servicestate', 'service_state', 'state'
+    ]),
+    propTextByAddressIntent(props, 'state')
+  );
+  const zip = firstTextValue(
+    propTextByNormalizedKeys(props, [
+      'adrzip5', 'adrzip', 'adr_zip', 'adr_zip5', 'situszip', 'situs_zip',
+      'situszip5', 'situs_zip5', 'sitezip', 'site_zip', 'sitezip5', 'site_zip5',
+      'physicalzip', 'physical_zip', 'physicalzip5', 'physical_zip5', 'locationzip',
+      'location_zip', 'propertyzip', 'property_zip', 'servicezip', 'service_zip',
+      'zipcode', 'zip_code', 'postalcode', 'postal_code', 'postcode', 'zip'
+    ]),
+    propTextByAddressIntent(props, 'zip')
+  );
+
+  return normalizeServiceAddressParts({
+    address: parcelFullAddressFromProps(props),
+    city,
+    state: stateValue,
+    zip,
+  });
+}
+
+function sameLeadingStreetNumber(left = '', right = '') {
+  const leftNumber = String(left || '').trim().match(/^\d+/)?.[0] || '';
+  const rightNumber = String(right || '').trim().match(/^\d+/)?.[0] || '';
+  return Boolean(leftNumber && rightNumber && leftNumber === rightNumber);
+}
+
+function parseFullServiceAddress(str) {
+  const raw = String(str || '').trim();
+  if (!raw) return normalizeServiceAddressParts();
+
+  const withCommas = raw.match(/^\s*(.+?),\s*([^,]+?),\s*([A-Za-z]{2})[,\s]+(\d{5}(?:-\d{4})?)\s*$/);
+  if (withCommas) {
+    return normalizeServiceAddressParts({
+      address: withCommas[1],
+      city: withCommas[2],
+      state: withCommas[3],
+      zip: withCommas[4],
+    });
+  }
+
+  const parsed = parseCityStateZipFromAddress(raw);
+  return normalizeServiceAddressParts({
+    address: raw,
+    city: parsed.city || '',
+    state: parsed.state || '',
+    zip: parsed.zip || '',
+  });
+}
+
+function resolveServiceAddressFromParcel(props = {}, fallbackAddress = '') {
+  console.log('[PARCEL PROPS FULL]', props);
+  console.log('[PARCEL PROPS ADDRESS KEYS]', parcelAddressFieldCandidates(props));
+
+  const fallbackParts = typeof fallbackAddress === 'string'
+    ? parseFullServiceAddress(fallbackAddress)
+    : normalizeServiceAddressParts(fallbackAddress || {});
+  const structured = parcelStructuredAddressFromProps(props);
+  const parcelStreet = firstTextValue(structured.street, structured.address, parcelFullAddressFromProps(props));
+  const fallbackStreet = firstTextValue(fallbackParts.street, fallbackParts.address);
+  const street = sameLeadingStreetNumber(parcelStreet, fallbackStreet)
+    ? fallbackStreet
+    : firstTextValue(parcelStreet, fallbackStreet);
+
+  let parsed = { city: '', state: '', zip: '' };
+  if (parcelStreet) {
+    parsed = parseCityStateZipFromAddress(parcelStreet);
+  }
+
+  const city = firstTextValue(structured.city, parsed.city, fallbackParts.city);
+  const stateValue = firstTextValue(structured.state, parsed.state, fallbackParts.state, 'AR');
+  const zip = firstTextValue(structured.zip, parsed.zip, fallbackParts.zip);
+  const full = [street, city, [stateValue, zip].filter(Boolean).join(' ')].filter(Boolean).join(', ');
+
+  console.log('[Service Address RESOLVED]', {
+    adrlabel: parcelStreet,
+    structured,
+    parsed,
+    final: { city, state: stateValue, zip }
+  });
+
+  return {
+    street,
+    address: street,
+    city,
+    state: stateValue,
+    zip,
+    full: full || parcelStreet,
+    source: 'parcel-resolver'
+  };
+}
+
+function parcelPropertiesFromLookupData(data = {}) {
+  const normalized = data.normalized || {};
+  const attrs = {
+    ...(data.feature?.properties || {}),
+    ...(data.feature?.attributes || {}),
+    ...(normalized.attributes || {}),
+  };
+  const structured = parcelStructuredAddressFromProps(attrs);
+  const derived = {
+    parcelId: normalized.parcelId || propText(attrs, 'parcelid', 'parcel_id', 'PARCELID', 'PIN') || '',
+    county: normalized.county || propText(attrs, 'countyid', 'county', 'COUNTY', 'COUNTY_NAME') || '',
+    areaSqft: normalized.areaSqft || '',
+    acres: normalized.acres || '',
+    adrlabel: propText(attrs, 'adrlabel', 'situsaddress', 'siteaddress', 'propertyaddress', 'address') || normalized.address || '',
+    adrcity: structured.city || normalized.city || '',
+    adrstate: structured.state || normalized.state || 'AR',
+    adrzip5: structured.zip || normalized.zip || '',
+  };
+  return Object.fromEntries(
+    Object.entries({ ...attrs, ...derived }).filter(([, value]) => value !== undefined && value !== null)
+  );
+}
+
+function checkoutParcelProps() {
+  const candidates = [
+    state.selectedParcelProperties,
+    state.parcelProperties,
+    state.parcelFeature?.properties,
+    state.selectedParcel?.properties,
+    state.pendingParcelFeature?.normalized?.attributes,
+    state.pendingParcelFeature?.feature?.attributes,
+    state.pendingParcelFeature?.properties,
+  ];
+  return candidates.find((props) => {
+    if (!props || typeof props !== 'object') return false;
+    return [
+      parcelFullAddressFromProps(props),
+      propText(props, 'adrcity', 'city', 'situscity', 'propertycity'),
+      propText(props, 'adrzip5', 'adrzip', 'zip', 'zipcode', 'postalCode', 'postal_code'),
+    ].some((value) => String(value || '').trim());
+  }) || {};
+}
+
+function firstTextValue(...values) {
+  for (const value of values) {
+    const text = String(value || '').trim();
+    if (text && !/^n\/?a$/i.test(text)) return text;
+  }
+  return '';
+}
+
+function addressPartsFromParcelProps(props = {}) {
+  const fullAddress = parcelFullAddressFromProps(props);
+  const parsed = parseFullServiceAddress(fullAddress);
+  const structured = parcelStructuredAddressFromProps(props);
+  return normalizeServiceAddressParts({
+    address: structured.address || parsed.address || fullAddress,
+    city: firstTextValue(structured.city, parsed.city),
+    state: firstTextValue(structured.state, parsed.state, 'AR'),
+    zip: firstTextValue(structured.zip, parsed.zip),
+  });
+}
+
+function addressPartsFromQuote(quote = {}) {
+  const fullAddress = firstTextValue(
+    quote.parcelAddressLabel,
+    quote.address,
+    quote.serviceAddress,
+    quote.customerAddress,
+    quote.fullAddress,
+    quote.full_address,
+    quote.formattedAddress,
+    quote.formatted_address
+  );
+  const parsed = parseFullServiceAddress(fullAddress);
+  return normalizeServiceAddressParts({
+    address: parsed.address || fullAddress,
+    city: firstTextValue(quote.parcelCity, quote.city, quote.serviceCity, quote.customerCity, parsed.city),
+    state: firstTextValue(quote.parcelState, quote.state, quote.serviceState, quote.customerState, parsed.state, 'AR'),
+    zip: firstTextValue(quote.parcelZip, quote.zip, quote.serviceZip, quote.customerZip, quote.postalCode, quote.postal_code, parsed.zip),
+  });
+}
+
+function mergeAddressResolution(target, candidate) {
+  const parts = normalizeServiceAddressParts(candidate.parts || {});
+  const beforeCity = target.parts.city;
+  const beforeZip = target.parts.zip;
+  if (!target.parts.address && parts.address) {
+    target.parts.address = parts.address;
+    target.addressSource = candidate.source;
+  }
+  if (!target.parts.city && parts.city) {
+    target.parts.city = parts.city;
+    target.citySource = candidate.source;
+  }
+  if ((!target.parts.state || target.parts.state === 'AR') && parts.state) {
+    target.parts.state = parts.state;
+    target.stateSource = candidate.source;
+  }
+  if (!target.parts.zip && parts.zip) {
+    target.parts.zip = parts.zip;
+    target.zipSource = candidate.source;
+  }
+  if ((target.parts.city && !beforeCity) || (target.parts.zip && !beforeZip)) {
+    target.rawAddress = candidate.rawAddress || target.rawAddress;
+    target.parsed = candidate.parsed || target.parsed;
+    target.parcelProps = candidate.parcelProps || target.parcelProps;
+  }
+}
+
+function resolveCheckoutAddressSource(quote = {}) {
+  const quoteParcelProps = quote.parcelProperties || quote.selectedParcelProperties || {};
+  const parcelFeatureProps = state.parcelFeature?.properties || {};
+  const selectedParcelProps = state.selectedParcel?.properties || state.selectedParcelProperties || {};
+  const pendingQuote = state.pendingQuote || {};
+  const props =
+    quote.parcelProperties ||
+    state.parcelFeature?.properties ||
+    state.selectedParcel?.properties ||
+    {};
+  const parcelFeatureRaw = parcelFullAddressFromProps(parcelFeatureProps);
+  const selectedRaw = parcelFullAddressFromProps(selectedParcelProps);
+  const target = {
+    parts: { address: '', city: '', state: '', zip: '' },
+    addressSource: '',
+    citySource: '',
+    stateSource: '',
+    zipSource: '',
+    rawAddress: '',
+    parsed: {},
+    parcelProps: quoteParcelProps || parcelFeatureProps || selectedParcelProps || {},
+  };
+
+  const adrlabel = firstTextValue(
+    quote.parcelAddressLabel,
+    props?.adrlabel,
+    props?.full_address,
+    props?.site_address,
+    parcelFullAddressFromProps(props),
+    parcelFullAddressFromProps(quoteParcelProps),
+    parcelFeatureRaw,
+    selectedRaw
+  );
+  let parsedParcelLabel = { city: '', state: '', zip: '' };
+  const missingParcelCity = !firstTextValue(quote.parcelCity);
+  const missingParcelZip = !firstTextValue(quote.parcelZip);
+  if (adrlabel && (missingParcelCity || missingParcelZip)) {
+    const parsed = parseCityStateZipFromAddress(adrlabel);
+    parsedParcelLabel = { city: parsed.city || '', state: parsed.state || '', zip: parsed.zip || '' };
+  }
+  const quoteParcelRaw = adrlabel;
+  const parsedQuoteParcelRaw = parseFullServiceAddress(quoteParcelRaw);
+  const propsParts = addressPartsFromParcelProps(props);
+  const parcelFeatureParts = addressPartsFromParcelProps(parcelFeatureProps);
+  const selectedParcelParts = addressPartsFromParcelProps(selectedParcelProps);
+  const parcelFieldParts = {
+    address: firstTextValue(propsParts.address, parsedQuoteParcelRaw.address, quoteParcelRaw),
+    city: firstTextValue(quote.parcelCity, propsParts.city, parcelFeatureParts.city, selectedParcelParts.city, parsedParcelLabel.city),
+    state: firstTextValue(quote.parcelState, propsParts.state, parcelFeatureParts.state, selectedParcelParts.state, parsedParcelLabel.state),
+    zip: firstTextValue(quote.parcelZip, propsParts.zip, parcelFeatureParts.zip, selectedParcelParts.zip, parsedParcelLabel.zip),
+  };
+  console.log('[FINAL PARCEL RESOLVE]', {
+    adrlabel,
+    parsed: parsedParcelLabel,
+    final: { city: parcelFieldParts.city, state: parcelFieldParts.state, zip: parcelFieldParts.zip },
+  });
+  mergeAddressResolution(target, {
+    source: 'quote.parcelFields',
+    rawAddress: quoteParcelRaw,
+    parsed: parsedParcelLabel,
+    parcelProps: props,
+    parts: parcelFieldParts,
+  });
+
+  const parsedQuoteLabel = parseFullServiceAddress(quoteParcelRaw);
+  mergeAddressResolution(target, {
+    source: 'quote.parcelAddressLabel',
+    rawAddress: quoteParcelRaw,
+    parsed: parsedQuoteLabel,
+    parcelProps: quoteParcelProps,
+    parts: parsedQuoteLabel,
+  });
+
+  const parsedFeatureLabel = parseFullServiceAddress(parcelFeatureRaw);
+  mergeAddressResolution(target, {
+    source: 'state.parcelFeature.properties.adrlabel',
+    rawAddress: parcelFeatureRaw,
+    parsed: parsedFeatureLabel,
+    parcelProps: parcelFeatureProps,
+    parts: parsedFeatureLabel,
+  });
+
+  mergeAddressResolution(target, {
+    source: 'state.parcelFeature.properties',
+    rawAddress: parcelFeatureRaw,
+    parsed: parsedFeatureLabel,
+    parcelProps: parcelFeatureProps,
+    parts: addressPartsFromParcelProps(parcelFeatureProps),
+  });
+
+  const parsedSelected = parseFullServiceAddress(selectedRaw);
+  mergeAddressResolution(target, {
+    source: 'state.selectedParcel.properties',
+    rawAddress: selectedRaw,
+    parsed: parsedSelected,
+    parcelProps: selectedParcelProps,
+    parts: addressPartsFromParcelProps(selectedParcelProps),
+  });
+
+  const currentRaw = firstTextValue(state.currentServiceAddress?.address);
+  const parsedCurrent = parseFullServiceAddress(currentRaw);
+  mergeAddressResolution(target, {
+    source: 'state.currentServiceAddress',
+    rawAddress: currentRaw,
+    parsed: parsedCurrent,
+    parcelProps: target.parcelProps,
+    parts: state.currentServiceAddress || {},
+  });
+
+  const quoteRaw = firstTextValue(quote.address, quote.serviceAddress, quote.customerAddress);
+  const parsedQuote = parseFullServiceAddress(quoteRaw);
+  mergeAddressResolution(target, {
+    source: 'quote.addressFields',
+    rawAddress: quoteRaw,
+    parsed: parsedQuote,
+    parcelProps: target.parcelProps,
+    parts: {
+      address: quoteRaw,
+      city: firstTextValue(quote.city, quote.serviceCity, quote.customerCity, parsedQuote.city),
+      state: firstTextValue(quote.state, quote.serviceState, quote.customerState, parsedQuote.state),
+      zip: firstTextValue(quote.zip, quote.serviceZip, quote.customerZip, parsedQuote.zip),
+    },
+  });
+
+  const pendingRaw = firstTextValue(pendingQuote.address, pendingQuote.serviceAddress);
+  const parsedPending = parseFullServiceAddress(pendingRaw);
+  mergeAddressResolution(target, {
+    source: 'pendingQuote',
+    rawAddress: pendingRaw,
+    parsed: parsedPending,
+    parcelProps: target.parcelProps,
+    parts: {
+      address: pendingRaw,
+      city: firstTextValue(pendingQuote.city, pendingQuote.serviceCity, parsedPending.city),
+      state: firstTextValue(pendingQuote.state, pendingQuote.serviceState, parsedPending.state),
+      zip: firstTextValue(pendingQuote.zip, pendingQuote.serviceZip, parsedPending.zip),
+    },
+  });
+
+  target.parts = normalizeServiceAddressParts(target.parts);
+  const cityZipSource = target.citySource || target.zipSource;
+  const source = cityZipSource || (target.addressSource === 'pendingQuote' ? 'pendingQuote-address-only' : target.addressSource || 'none');
+  return {
+    source,
+    rawAddress: target.rawAddress || quoteParcelRaw || parcelFeatureRaw || selectedRaw || currentRaw || quoteRaw || pendingRaw,
+    parsed: target.parsed || {},
+    parcelProps: target.parcelProps || {},
+    parts: target.parts,
+  };
+}
+
+function fillBlankCheckoutAddressParts(elements, parts) {
+  // Deprecated no-op. applyServiceAddressToLeadForm() is the single lead address writer.
+}
+
+function hydrateCheckoutAddressFieldsFromQuote(quote) {
+  // Deprecated: keep for older callers, but do not write lead address fields here.
+  // The single writer is applyServiceAddressToLeadForm().
+  const resolvedSource = resolveCheckoutAddressSource(quote || {});
+  const resolved = resolvedSource.parts;
+
+  console.log('[Checkout Address Source]', {
+    source: resolvedSource.source,
+    rawAddress: resolvedSource.rawAddress,
+    parsed: resolvedSource.parsed,
+    parcelProps: resolvedSource.parcelProps,
+  });
+
+  if (resolved.address || resolved.city || resolved.zip) {
+    setCurrentServiceAddress(resolved, 'deprecated-checkout-hydrate');
+  }
+
+  console.log('[Checkout Address Hydrate]', {
+    currentServiceAddress: state.currentServiceAddress,
+    quote,
+    parcelProps: state.parcelFeature?.properties || state.selectedParcel?.properties,
+  });
+}
+
+function hydrateLeadFormFromQuoteContext(quote) {
+  if (!quote) return;
+
+  // Deprecated: keep for older callers, but do not write lead address fields here.
+  // The single writer is applyServiceAddressToLeadForm().
+  // Robust selectors — falls back through known IDs then name attributes
+  const cityEl =
+    document.getElementById('leadCity') ||
+    document.getElementById('customerCity') ||
+    document.querySelector('[name="city"]') ||
+    document.querySelector('[name="customerCity"]');
+  const stateEl =
+    document.getElementById('leadState') ||
+    document.getElementById('customerState') ||
+    document.querySelector('[name="state"]') ||
+    document.querySelector('[name="customerState"]');
+  const zipEl =
+    document.getElementById('leadZip') ||
+    document.getElementById('customerZip') ||
+    document.querySelector('[name="zip"]') ||
+    document.querySelector('[name="postalCode"]') ||
+    document.querySelector('[name="customerZip"]');
+  const addressEl =
+    document.getElementById('leadAddress') ||
+    document.querySelector('[name="address"]');
+
+  // If none of the target fields exist, the form isn't in the DOM yet; bail silently.
+  if (!addressEl && !cityEl && !stateEl && !zipEl) return;
+
+  const resolvedSource = resolveCheckoutAddressSource(quote || {});
+  const src = resolvedSource.parts;
+  const source = resolvedSource.source;
+
+  console.log('[Quote Hydrate Debug]', {
+    fieldIds: { city: cityEl?.id, state: stateEl?.id, zip: zipEl?.id, address: addressEl?.id },
+    fieldNames: { city: cityEl?.name, state: stateEl?.name, zip: zipEl?.name, address: addressEl?.name },
+    quote,
+    currentServiceAddress: state.currentServiceAddress,
+    parcelProps: state.parcelFeature?.properties || state.selectedParcel?.properties,
+    addressInput: document.getElementById('addressInput')?.value,
+  });
+  console.log('[Checkout Address Source]', {
+    source,
+    rawAddress: resolvedSource.rawAddress,
+    parsed: resolvedSource.parsed,
+    parcelProps: resolvedSource.parcelProps,
+  });
+
+  if (src.address || src.city || src.zip) setCurrentServiceAddress(src, 'deprecated-quote-context');
+
+  console.info('[Quote Hydrate] resolved city=' + (src.city || '(empty)') + ' state=' + src.state + ' zip=' + (src.zip || '(empty)') + ' source=' + source);
+}
+
+function clearFrontendSessionState() {
+  state.currentUser = null;
+  localStorage.removeItem('turflynk.authToken');
+  updateSessionStatus(null);
+  if (typeof applyRoleVisibility === 'function') applyRoleVisibility();
+  const authResult = byId('authResult');
+  if (authResult) authResult.classList.add('hidden');
+  updateQuoteFlowState?.();
+}
+
+async function signOut() {
+  try {
+    await api('/api/auth/logout', { method: 'POST', body: JSON.stringify({}) });
+  } catch (error) {
+    console.warn('Logout request failed; clearing local session anyway.', error);
+  }
+  clearFrontendSessionState();
+  clearAuthReturnContext();
+  closeAppDrawer?.();
+  toggleAuthPanel?.(false);
+  showSuccess('Signed out');
 }
 
 // money() → public/js/utils/dom.js
 
 const ESTIMATE_DEBOUNCE_MS = 350;
+const AUTH_RETURN_KEY = 'turflynk.authReturn.v1';
 let estimateRefreshTimer = null;
 let estimateRequestSeq = 0;
 
@@ -136,6 +1080,29 @@ function buildQuotePayload(form) {
   payload.scope_locked = Boolean(payload.standardMowScopeAck);
   payload.final_price = Number(payload.estimate || payload.final_price || 0);
   payload.status = payload.status || 'estimate_ready';
+  const parcelProps = checkoutParcelProps();
+  const parcelParts = addressPartsFromParcelProps(parcelProps);
+  const parcelAddressLabel = parcelFullAddressFromProps(parcelProps);
+  if (Object.keys(parcelProps).length) {
+    const serviceAddress = resolveServiceAddressFromParcel(parcelProps, getQuoteFormServiceAddress());
+    if (hasServiceAddress(serviceAddress)) setCurrentServiceAddress(serviceAddress, 'build-quote-payload');
+    payload.parcelAddressLabel = parcelAddressLabel;
+    payload.parcelCity = parcelParts.city || '';
+    payload.parcelState = parcelParts.state || 'AR';
+    payload.parcelZip = parcelParts.zip || '';
+    payload.parcelProperties = parcelProps;
+    payload.selectedParcelProperties = parcelProps;
+  }
+  const serviceAddress = getCurrentServiceAddress(payload);
+  if (hasServiceAddress(serviceAddress)) {
+    setCurrentServiceAddress(serviceAddress, 'build-quote-payload-final');
+    payload.street = state.currentServiceAddress.street || state.currentServiceAddress.address || '';
+    payload.address = state.currentServiceAddress.street || state.currentServiceAddress.address || payload.address || '';
+    payload.city = state.currentServiceAddress.city || payload.city || '';
+    payload.state = state.currentServiceAddress.state || payload.state || 'AR';
+    payload.zip = state.currentServiceAddress.zip || payload.zip || '';
+    payload.full = state.currentServiceAddress.full || payload.full || '';
+  }
   return payload;
 }
 
@@ -223,8 +1190,13 @@ function renderJobPhotoPreview() {
 
 // state, QUOTE_STEP_ORDER → public/js/state.js
 
+function normalizeQuoteStep(step) {
+  if (step === 'start' || step === 'parcel') return 'property';
+  return QUOTE_STEP_ORDER.includes(step) ? step : 'property';
+}
+
 function quoteStepNumber(step = state.quoteFlowStep) {
-  return Math.max(1, QUOTE_STEP_ORDER.indexOf(step) + 1);
+  return Math.max(1, QUOTE_STEP_ORDER.indexOf(normalizeQuoteStep(step)) + 1);
 }
 
 function setMapGestureCapture(enabled) {
@@ -283,6 +1255,56 @@ function cloneFeatureCollection(collection) {
   };
 }
 
+function cloneGeoJson(value) {
+  if (!value) return null;
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch {
+    return null;
+  }
+}
+
+function currentParcelGeoJSON() {
+  if (state.parcelFeature) return cloneGeoJson(state.parcelFeature);
+  const feature = esriPolygonToGeoJSONFeature(state.parcelGeometry, state.selectedParcelProperties || state.parcelProperties || {});
+  return cloneGeoJson(feature);
+}
+
+function currentMapScopeSnapshot() {
+  if (!state.map) return {};
+  const center = state.map.getCenter?.();
+  const bounds = state.map.getBounds?.();
+  const snapshot = {};
+  if (center) {
+    snapshot.mapCenter = {
+      lng: Number(center.lng ?? center[0]),
+      lat: Number(center.lat ?? center[1]),
+      zoom: Number(state.map.getZoom?.() || 0) || undefined,
+    };
+  }
+  if (bounds) {
+    snapshot.mapBounds = {
+      west: Number(bounds.getWest?.() ?? bounds._sw?.lng),
+      south: Number(bounds.getSouth?.() ?? bounds._sw?.lat),
+      east: Number(bounds.getEast?.() ?? bounds._ne?.lng),
+      north: Number(bounds.getNorth?.() ?? bounds._ne?.lat),
+    };
+  }
+  return snapshot;
+}
+
+function currentJobScopeSnapshotFields() {
+  return {
+    parcelGeoJSON: currentParcelGeoJSON(),
+    selectedMowableGeoJSON: cloneFeatureCollection(state.mowableFeatureCollection),
+    mowableGeoJSON: cloneFeatureCollection(state.mowableFeatureCollection),
+    excludedGeoJSON: state.aiCutoutFeatureCollection?.features?.length
+      ? cloneFeatureCollection(state.aiCutoutFeatureCollection)
+      : null,
+    ...currentMapScopeSnapshot(),
+  };
+}
+
 function asFeature(featureOrGeometry, properties = {}) {
   if (!featureOrGeometry) return null;
   if (featureOrGeometry.type === 'Feature') {
@@ -303,6 +1325,7 @@ function setSourceData(sourceId, data = EMPTY_FEATURE_COLLECTION()) {
 }
 
 function updateMowableSource() {
+  markSelectedMowableFeature();
   setSourceData(MAP_SOURCES.mowable, state.mowableFeatureCollection || EMPTY_FEATURE_COLLECTION());
 }
 
@@ -388,12 +1411,18 @@ function ensureMapLibreSourcesAndLayers() {
   ensureMapLayer('mowable-fill', {
     type: 'fill',
     source: MAP_SOURCES.mowable,
-    paint: { 'fill-color': '#16a34a', 'fill-opacity': 0.22 },
+    paint: {
+      'fill-color': ['case', ['boolean', ['get', 'selected'], false], '#22c55e', '#16a34a'],
+      'fill-opacity': ['case', ['boolean', ['get', 'selected'], false], 0.36, 0.22],
+    },
   });
   ensureMapLayer('mowable-line', {
     type: 'line',
     source: MAP_SOURCES.mowable,
-    paint: { 'line-color': '#16a34a', 'line-width': 3 },
+    paint: {
+      'line-color': ['case', ['boolean', ['get', 'selected'], false], '#facc15', '#16a34a'],
+      'line-width': ['case', ['boolean', ['get', 'selected'], false], 5, 3],
+    },
   });
   ensureMapLayer('cutout-fill', {
     type: 'fill',
@@ -463,9 +1492,15 @@ function withMapReady(fn) {
 }
 
 function showQuoteFlowStep(step, options = {}) {
-  const nextStep = QUOTE_STEP_ORDER.includes(step) ? step : 'start';
+  const nextStep = normalizeQuoteStep(step);
   state.quoteFlowStep = nextStep;
   document.body.dataset.quoteFlowStep = nextStep;
+  const manualPanel = byId('manualQuotePanel');
+  if (manualPanel) {
+    manualPanel.classList.add('hidden');
+    manualPanel.hidden = true;
+    manualPanel.setAttribute('aria-hidden', 'true');
+  }
 
   $$('[data-quote-step-panel]').forEach((panel) => {
     const active = panel.dataset.quoteStepPanel === nextStep;
@@ -481,8 +1516,8 @@ function showQuoteFlowStep(step, options = {}) {
   setMapToolPanelOpen(drawing);
   if (drawing && !['lasso', 'select', 'edit'].includes(getMapMode())) setMapMode('idle');
   if (drawing && state.map) {
-    setTimeout(() => state.map.resize?.(), 80);
-    setTimeout(() => state.parcelLayer ? fitLayerBoundsWithContext(state.parcelLayer) : state.map.resize?.(), 180);
+    console.log('[Map Refresh] draw-step-visible');
+    refreshMapAfterStepVisible('draw-step-visible');
   } else if (!drawing) {
     stopToolModes();
   }
@@ -570,6 +1605,141 @@ function saveQuoteDraft() {
   localStorage.setItem(QUOTE_DRAFT_KEY, JSON.stringify(formToObject(form)));
 }
 
+function saveAuthReturnContext(step = 'request', sourceOverride = '') {
+  const form = byId('quoteForm');
+  let quote = state.pendingQuote || state.lastQuote || null;
+  if (!quote && form) {
+    try {
+      quote = buildQuotePayload(form);
+    } catch {
+      quote = formToObject(form);
+    }
+  }
+
+  // Capture customer fields the user already typed in the request form
+  const leadForm = byId('leadRequestForm');
+  let customerFields = null;
+  if (leadForm) {
+    customerFields = {
+      customerName: leadForm.elements.customerName?.value || '',
+      customerPhone: leadForm.elements.customerPhone?.value || '',
+      customerEmail: leadForm.elements.customerEmail?.value || '',
+      notes: leadForm.elements.notes?.value || '',
+      preferredDate: leadForm.elements.preferredDate?.value || '',
+      schedule_preference: leadForm.elements.schedule_preference?.value || '',
+      available_days_json: checkedValues('available_days_json', leadForm),
+    };
+  }
+
+  const manualForm = byId('manualQuoteForm');
+  if (manualForm) {
+    customerFields = {
+      ...(customerFields || {}),
+      customerName: customerFields?.customerName || manualForm.elements.name?.value || '',
+      customerPhone: customerFields?.customerPhone || manualForm.elements.phone?.value || '',
+      customerEmail: customerFields?.customerEmail || manualForm.elements.email?.value || '',
+      notes: customerFields?.notes || manualForm.elements.notes?.value || '',
+      preferredDayTime: manualForm.elements.preferredDayTime?.value || '',
+    };
+  }
+
+  // Capture drawn mowable GeoJSON so the polygon can be restored on return
+  const drawnGeoJSON = (state.mowableFeatureCollection?.features?.length > 0)
+    ? cloneFeatureCollection(state.mowableFeatureCollection)
+    : null;
+
+  // Capture parcel GeoJSON so scope snapshot includes parcel after auth redirect
+  const parcelGeoJSON = currentParcelGeoJSON() || null;
+
+  const source = sourceOverride || ((step === 'request' || step === 'manual') ? 'checkout' : 'account');
+  console.info('[Auth Resume] saved', {
+    source,
+    step,
+    hasEstimate: Boolean(quote?.estimate),
+    hasGeoJSON: Boolean(drawnGeoJSON?.features?.length),
+    hasParcelGeoJSON: Boolean(parcelGeoJSON),
+    hasCustomerName: Boolean(customerFields?.customerName),
+  });
+
+  localStorage.setItem(AUTH_RETURN_KEY, JSON.stringify({
+    step,
+    source,
+    quote,
+    customerFields,
+    drawnGeoJSON,
+    parcelGeoJSON,
+    savedAt: Date.now(),
+  }));
+}
+
+function loadAuthReturnContext() {
+  try {
+    const context = JSON.parse(localStorage.getItem(AUTH_RETURN_KEY) || 'null');
+    if (!context || Date.now() - Number(context.savedAt || 0) > 30 * 60 * 1000) {
+      localStorage.removeItem(AUTH_RETURN_KEY);
+      return null;
+    }
+    return context;
+  } catch {
+    localStorage.removeItem(AUTH_RETURN_KEY);
+    return null;
+  }
+}
+
+function clearAuthReturnContext() {
+  localStorage.removeItem(AUTH_RETURN_KEY);
+}
+
+function isMobileFacebookLoginFlow() {
+  const ua = navigator.userAgent || navigator.vendor || window.opera || '';
+  const smallScreen = Boolean(window.matchMedia?.('(max-width: 820px)').matches || window.innerWidth <= 820);
+  const mobileUA = /Android|iPhone|iPad|iPod/i.test(ua);
+  const touchDevice = Boolean(
+    navigator.maxTouchPoints > 0
+    || navigator.msMaxTouchPoints > 0
+    || window.matchMedia?.('(pointer: coarse)').matches
+    || 'ontouchstart' in window
+  );
+  return Boolean(smallScreen || mobileUA || touchDevice);
+}
+
+function facebookAuthStartPath(source = 'account', step = 'request') {
+  const params = new URLSearchParams({
+    source,
+    step,
+  });
+  return `/api/auth/facebook?${params.toString()}`;
+}
+
+function beginSocialAuth(provider, step = 'request') {
+  if (provider === 'google' && !GOOGLE_LOGIN_ENABLED) {
+    showWarning('Google sign-in is not available yet. Please use Facebook or email.');
+    return;
+  }
+  saveQuoteDraft();
+  if (provider === 'facebook') {
+    const source = step === 'manual' || step === 'request' ? 'checkout' : 'account';
+    const mobile = isMobileFacebookLoginFlow();
+    saveAuthReturnContext(step, source);
+    const route = facebookAuthStartPath(source, step);
+    console.info('[Facebook Login] starting', { source, step, mobile, route });
+    window.location.assign(route);
+    return;
+  }
+  saveAuthReturnContext(step);
+  const returnTo = `/?auth=success&view=quote&step=${encodeURIComponent(step)}`;
+  window.location.href = `/auth/${encodeURIComponent(provider)}?returnTo=${encodeURIComponent(returnTo)}`;
+}
+
+function applySocialLoginVisibility() {
+  document.body.dataset.googleLoginEnabled = GOOGLE_LOGIN_ENABLED ? 'true' : 'false';
+  $$('[data-social-auth="google"]').forEach((btn) => {
+    btn.hidden = !GOOGLE_LOGIN_ENABLED;
+    btn.classList.toggle('hidden', !GOOGLE_LOGIN_ENABLED);
+    btn.setAttribute('aria-hidden', GOOGLE_LOGIN_ENABLED ? 'false' : 'true');
+  });
+}
+
 function loadGoogleMaps(apiKey) {
   return new Promise((resolve, reject) => {
     if (!apiKey) return reject(new Error('No Google Maps API key'));
@@ -643,20 +1813,62 @@ function normalizeServiceAddressParts(parts = {}) {
     const text = String(value || '').trim();
     return /^n\/?a$/i.test(text) ? '' : text;
   };
-  const address = clean(parts.address);
+  const street = clean(parts.street || parts.address);
+  const address = street;
   const city = clean(parts.city);
   const stateValue = clean(parts.state);
   const zip = clean(parts.zip);
+  const full = clean(parts.full || parts.formattedAddress || parts.formatted_address);
   return {
+    street,
     address,
     city,
     state: stateValue || 'AR',
     zip,
+    full,
   };
 }
 
+function parseCityStateZipFromAddress(str = '') {
+  const empty = { city: '', state: '', zip: '' };
+  if (!str) return empty;
+
+  const cleaned = String(str).replace(/\s+/g, ' ').trim();
+
+  // Match: CITY, ST ZIP
+  let match = cleaned.match(/,\s*([^,]+),\s*([A-Z]{2})\s*(\d{5})/i);
+
+  if (!match) {
+    // Match: CITY ST ZIP (no commas)
+    match = cleaned.match(/\b([A-Za-z\s]+)\s+([A-Z]{2})\s+(\d{5})$/);
+  }
+
+  if (match) {
+    const result = {
+      city: match[1].trim(),
+      state: match[2].trim().toUpperCase(),
+      zip: match[3].trim()
+    };
+
+    console.log('[PARSE TEST]', {
+      input: str,
+      result
+    });
+
+    return result;
+  }
+
+  console.warn('[Address Parse Failed]', str);
+  console.log('[PARSE TEST]', {
+    input: str,
+    result: empty
+  });
+
+  return empty;
+}
+
 function hasServiceAddress(parts = {}) {
-  return Boolean(String(parts.address || parts.city || parts.zip || '').trim());
+  return Boolean(String(parts.street || parts.address || parts.city || parts.zip || parts.full || '').trim());
 }
 
 function serviceAddressBlocksFallback(parts = {}) {
@@ -668,6 +1880,7 @@ function getQuoteFormServiceAddress() {
   const form = byId('quoteForm');
   if (!form) return normalizeServiceAddressParts();
   return normalizeServiceAddressParts({
+    street: form.elements.address?.value || '',
     address: form.elements.address?.value || '',
     city: form.elements.city?.value || '',
     state: form.elements.state?.value || 'AR',
@@ -676,12 +1889,11 @@ function getQuoteFormServiceAddress() {
 }
 
 function parcelAddressFromNormalized(normalized = {}) {
-  const attrs = normalized.attributes || {};
-  return normalizeServiceAddressParts({
-    address: attrs.adrlabel || normalized.address || '',
-    city: attrs.adrcity || normalized.city || '',
-    state: 'AR',
-    zip: attrs.adrzip5 || normalized.zip || '',
+  return addressPartsFromParcelProps({
+    ...(normalized.attributes || {}),
+    address: normalized.address || '',
+    city: normalized.city || '',
+    zip: normalized.zip || '',
   });
 }
 
@@ -698,11 +1910,7 @@ function applyServiceAddressToQuoteForm(address, options = {}) {
 }
 
 function clearStaleServiceAddressFields() {
-  ['leadAddress', 'leadCity', 'leadState', 'leadZip'].forEach((id) => {
-    const el = byId(id);
-    if (!el) return;
-    el.value = id === 'leadState' ? 'AR' : '';
-  });
+  // Deprecated: do not clear lead address fields. currentServiceAddress is the source of truth.
   const liveBidForm = byId('liveBidForm');
   if (liveBidForm) {
     ['address', 'city', 'state', 'zip'].forEach((name) => {
@@ -715,16 +1923,32 @@ function clearStaleServiceAddressFields() {
 
 function setCurrentServiceAddress(address, source = 'unknown', options = {}) {
   const next = normalizeServiceAddressParts(address);
-  state.currentServiceAddress = {
-    ...next,
-    source,
-    updatedAt: Date.now(),
-  };
-  if (options.syncQuoteForm) {
-    applyServiceAddressToQuoteForm(next, { clearMissing: options.clearQuoteFormMissing });
+  const incoming = Object.fromEntries(
+    Object.entries({
+      street: next.street,
+      address: next.street,
+      city: next.city,
+      state: next.state,
+      zip: next.zip,
+      full: next.full,
+    }).filter(([, value]) => value)
+  );
+  const hasIncoming = Object.keys(incoming).some((key) => key !== 'state' || incoming[key] !== 'AR');
+  if (!hasIncoming && ['quote-reset', 'address-reset', 'gps-location'].includes(source)) {
+    state.currentServiceAddress = { street: '', address: '', city: '', state: 'AR', zip: '', full: '', source, updatedAt: Date.now() };
+  } else {
+    state.currentServiceAddress = {
+      ...(state.currentServiceAddress || {}),
+      ...incoming,
+      source,
+      updatedAt: Date.now(),
+    };
   }
-  clearStaleServiceAddressFields();
-  return next;
+  console.log('[Service Address] set', source, state.currentServiceAddress);
+  if (options.syncQuoteForm) {
+    applyServiceAddressToQuoteForm(state.currentServiceAddress, { clearMissing: options.clearQuoteFormMissing });
+  }
+  return normalizeServiceAddressParts(state.currentServiceAddress);
 }
 
 function getCurrentServiceAddress(fallback = {}) {
@@ -739,25 +1963,43 @@ function getCurrentServiceAddress(fallback = {}) {
 }
 
 function syncServiceAddressFields(fallback = {}) {
+  // Deprecated: this used to write lead address fields directly.
+  // Keep it as a state resolver only; applyServiceAddressToLeadForm() is the single writer.
   const next = getCurrentServiceAddress(fallback);
-  clearStaleServiceAddressFields();
-  const set = (id, value) => {
-    const el = byId(id);
-    if (el) el.value = value || '';
-  };
-  set('leadAddress', next.address);
-  set('leadCity', next.city);
-  set('leadState', next.state || 'AR');
-  set('leadZip', next.zip);
+  if (hasServiceAddress(next)) setCurrentServiceAddress(next, 'deprecated-sync-service-address');
   const liveBidForm = byId('liveBidForm');
   if (liveBidForm) {
     ['address', 'city', 'state', 'zip'].forEach((name) => {
       const field = liveBidForm.elements[name];
       if (!field) return;
-      field.value = next[name] || (name === 'state' ? 'AR' : '');
+      if (next[name]) {
+        field.value = next[name];
+      } else if (name === 'state' && !field.value) {
+        field.value = 'AR';
+      }
     });
   }
   return next;
+}
+
+function applyServiceAddressToLeadForm(address = state.currentServiceAddress) {
+  const next = normalizeServiceAddressParts(address || {});
+  const addressEl = document.getElementById('leadAddress');
+  const cityEl = document.getElementById('leadCity');
+  const stateEl = document.getElementById('leadState');
+  const zipEl = document.getElementById('leadZip');
+
+  if (addressEl && next.street) addressEl.value = next.street;
+  if (cityEl && next.city) cityEl.value = next.city;
+  if (stateEl && next.state) stateEl.value = next.state;
+  if (zipEl && next.zip) zipEl.value = next.zip;
+
+  console.log('[Service Address] applied to lead form', {
+    address: addressEl?.value,
+    city: cityEl?.value,
+    state: stateEl?.value,
+    zip: zipEl?.value
+  });
 }
 
 function snapshotMowLayersForUndo() {
@@ -799,6 +2041,9 @@ function undoLastCut() {
 function clearParcelLayer() {
   state.parcelFeature = null;
   state.parcelLayer = null;
+  state.parcelProperties = null;
+  state.selectedParcel = null;
+  state.selectedParcelProperties = null;
   state.buildingFootprintFeatureCollection = EMPTY_FEATURE_COLLECTION();
   updateParcelSource();
   updateBuildingFootprintSource();
@@ -809,27 +2054,34 @@ function clearParcelLayer() {
 }
 
 function setMowableFeatures(features = []) {
+  const previousSelectedId = state.selectedMowableFeatureId;
   state.mowableFeatureCollection = {
     type: 'FeatureCollection',
     features: features.map((feature, index) => {
       const normalized = asFeature(feature);
       if (!normalized) return null;
+      const id = normalized.id || normalized.properties?.id || `mowable-${index}-${Date.now()}`;
       return {
         ...normalized,
-        id: normalized.id || `mowable-${index}-${Date.now()}`,
+        id,
         properties: {
           ...(normalized.properties || {}),
+          id,
           role: 'mowable',
         },
       };
     }).filter((feature) => feature?.geometry),
   };
+  if (previousSelectedId && !state.mowableFeatureCollection.features.some((feature) => String(feature.id || feature.properties?.id) === String(previousSelectedId))) {
+    state.selectedMowableFeatureId = null;
+  }
   state.drawGroup = state.mowableFeatureCollection;
   window.mowableFeatureCollection = state.mowableFeatureCollection;
   updateMowableSource();
 }
 
 function clearMowableFeatures() {
+  state.selectedMowableFeatureId = null;
   setMowableFeatures([]);
 }
 
@@ -859,6 +2111,37 @@ function clearCutoutFeatures() {
 
 function getMowableFeatureCount() {
   return state.mowableFeatureCollection?.features?.length || 0;
+}
+
+function mowableFeatureId(feature) {
+  return feature?.id || feature?.properties?.id || '';
+}
+
+function markSelectedMowableFeature() {
+  const selectedId = state.selectedMowableFeatureId ? String(state.selectedMowableFeatureId) : '';
+  (state.mowableFeatureCollection?.features || []).forEach((feature) => {
+    feature.properties = feature.properties || {};
+    feature.properties.selected = Boolean(selectedId && String(mowableFeatureId(feature)) === selectedId);
+  });
+}
+
+function selectMowableFeature(featureId) {
+  state.selectedMowableFeatureId = featureId ? String(featureId) : null;
+  markSelectedMowableFeature();
+  updateMowableSource();
+  updateQuoteFlowState();
+  if (featureId) setEditorModeLabel('Mode: Area selected');
+}
+
+function removeSelectedMowableFeature() {
+  const selectedId = state.selectedMowableFeatureId ? String(state.selectedMowableFeatureId) : '';
+  if (!selectedId) return false;
+  const features = getAllMowLayers().filter((feature) => String(mowableFeatureId(feature)) !== selectedId);
+  if (features.length === getMowableFeatureCount()) return false;
+  state.selectedMowableFeatureId = null;
+  setMowableFeatures(features);
+  syncMowAreaFromLayers();
+  return true;
 }
 
 function getCutoutFeatureCount() {
@@ -994,17 +2277,58 @@ function fitLayerBoundsWithContext(layer, options = {}) {
   fitBoundsWithContext(layer, options);
 }
 
-function drawParcel(geometry) {
+function refreshMapAfterStepVisible(reason = 'unknown') {
+  if (!state.map) return;
+
+  requestAnimationFrame(() => {
+    try { state.map.resize?.(); } catch {}
+  });
+
+  setTimeout(() => {
+    try {
+      state.map.resize?.();
+
+      if (state.parcelFeature || state.parcelLayer) {
+        updateParcelSource();
+        console.log('[Parcel Layer] render from state source=', reason);
+      }
+      if (state.mowableFeatureCollection?.features?.length) {
+        updateMowableSource();
+      }
+
+      const parcel = state.parcelFeature || state.parcelLayer;
+      if (parcel) {
+        fitLayerBoundsWithContext(parcel);
+        console.log('[Map Refresh] fit bounds parcel');
+      } else {
+        console.log('[Map Refresh] no parcel geometry found');
+      }
+
+      console.log('[Map Refresh] complete reason=', reason);
+    } catch (err) {
+      console.warn('[Map Refresh] failed reason=', reason, err);
+    }
+  }, 80);
+}
+
+function drawParcel(geometry, properties = {}) {
   if (!state.map || !geometry) return;
-  const feature = esriPolygonToGeoJSONFeature(geometry, { role: 'parcel' });
+  const feature = esriPolygonToGeoJSONFeature(geometry, { ...properties, role: 'parcel' });
   if (!feature) {
     console.warn("drawParcel: invalid rings", geometry);
     return;
   }
+  // ESRI rings use CW exterior; GeoJSON / MapLibre require CCW exterior.
+  // Without this rewind, MapLibre renders the complement (world minus parcel)
+  // and turf.intersect gives wrong results.
+  try { if (typeof turf !== 'undefined') turf.rewind(feature, { mutate: true }); } catch {}
 
   state.parcelGeometry = geometry;
   state.parcelFeature = feature;
   state.parcelLayer = feature;
+  state.parcelProperties = feature.properties || properties || {};
+  state.selectedParcel = feature;
+  state.selectedParcelProperties = feature.properties || properties || {};
 
   withMapReady(() => {
     updateParcelSource();
@@ -1424,7 +2748,6 @@ function syncMowAreaFromLayers() {
   scheduleEstimateRefresh('mow-area-sync');
   state.quoteUiMode = 'idle';
   updateQuoteFlowState();
-  if (totalSqFt > 0) showSuccess('Mowable area updated');
 }
 
 function stopToolModes() {
@@ -1455,6 +2778,11 @@ function stopToolModes() {
 
 function clearMowLayer() {
   stopToolModes();
+  if (removeSelectedMowableFeature()) {
+    setEditorModeLabel('Mode: Selected area cleared');
+    showSuccess('Selected area cleared');
+    return;
+  }
   clearMowableFeatures();
   state.editSnapshot = null;
 
@@ -1471,7 +2799,6 @@ function clearMowLayer() {
   setEstimateState('empty', { signature: form ? estimateSignatureFromPayload(buildQuotePayload(form)) : '', payload: null });
   state.quoteUiMode = 'idle';
   updateQuoteFlowState();
-  showInfo('Mowable area cleared');
 }
 
 function cloneParcelAsMowable(options = {}) {
@@ -1484,6 +2811,19 @@ function cloneParcelAsMowable(options = {}) {
 
   const feature = esriPolygonToGeoJSONFeature(state.parcelGeometry, { role: 'mowable' });
   if (!feature) return;
+  if (typeof turf !== 'undefined' && feature) {
+    const _featureArea = Math.round(turf.area(feature));
+    const _parcelArea = state.mowableEstimate?.parcelAreaSqft
+      ? Math.round(state.mowableEstimate.parcelAreaSqft * 0.0929)
+      : _featureArea;
+    console.warn(
+      '[MowableSource] source=parcel' +
+      '  featureArea=' + _featureArea + ' m²' +
+      '  parcelArea=' + _parcelArea + ' m²' +
+      '  ratio=' + (_parcelArea > 0 ? (_featureArea / _parcelArea).toFixed(2) : '?') +
+      '  (intentional: user chose Use Parcel Shape)'
+    );
+  }
   setMowableFeatures([feature]);
 
   fitLayerBoundsWithContext(feature);
@@ -1508,7 +2848,6 @@ function cloneParcelAsMowable(options = {}) {
     setTimeout(() => {
       startEditMowable();
     }, 0);
-    showInfo('Full property selected as mowable area');
   }
   updateQuoteFlowState();
 }
@@ -1662,7 +3001,7 @@ async function refreshEstimate(options = {}) {
       return state.currentEstimate;
     }
 
-    const freshPayload = { ...payload, estimate: data.estimate };
+    const freshPayload = { ...payload, ...currentJobScopeSnapshotFields(), estimate: data.estimate };
     state.pendingQuote = freshPayload;
     state.lastQuote = null;
     saveQuoteDraft();
@@ -1672,7 +3011,6 @@ async function refreshEstimate(options = {}) {
       estimate: data.estimate,
     });
     if (options.navigate) showQuoteFlowStep('estimate');
-    if (options.toast) showSuccess('Quote updated');
     return estimateState;
   } catch (error) {
     if (requestSeq !== estimateRequestSeq) return state.currentEstimate;
@@ -1739,9 +3077,9 @@ function updateQuoteFlowState(options = {}) {
   if (!parcelLoaded || state.quoteFlowStep !== 'draw') setMapToolPanelOpen(false);
 
   setElementVisible('useParcelShapeBtn', parcelLoaded && !mowSelected && !editing && !drawing);
-  setElementVisible('lassoYardBtn', parcelLoaded && !mowSelected && !editing && !drawing);
+  setElementVisible('lassoYardBtn', parcelLoaded && !editing && !drawing);
   setElementVisible('finishLassoBtn', parcelLoaded && drawing);
-  setElementVisible('drawMowableBtn', parcelLoaded && !editing && !drawing);
+  setElementVisible('drawMowableBtn', false);
   setElementVisible('editMowableBtn', parcelLoaded && mowSelected && !editing && !drawing);
   setElementVisible('deleteMowableBtn', parcelLoaded && mowSelected && !drawing);
   setElementVisible('cutMowableBtn', parcelLoaded && mowSelected && !editing && !drawing);
@@ -1764,6 +3102,12 @@ function updateQuoteFlowState(options = {}) {
     requestBtn.classList.toggle('hidden', !mowSelected);
     requestBtn.disabled = !estimateFresh;
     requestBtn.classList.toggle('disabled', !estimateFresh);
+  }
+  const manualQuoteBtn = byId('manualQuoteBtn');
+  if (manualQuoteBtn) {
+    manualQuoteBtn.classList.toggle('hidden', !mowSelected);
+    manualQuoteBtn.disabled = !estimateFresh;
+    manualQuoteBtn.classList.toggle('disabled', !estimateFresh);
   }
   byId('checkoutTestModeNote')?.classList.toggle('hidden', !estimateFresh);
 
@@ -1960,6 +3304,14 @@ function startDeleteMowable() {
   }
 
   stopToolModes();
+  if (removeSelectedMowableFeature()) {
+    state.quoteUiMode = 'idle';
+    setEditorModeLabel('Mode: Selected area deleted');
+    setMapToolPanelOpen(true);
+    updateQuoteFlowState();
+    showSuccess('Selected area deleted');
+    return;
+  }
   setMapMode('edit');
   state.editSnapshot = null;
   clearMowableFeatures();
@@ -2050,13 +3402,32 @@ function initMap() {
     applyParcelFromClick({ lat: e.lngLat.lat, lng: e.lngLat.lng });
   });
 
+  if (!state._mowableSelectionHandlersInstalled) {
+    state._mowableSelectionHandlersInstalled = true;
+    state.map.on('click', 'mowable-fill', (e) => {
+      if (getMapMode() === 'lasso' || state.quoteUiMode === 'drawing') return;
+      const feature = e.features?.[0];
+      const featureId = feature?.properties?.id || feature?.id;
+      if (!featureId) return;
+      e.preventDefault?.();
+      selectMowableFeature(featureId);
+      setMapToolPanelOpen(true);
+    });
+    state.map.on('mouseenter', 'mowable-fill', () => {
+      try { state.map.getCanvas().style.cursor = 'pointer'; } catch {}
+    });
+    state.map.on('mouseleave', 'mowable-fill', () => {
+      try { state.map.getCanvas().style.cursor = ''; } catch {}
+    });
+  }
+
   state.map.on('dblclick', (e) => {
     if (getMapMode() !== 'select' || !state.parcelSelectMode) return;
     e.preventDefault?.();
     state.parcelDblClick = true;
     if (state.pendingParcelFeature) {
       state.parcelDblClick = false;
-      confirmParcelSelection();
+      confirmParcelSelection().catch((error) => showError('Parcel selection failed: ' + prettyApiError(error)));
     }
   });
 }
@@ -2071,6 +3442,7 @@ window.exposeTurfLynkMapGlobals = exposeTurfLynkMapGlobals;
 window.syncMowAreaFromLayers = syncMowAreaFromLayers;
 window.startEditMowable = startEditMowable;
 window.setTurfLynkMowableFeatures = setMowableFeatures;
+window.selectTurfLynkMowableFeature = selectMowableFeature;
 window.applyTurfLynkCutFeature = applyCutToMowable;
 window.setTurfLynkLassoTempLine = setLassoTempLine;
 window.updateEstimatePreview = updateEstimatePreview;
@@ -2148,11 +3520,13 @@ function selectServiceCard(serviceId) {
 function closeAppDrawer() {
   byId('appDrawer')?.classList.add('hidden');
   byId('appDrawerOverlay')?.classList.add('hidden');
+  byId('openAppDrawer')?.setAttribute('aria-expanded', 'false');
 }
 
 function openAppDrawer() {
   byId('appDrawer')?.classList.remove('hidden');
   byId('appDrawerOverlay')?.classList.remove('hidden');
+  byId('openAppDrawer')?.setAttribute('aria-expanded', 'true');
 }
 
 function revealSecondarySectionForTarget(targetId) {
@@ -2193,14 +3567,15 @@ function navigateFromElement(el) {
     setTimeout(() => target?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 80);
   }
   if (el?.hasAttribute?.('data-drawer-contact') || el?.hasAttribute?.('data-mobile-contact')) {
-    setActiveView('quote');
-    setTimeout(() => byId('leadRequestPanel')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 80);
-    showInfo('Start with a quote, then send the service request.');
+    openAppDrawer();
+    setTimeout(() => byId('drawerContactPanel')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 80);
+    return;
   }
   closeAppDrawer();
 }
 
 function setActiveView(view) {
+  byId('accountPanel')?.classList.add('hidden');
   state.activeView = view;
   document.body.dataset.activeView = view;
 
@@ -2235,7 +3610,7 @@ function setActiveView(view) {
 
   if (view === 'quote' && state.map) {
     setTimeout(() => state.map.resize?.(), 100);
-    showQuoteFlowStep(state.quoteFlowStep || 'start', { scroll: false });
+    showQuoteFlowStep(state.quoteFlowStep || 'property', { scroll: false });
     updateQuoteFlowState();
   }
 
@@ -2362,6 +3737,61 @@ function sanitizeJobForPublic(job = {}) {
     preferredDate: job.preferredDate || job.preferred_date || '',
     postedAt: job.postedAt || job.createdAt || job.created_at || '',
   };
+}
+
+function scopeAreaLabel(sqft) {
+  const value = Math.round(Number(sqft || 0));
+  if (!value) return '';
+  return `${value.toLocaleString()} sq ft`;
+}
+
+function countGeoJsonFeatures(geojson) {
+  if (!geojson) return 0;
+  if (geojson.type === 'FeatureCollection') return geojson.features?.length || 0;
+  return geojson.type ? 1 : 0;
+}
+
+function renderJobScopeSnapshot(job = {}, safe = sanitizeJobForPublic(job)) {
+  const scope = job.scopeSnapshot || job.scope_snapshot || {};
+  if (!scope || !Object.keys(scope).length) return '';
+  const access = scope.access || {};
+  const options = scope.serviceOptions || {};
+  const mowSqft = Number(scope.mowableAreaSqFt || scope.mowAreaSqft || 0);
+  const lotSqft = Number(scope.lotAreaSqFt || scope.lotAreaSqft || 0);
+  const price = Number(scope.paidAmount || scope.finalAmount || safe.amount || 0);
+  const tip = Number(scope.tipAmount || 0);
+  const mapItems = [
+    countGeoJsonFeatures(scope.parcelGeoJSON) ? 'parcel saved' : '',
+    countGeoJsonFeatures(scope.selectedMowableGeoJSON) ? `${countGeoJsonFeatures(scope.selectedMowableGeoJSON)} mowable area${countGeoJsonFeatures(scope.selectedMowableGeoJSON) === 1 ? '' : 's'} saved` : '',
+    countGeoJsonFeatures(scope.excludedGeoJSON) ? `${countGeoJsonFeatures(scope.excludedGeoJSON)} cutout${countGeoJsonFeatures(scope.excludedGeoJSON) === 1 ? '' : 's'} saved` : '',
+  ].filter(Boolean).join(' · ');
+  const accessText = [
+    access.gateSize ? `Gate: ${access.gateSize}` : '',
+    access.gateWidthInches ? `Gate width: ${access.gateWidthInches} in` : '',
+    access.mowerAccess ? `Mower access: ${access.mowerAccess}` : '',
+    access.yardAccessNotes ? `Access notes: ${access.yardAccessNotes}` : '',
+    access.communityAccessType && access.communityAccessType !== 'no' ? `Community access: ${access.communityAccessType}` : '',
+    access.communityAccessPrivate ? 'Community instructions saved privately' : '',
+  ].filter(Boolean).join(' · ');
+  const serviceText = [
+    options.scopeLocked ? 'Standard mowing scope locked' : '',
+    options.selectedYardAreas?.length ? `Areas: ${options.selectedYardAreas.join(', ')}` : '',
+    options.grassHeight ? `Grass: ${options.grassHeight}` : '',
+    options.frequency ? `Frequency: ${options.frequency}` : '',
+    options.pets && options.pets !== 'none' ? `Pets: ${options.pets}` : '',
+    options.obstacles?.length ? `Obstacles: ${options.obstacles.join(', ')}` : '',
+  ].filter(Boolean).join(' · ');
+
+  return `
+    <div class="job-scope-snapshot" aria-label="Paid scope snapshot">
+      <div class="meta"><strong>Paid scope:</strong> ${escapeHtml(serviceText || `${serviceLabel(scope.serviceType || safe.serviceType)} from MowNWA`)}</div>
+      ${mowSqft ? `<div class="meta">Mowable area: <strong>${escapeHtml(scopeAreaLabel(mowSqft))}</strong>${lotSqft ? ` · Lot: ${escapeHtml(scopeAreaLabel(lotSqft))}` : ''}</div>` : ''}
+      <div class="meta">Price: <strong>${money(price)}</strong>${tip > 0 ? ` · Tip: <strong>${money(tip)}</strong>` : ''}</div>
+      ${accessText ? `<div class="meta">Service/access: ${escapeHtml(accessText)}</div>` : ''}
+      ${scope.customerNotes ? `<div class="meta">Customer notes: ${escapeHtml(scope.customerNotes)}</div>` : ''}
+      <div class="map-placeholder">${escapeHtml(mapItems || 'Map snapshot saved for this job.')}</div>
+    </div>
+  `;
 }
 
 function localContentData() {
@@ -2607,19 +4037,70 @@ document.getElementById('openAuth')?.addEventListener('click', () => {
   toggleAuthPanel();
 });
 
-byId('mobileAuthBtn')?.addEventListener('click', () => toggleAuthPanel(true));
+byId('mobileAuthBtn')?.addEventListener('click', () => {
+  if (hasActiveSession()) {
+    showAccountPanel('overview');
+    return;
+  }
+  toggleAuthPanel(true);
+});
 byId('openAppDrawer')?.addEventListener('click', openAppDrawer);
 byId('mobileMoreBtn')?.addEventListener('click', openAppDrawer);
 byId('closeAppDrawer')?.addEventListener('click', closeAppDrawer);
 byId('appDrawerOverlay')?.addEventListener('click', closeAppDrawer);
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') {
+    closeAppDrawer();
+    toggleAuthPanel?.(false);
+  }
+});
 document.querySelectorAll('[data-drawer-view], [data-drawer-contact], [data-mobile-contact]').forEach((btn) => {
   btn.addEventListener('click', () => navigateFromElement(btn));
+});
+
+$$('[data-account-panel]').forEach((btn) => {
+  btn.addEventListener('click', () => showAccountPanel());
 });
 
 $$('[data-open-auth]').forEach((btn) => {
   btn.addEventListener('click', () => {
     closeAppDrawer();
     toggleAuthPanel(true);
+  });
+});
+
+$$('[data-social-auth]').forEach((btn) => {
+  btn.addEventListener('click', (e) => {
+    const provider = btn.dataset.socialAuth;
+    const isFacebook = provider === 'facebook';
+    const mobile = isMobileFacebookLoginFlow();
+    if (isFacebook) console.log('[Facebook Login] clicked', { mobile: isMobileFacebookLoginFlow() });
+    e.preventDefault();
+    if (isFacebook) console.log('[Facebook Login] handler started', { mobile });
+    beginSocialAuth(provider, btn.dataset.authReturnStep || 'request');
+  });
+});
+
+$$('.facebook-login-link').forEach((link) => {
+  link.addEventListener('click', (e) => {
+    console.log('[Facebook Login] clicked', { mobile: isMobileFacebookLoginFlow() });
+    e.preventDefault();
+    const mobile = isMobileFacebookLoginFlow();
+    console.log('[Facebook Login] handler started', { mobile });
+    // Always snapshot quote context so handleAuthReturn can resume if a quote was in progress
+    saveAuthReturnContext('request', 'account');
+    const route = facebookAuthStartPath('account', 'request');
+    console.info('[Facebook Login] starting', { source: 'account', step: 'request', mobile: isMobileFacebookLoginFlow(), route });
+    window.location.assign(route);
+  });
+});
+
+$$('[data-email-auth-target]').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    const form = byId(btn.dataset.emailAuthTarget);
+    const firstInput = form?.querySelector('input:not([type="hidden"]), textarea, select');
+    firstInput?.focus();
+    form?.scrollIntoView({ behavior: 'smooth', block: 'center' });
   });
 });
 
@@ -2727,7 +4208,7 @@ async function loadProviderServiceAreas() {
   const summary = byId('providerServiceAreaSummary');
   if (!summary) return;
 
-  if (!getAuthToken()) {
+  if (!hasActiveSession()) {
     summary.innerHTML = '<div style="color:var(--muted);padding:12px">Sign in as a provider to manage service areas.</div>';
     return;
   }
@@ -2761,6 +4242,7 @@ async function geocodeAddress() {
     .join(', ');
 
   if (!q.trim()) {
+    showPropertyConfirmationPanel(true);
     return showResult('parcelInfo', '<strong>Enter an address first.</strong>');
   }
 
@@ -2769,6 +4251,7 @@ async function geocodeAddress() {
   const data = await res.json();
 
   if (!Array.isArray(data) || !data.length) {
+    showPropertyConfirmationPanel(true);
     return showResult(
       'parcelInfo',
       '<strong>Address not found.</strong> Try adding city/state or use autocomplete.'
@@ -2786,6 +4269,132 @@ async function geocodeAddress() {
   );
 }
 
+function addressPartsFromGoogleComponents(components = []) {
+  const getLong = (type) => components.find((component) => component.types?.includes(type))?.long_name || '';
+  const getShort = (type) => components.find((component) => component.types?.includes(type))?.short_name || '';
+  return normalizeServiceAddressParts({
+    address: `${getLong('street_number')} ${getLong('route')}`.trim(),
+    city:
+      getLong('locality') ||
+      getLong('sublocality') ||
+      getLong('administrative_area_level_3') ||
+      getLong('administrative_area_level_2') ||
+      '',
+    state: getShort('administrative_area_level_1') || 'AR',
+    zip: getLong('postal_code') || '',
+  });
+}
+
+function addressPartsFromNominatim(data = {}) {
+  const address = data.address || {};
+  const stateValue = address.state_code || (address.state === 'Arkansas' ? 'AR' : address.state);
+  return normalizeServiceAddressParts({
+    address: [address.house_number, address.road].filter(Boolean).join(' '),
+    city:
+      address.city ||
+      address.town ||
+      address.village ||
+      address.hamlet ||
+      address.municipality ||
+      '',
+    state: stateValue || 'AR',
+    zip: address.postcode || '',
+    full: data.display_name || '',
+  });
+}
+
+async function reverseGeocodeServiceAddress(lat, lng) {
+  const point = { lat: Number(lat), lng: Number(lng) };
+  if (!Number.isFinite(point.lat) || !Number.isFinite(point.lng)) return normalizeServiceAddressParts();
+
+  if (window.google?.maps?.Geocoder) {
+    try {
+      const geocoder = new google.maps.Geocoder();
+      const results = await new Promise((resolve, reject) => {
+        geocoder.geocode({ location: point }, (items, status) => {
+          if (status === 'OK') resolve(items || []);
+          else reject(new Error(status || 'Google reverse geocode failed'));
+        });
+      });
+      const first = results[0];
+      if (first) {
+        const parts = addressPartsFromGoogleComponents(first.address_components || []);
+        parts.full = first.formatted_address || parts.full;
+        return parts;
+      }
+    } catch (error) {
+      console.warn('[Reverse Geocode Failed] google', error);
+    }
+  }
+
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3500);
+    const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&addressdetails=1&lat=${encodeURIComponent(point.lat)}&lon=${encodeURIComponent(point.lng)}`;
+    try {
+      const res = await fetch(url, { headers: { Accept: 'application/json' }, signal: controller.signal });
+      if (!res.ok) throw new Error(`Nominatim ${res.status}`);
+      return addressPartsFromNominatim(await res.json());
+    } finally {
+      clearTimeout(timeout);
+    }
+  } catch (error) {
+    console.warn('[Reverse Geocode Failed] nominatim', error);
+    return normalizeServiceAddressParts();
+  }
+}
+
+async function fillMissingServiceAddressFromReverseGeocode(address, point = {}) {
+  const current = normalizeServiceAddressParts(address || {});
+  if (current.city && current.zip) return current;
+  const reverse = await reverseGeocodeServiceAddress(point.lat, point.lng);
+  if (!reverse.city && !reverse.zip) return current;
+
+  const merged = normalizeServiceAddressParts({
+    street: current.street || reverse.street,
+    address: current.address || reverse.address,
+    city: current.city || reverse.city,
+    state: current.state || reverse.state || 'AR',
+    zip: current.zip || reverse.zip,
+    full: current.full || reverse.full,
+  });
+
+  console.log('[Service Address Reverse Geocode Fallback]', {
+    point,
+    reverse,
+    final: merged,
+  });
+
+  return merged;
+}
+
+function parcelLookupPointFromGeometry(geometry = null) {
+  const ring = geometry?.rings?.[0] || geometry?.coordinates?.[0]?.[0] || geometry?.coordinates?.[0] || [];
+  const points = Array.isArray(ring) ? ring : [];
+  const totals = points.reduce((acc, point) => {
+    const lng = Number(point?.[0]);
+    const lat = Number(point?.[1]);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return acc;
+    acc.lat += lat;
+    acc.lng += lng;
+    acc.count += 1;
+    return acc;
+  }, { lat: 0, lng: 0, count: 0 });
+  if (!totals.count) return null;
+  return { lat: totals.lat / totals.count, lng: totals.lng / totals.count };
+}
+
+function quoteFormLatLng() {
+  const form = byId('quoteForm');
+  const lat = Number(form?.elements?.lat?.value || 0);
+  const lng = Number(form?.elements?.lng?.value || 0);
+  return Number.isFinite(lat) && Number.isFinite(lng) && lat && lng ? { lat, lng } : null;
+}
+
+function showPropertyConfirmationPanel(visible = true) {
+  byId('quoteParcelScreen')?.classList.toggle('hidden', !visible);
+}
+
 async function lookupParcel(options = {}) {
   const quoteForm = byId('quoteForm');
   const parcelInfo = byId('parcelInfo');
@@ -2795,6 +4404,7 @@ async function lookupParcel(options = {}) {
   const lng = quoteForm.elements.lng.value;
 
   if (!lat || !lng) {
+    showPropertyConfirmationPanel(true);
     return showResult(
       'parcelInfo',
       '<strong>No coordinates yet.</strong> Use Find Address or autocomplete first.'
@@ -2818,6 +4428,7 @@ async function lookupParcel(options = {}) {
         You can still draw the mowable area manually.
       `;
     parcelInfo.classList.remove('hidden');
+    showPropertyConfirmationPanel(true);
     clearParcelLayer();
     updateQuoteFlowState();
     if (!options.suppressNotFoundToast) {
@@ -2828,15 +4439,19 @@ async function lookupParcel(options = {}) {
 
   const normalized = data.normalized || {};
   const attrs = normalized.attributes || {};
-  const parcelAddress = parcelAddressFromNormalized(normalized);
+  const parcelProps = parcelPropertiesFromLookupData(data);
   const fallbackAddress = options.allowAddressFallback === false ? {} : getQuoteFormServiceAddress();
-  const serviceAddress = hasServiceAddress(parcelAddress) ? parcelAddress : fallbackAddress;
+  let serviceAddress = resolveServiceAddressFromParcel(parcelProps, fallbackAddress);
+  serviceAddress = await fillMissingServiceAddressFromReverseGeocode(serviceAddress, { lat, lng });
 
-  const parcelId = normalized.parcelId || attrs.parcelid || '';
+  const parcelId = normalized.parcelId || propText(attrs, 'parcelid', 'parcel_id', 'PARCELID', 'PIN') || '';
   const ownerName = attrs.ownername || 'n/a';
-  const addressLabel = attrs.adrlabel || 'n/a';
-  const county = normalized.county || attrs.countyid || 'n/a';
+  const addressLabel = propText(parcelProps, 'adrlabel') || 'n/a';
+  const county = normalized.county || propText(attrs, 'countyid', 'county', 'COUNTY') || 'n/a';
   const geometry = data.feature?.geometry || null;
+  state.parcelProperties = parcelProps;
+  state.selectedParcelProperties = parcelProps;
+  state.selectedParcel = { type: 'Feature', geometry: null, properties: parcelProps };
 
   quoteForm.elements.parcelId.value = parcelId;
   quoteForm.elements.lotAreaSqft.value = '';
@@ -2853,13 +4468,12 @@ async function lookupParcel(options = {}) {
   });
 
   if (geometry) {
-    drawParcel(geometry);
+    drawParcel(geometry, parcelProps);
     const parcelAreaSqft = Number(normalized.areaSqft || 0)
       || (state.parcelLayer ? layerAreaSqFt(state.parcelLayer) : 0);
     quoteForm.elements.lotAreaSqft.value = parcelAreaSqft || '';
     renderSuggestedMowablePanel(null);
     scheduleEstimateRefresh('parcel-loaded');
-    showSuccess('Property boundary loaded');
   }
 
   updateMowAreaHelper(
@@ -2885,14 +4499,18 @@ async function lookupParcel(options = {}) {
   parcelInfo.innerHTML = customerLines.join('<br>')
     + `<details class="parcel-tech-details"><summary>Advanced parcel details</summary>${techLines}</details>`;
   parcelInfo.classList.remove('hidden');
+  showPropertyConfirmationPanel(true);
 
   saveQuoteDraft();
   scheduleEstimateRefresh('parcel-loaded');
   updateQuoteFlowState();
-  showQuoteFlowStep('parcel');
+  showQuoteFlowStep('property');
 }
 
 async function lookupParcelByLatLng(lat, lng) {
+  clearParcelLayer();
+  clearMowLayer();
+  renderSuggestedMowablePanel(null);
   setCurrentServiceAddress({}, 'gps-location', {
     syncQuoteForm: true,
     clearQuoteFormMissing: true,
@@ -2915,17 +4533,17 @@ function setGpsStatus(message) {
 }
 
 function setGpsButtonLocating(isLocating) {
-  const btn = byId('useLocationBtn');
-  if (!btn) return;
-  if (isLocating) {
-    btn.dataset.originalText = btn.textContent || 'Use My Current Location';
-    btn.textContent = 'Finding your location...';
-    btn.disabled = true;
-    return;
-  }
-  btn.disabled = false;
-  btn.textContent = btn.dataset.originalText || 'Use My Current Location';
-  delete btn.dataset.originalText;
+  $$('[data-use-current-location]').forEach((btn) => {
+    if (isLocating) {
+      btn.dataset.originalText = btn.textContent || 'Use Current Location';
+      btn.textContent = 'Finding your location...';
+      btn.disabled = true;
+      return;
+    }
+    btn.disabled = false;
+    btn.textContent = btn.dataset.originalText || 'Use Current Location';
+    delete btn.dataset.originalText;
+  });
 }
 
 function gpsErrorMessage(error) {
@@ -2948,7 +4566,6 @@ function enterParcelSelectMode() {
   setEditorModeLabel('Mode: Tap a parcel on the map to select it');
   byId('selectParcelBtn')?.classList.add('active');
   byId('useThisParcelBar')?.classList.add('hidden');
-  showInfo('Tap any parcel on the map. Press "Use This Parcel" to confirm, or Cancel to exit.');
 }
 
 function exitParcelSelectMode() {
@@ -2967,7 +4584,6 @@ function exitParcelSelectMode() {
 async function applyParcelFromClick(latlng) {
   if (!state.parcelSelectMode) return;
   const { lat, lng } = latlng;
-  showInfo('Looking up parcel…');
   let data;
   try {
     const qs = new URLSearchParams({ lat, lng });
@@ -2981,13 +4597,15 @@ async function applyParcelFromClick(latlng) {
     return;
   }
   const geometry = data.feature.geometry;
-  state.pendingParcelPreviewFeature = esriPolygonToGeoJSONFeature(geometry, { role: 'parcel-preview' });
+  const parcelProps = parcelPropertiesFromLookupData(data);
+  data.lookupPoint = { lat, lng };
+  state.pendingParcelPreviewFeature = esriPolygonToGeoJSONFeature(geometry, { ...parcelProps, role: 'parcel-preview' });
   state.pendingParcelPreviewLayer = state.pendingParcelPreviewFeature;
   updatePreviewParcelSource();
   state.pendingParcelFeature = data;
   if (state.parcelDblClick) {
     state.parcelDblClick = false;
-    confirmParcelSelection();
+    confirmParcelSelection().catch((error) => showError('Parcel selection failed: ' + prettyApiError(error)));
     return;
   }
   const bar = byId('useThisParcelBar');
@@ -3001,19 +4619,27 @@ async function applyParcelFromClick(latlng) {
   }
 }
 
-function confirmParcelSelection() {
+async function confirmParcelSelection() {
   if (!state.pendingParcelFeature) return;
   const data = state.pendingParcelFeature;
   const geometry = data.feature?.geometry;
   const normalized = data.normalized || {};
   const attrs = normalized.attributes || {};
-  const parcelAddress = parcelAddressFromNormalized(normalized);
+  const parcelProps = parcelPropertiesFromLookupData(data);
+  let parcelAddress = resolveServiceAddressFromParcel(parcelProps, getQuoteFormServiceAddress());
+  parcelAddress = await fillMissingServiceAddressFromReverseGeocode(
+    parcelAddress,
+    data.lookupPoint || quoteFormLatLng() || parcelLookupPointFromGeometry(geometry) || {}
+  );
   clearMowableFeatures();
   state.mowUndoStack = [];
-  if (geometry) drawParcel(geometry);
+  state.parcelProperties = parcelProps;
+  state.selectedParcelProperties = parcelProps;
+  state.selectedParcel = { type: 'Feature', geometry: null, properties: parcelProps };
+  if (geometry) drawParcel(geometry, parcelProps);
   const quoteForm = byId('quoteForm');
   if (quoteForm) {
-    quoteForm.elements.parcelId.value = normalized.parcelId || attrs.parcelid || '';
+    quoteForm.elements.parcelId.value = normalized.parcelId || propText(attrs, 'parcelid', 'parcel_id', 'PARCELID', 'PIN') || '';
     const sqft = Number(normalized.areaSqft || 0)
       || (state.parcelLayer ? layerAreaSqFt(state.parcelLayer) : 0);
     quoteForm.elements.lotAreaSqft.value = sqft || '';
@@ -3030,11 +4656,10 @@ function confirmParcelSelection() {
   syncMowAreaFromLayers();
   saveQuoteDraft();
   updateQuoteFlowState();
-  showSuccess('Parcel selected. Draw or lasso the mowable area.');
   const parcelInfo = byId('parcelInfo');
   if (parcelInfo) {
     const selQf = byId('quoteForm');
-    const selAddrLabel = attrs.adrlabel || '';
+    const selAddrLabel = propText(parcelProps, 'adrlabel') || '';
     const selLotSqft = selQf ? Number(selQf.elements.lotAreaSqft.value || 0) : 0;
     const selCustomerLines = [
       '<strong>Parcel selected. Boundary loaded.</strong>',
@@ -3043,15 +4668,16 @@ function confirmParcelSelection() {
       'Use <strong>Lasso Yard</strong> to draw the mowable area.',
     ].filter(Boolean);
     const selTechLines = [
-      `County: ${escapeHtml(normalized.county || attrs.countyid || 'n/a')}`,
-      `Parcel ID: ${escapeHtml(normalized.parcelId || attrs.parcelid || 'n/a')}`,
+      `County: ${escapeHtml(normalized.county || propText(attrs, 'countyid', 'county', 'COUNTY') || 'n/a')}`,
+      `Parcel ID: ${escapeHtml(normalized.parcelId || propText(attrs, 'parcelid', 'parcel_id', 'PARCELID', 'PIN') || 'n/a')}`,
     ].join('<br>');
     parcelInfo.innerHTML = selCustomerLines.join('<br>')
       + `<details class="parcel-tech-details"><summary>Advanced parcel details</summary>${selTechLines}</details>`;
     parcelInfo.classList.remove('hidden');
+    showPropertyConfirmationPanel(true);
   }
   exitParcelSelectMode();
-  showQuoteFlowStep('parcel');
+  showQuoteFlowStep('property');
 }
 
 async function loadProviders() {
@@ -3268,7 +4894,7 @@ function quoteContactMissing(payload) {
   const missing = [];
   if (!String(payload.name || '').trim()) missing.push('name');
   if (!String(payload.email || '').trim()) missing.push('email');
-  if (!String(payload.phone || '').trim()) missing.push('phone');
+  if (!isValidLookingPhone(payload.phone || '')) missing.push('phone');
   return missing;
 }
 
@@ -3286,7 +4912,7 @@ function bookingAccessNotesRequired(payload = {}) {
 function bookingContactMissing(payload = {}) {
   const missing = [];
   if (!String(payload.name || payload.customerName || '').trim()) missing.push('name');
-  if (!String(payload.phone || payload.customerPhone || '').trim()) missing.push('phone');
+  if (!isValidLookingPhone(payload.phone || payload.customerPhone || '')) missing.push('phone');
   if (!String(payload.email || payload.customerEmail || '').trim()) missing.push('email');
   if (!String(payload.address || '').trim()) missing.push('address');
   const accessNotes = payload.yard_access_notes || payload.access_notes || payload.notes || payload.community_access_instructions || '';
@@ -3296,14 +4922,15 @@ function bookingContactMissing(payload = {}) {
 
 function normalizeBookingContact(payload = {}) {
   const serviceAddress = getCurrentServiceAddress(payload);
+  const phone = bookingPhoneValue(payload);
   return {
     ...payload,
     ...(hasServiceAddress(serviceAddress) ? serviceAddress : {}),
     name: payload.name || payload.customerName || '',
-    phone: payload.phone || payload.customerPhone || '',
+    phone,
     email: payload.email || payload.customerEmail || '',
     customerName: payload.customerName || payload.name || '',
-    customerPhone: payload.customerPhone || payload.phone || '',
+    customerPhone: phone,
     customerEmail: payload.customerEmail || payload.email || '',
   };
 }
@@ -3452,17 +5079,16 @@ function showLeadRequestPanel(payload) {
   const estimate = payload.estimate || 0;
   const quoteForm = byId('quoteForm');
   const quoteFields = quoteForm ? formToObject(quoteForm) : {};
-  const serviceAddress = syncServiceAddressFields(payload);
+  const payloadServiceAddress = payload?.parcelProperties
+    ? resolveServiceAddressFromParcel(payload.parcelProperties, payload)
+    : getCurrentServiceAddress(payload);
+  if (hasServiceAddress(payloadServiceAddress)) setCurrentServiceAddress(payloadServiceAddress, 'show-lead-request');
 
   // Populate hidden fields from the estimate payload
   const set = (id, val) => { const el = byId(id); if (el) el.value = val || ''; };
   set('leadEstimatedPrice', estimate);
   set('leadMowAreaSqft', payload.mowAreaSqft || 0);
   set('leadLotAreaSqft', payload.lotAreaSqft || 0);
-  set('leadAddress', serviceAddress.address || '');
-  set('leadCity', serviceAddress.city || '');
-  set('leadState', serviceAddress.state || 'AR');
-  set('leadZip', serviceAddress.zip || '');
   set('leadRegionId', payload.regionId || '');
   set('leadServiceType', payload.serviceType || 'mowing');
   set('leadParcelAreaSqft', payload.parcelAreaSqft || quoteFields.parcelAreaSqft || '');
@@ -3481,10 +5107,113 @@ function showLeadRequestPanel(payload) {
     submitBtn.disabled = false;
     submitBtn.textContent = 'Book & Pay Securely';
   }
+  const leadForm = byId('leadRequestForm');
+  if (leadForm) {
+    const fillBlank = (name, value) => {
+      const field = leadForm.elements[name];
+      if (field && !String(field.value || '').trim() && value) field.value = value;
+    };
+    fillBlank('customerName', payload.customerName || payload.name || '');
+    fillBlank('customerPhone', payload.customerPhone || payload.phone || '');
+    fillBlank('customerEmail', payload.customerEmail || payload.email || '');
+  }
 
   panel.classList.remove('hidden');
   showQuoteFlowStep('request');
   updateQuoteStepper();
+
+  // Fill blank customer fields from logged-in user profile (does not overwrite typed values)
+  hydrateLeadFormFromUser(state.currentUser);
+  if (state.currentUser) console.info('[Auth UI] showing signed-in controls on request panel');
+
+  applyServiceAddressToLeadForm();
+  console.log('[FINAL FORM STATE]', {
+    city: document.getElementById('leadCity')?.value,
+    state: document.getElementById('leadState')?.value,
+    zip: document.getElementById('leadZip')?.value
+  });
+}
+
+function hideManualQuotePanel() {
+  const panel = byId('manualQuotePanel');
+  if (panel) {
+    panel.classList.add('hidden');
+    panel.hidden = true;
+    panel.setAttribute('aria-hidden', 'true');
+  }
+  showQuoteFlowStep('estimate');
+  updateQuoteStepper();
+}
+
+function showManualQuotePanel(payload = {}) {
+  const panel = byId('manualQuotePanel');
+  if (!panel) return;
+
+  const quoteForm = byId('quoteForm');
+  const quoteFields = quoteForm ? formToObject(quoteForm) : {};
+  const estimate = Number(payload.estimate || state.currentEstimate?.estimate || 0);
+  syncServiceAddressFields(payload);
+
+  const display = byId('manualQuoteEstimateDisplay');
+  if (display) display.textContent = estimate > 0 ? money(estimate) : '-';
+
+  const form = byId('manualQuoteForm');
+  if (form) {
+    if (form.elements.name) form.elements.name.value = payload.name || payload.customerName || form.elements.name.value || '';
+    if (form.elements.phone) form.elements.phone.value = payload.phone || payload.customerPhone || form.elements.phone.value || '';
+    if (form.elements.email) form.elements.email.value = payload.email || payload.customerEmail || form.elements.email.value || '';
+    if (form.elements.notes) form.elements.notes.value = form.elements.notes.value || quoteFields.notes || '';
+  }
+
+  byId('manualQuoteResult')?.classList.add('hidden');
+  $$('[data-quote-step-panel]').forEach((stepPanel) => {
+    stepPanel.classList.remove('is-active');
+    stepPanel.classList.add('is-hidden', 'hidden');
+    stepPanel.hidden = true;
+    stepPanel.setAttribute('aria-hidden', 'true');
+  });
+  panel.classList.remove('hidden');
+  panel.hidden = false;
+  panel.setAttribute('aria-hidden', 'false');
+  panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function buildManualQuoteRequestPayload(form) {
+  const fd = new FormData(form);
+  const contact = Object.fromEntries(fd.entries());
+  const quoteForm = byId('quoteForm');
+  const quotePayload = quoteForm ? buildQuotePayload(quoteForm) : {};
+  const serviceAddress = getCurrentServiceAddress(quotePayload);
+  const estimate = Number(state.currentEstimate?.estimate || state.pendingQuote?.estimate || quotePayload.estimate || 0);
+  const preferredDayTime = String(contact.preferredDayTime || '').trim();
+  const customerNotes = String(contact.notes || '').trim();
+  const notes = [
+    'Manual quote requested.',
+    preferredDayTime ? `Preferred day/time: ${preferredDayTime}` : '',
+    customerNotes ? `Customer notes: ${customerNotes}` : '',
+    quotePayload.yard_access_notes ? `Yard access notes: ${quotePayload.yard_access_notes}` : '',
+  ].filter(Boolean).join('\n');
+
+  return {
+    ...quotePayload,
+    name: String(contact.name || '').trim(),
+    phone: String(contact.phone || '').trim(),
+    email: String(contact.email || '').trim(),
+    customerName: String(contact.name || '').trim(),
+    customerPhone: String(contact.phone || '').trim(),
+    customerEmail: String(contact.email || '').trim(),
+    preferredDayTime,
+    notes,
+    address: serviceAddress.address || quotePayload.address || '',
+    city: serviceAddress.city || quotePayload.city || '',
+    state: serviceAddress.state || quotePayload.state || 'AR',
+    zip: serviceAddress.zip || quotePayload.zip || '',
+    quote_type: 'manual_quote',
+    quoteType: 'manual_quote',
+    status: 'manual_requested',
+    estimate,
+    final_price: estimate,
+  };
 }
 
 async function generateGuestEstimate(form) {
@@ -3525,6 +5254,7 @@ async function acceptPendingQuote() {
   const payload = {
     ...(state.pendingQuote || {}),
     ...buildQuotePayload(form),
+    ...currentJobScopeSnapshotFields(),
   };
 
   try {
@@ -3639,6 +5369,7 @@ byId('drawContinueBtn')?.addEventListener('click', async () => {
     return;
   }
   try {
+    stopToolModes();
     await generateGuestEstimate(form);
   } catch (error) {
     showResult('quoteResult', `<strong>Estimate failed:</strong> ${escapeHtml(prettyApiError(error))}`);
@@ -3668,15 +5399,38 @@ byId('requestServiceBtn')?.addEventListener('click', async () => {
     showError(prettyApiError(error));
   }
 });
+
+byId('manualQuoteBtn')?.addEventListener('click', async () => {
+  const form = byId('quoteForm');
+  if (!form) return;
+  try {
+    if (!hasActiveMowableArea()) {
+      showMissingMowableAreaPrompt('quoteResult');
+      return;
+    }
+    const signature = currentEstimateSignature();
+    if (
+      !state.pendingQuote?.estimate ||
+      !state.currentEstimate ||
+      state.currentEstimate.status !== 'fresh' ||
+      state.currentEstimate.signature !== signature
+    ) {
+      await refreshEstimate({ force: true, navigate: false });
+    }
+    showManualQuotePanel(state.pendingQuote || buildQuotePayload(form));
+  } catch (error) {
+    showResult('quoteResult', `<strong>Estimate failed:</strong> ${escapeHtml(prettyApiError(error))}`);
+    showError(prettyApiError(error));
+  }
+});
 $$('[data-quote-back]').forEach((btn) => {
-  btn.addEventListener('click', () => showQuoteFlowStep(btn.dataset.quoteBack || 'start'));
+  btn.addEventListener('click', () => showQuoteFlowStep(btn.dataset.quoteBack || 'property'));
 });
 byId('saveAreaBtn')?.addEventListener('click', () => {
   stopToolModes();
   state.editSnapshot = null;
   syncMowAreaFromLayers();
   setMapToolPanelOpen(true);
-  showSuccess('Area saved');
 });
 byId('cancelEditAreaBtn')?.addEventListener('click', () => {
   const shouldRestoreEdit = state.quoteUiMode === 'editing' && Array.isArray(state.editSnapshot);
@@ -3688,7 +5442,6 @@ byId('cancelEditAreaBtn')?.addEventListener('click', () => {
   }
   state.quoteUiMode = 'idle';
   updateQuoteFlowState();
-  showInfo('Area editing closed');
 });
 byId('locateAddressBtn')?.addEventListener('click', async () => {
   byId('gpsConfirmBar')?.classList.add('hidden');
@@ -3702,10 +5455,13 @@ byId('locateAddressBtn')?.addEventListener('click', async () => {
 
 byId('lookupParcelBtn')?.addEventListener('click', () => {
   byId('gpsConfirmBar')?.classList.add('hidden');
-  lookupParcel().catch((error) => showError(prettyApiError(error)));
+  resetParcelQuoteStateForNewAddress();
+  showPropertyConfirmationPanel(false);
+  showQuoteFlowStep('property');
+  byId('quoteForm')?.elements?.address?.focus?.();
 });
 
-byId('useLocationBtn')?.addEventListener('click', () => {
+async function requestCurrentLocation() {
   if (!navigator.geolocation) {
     setGpsStatus('GPS location is not supported on this device/browser.');
     return;
@@ -3713,6 +5469,8 @@ byId('useLocationBtn')?.addEventListener('click', () => {
 
   setGpsButtonLocating(true);
   setGpsStatus('Finding your location...');
+  byId('gpsConfirmBar')?.classList.add('hidden');
+  showPropertyConfirmationPanel(false);
 
   // Browser geolocation requires HTTPS in production, or localhost during development.
   navigator.geolocation.getCurrentPosition(
@@ -3723,6 +5481,9 @@ byId('useLocationBtn')?.addEventListener('click', () => {
         await lookupParcelByLatLng(lat, lng);
         if (state.parcelLayer) {
           setGpsStatus('');
+          showPropertyConfirmationPanel(true);
+          if (state.serviceFlow === 'live_bid') hydrateLiveBidForm(byId('liveBidServiceType')?.value || 'other');
+          byId('gpsConfirmBar')?.classList.remove('hidden');
         } else {
           setGpsStatus('We found your location, but could not match a parcel here. Try typing the address.');
         }
@@ -3736,11 +5497,21 @@ byId('useLocationBtn')?.addEventListener('click', () => {
     },
     (geoError) => {
       setGpsButtonLocating(false);
-      setGpsStatus(gpsErrorMessage(geoError));
+      const message = gpsErrorMessage(geoError);
+      setGpsStatus(message);
+      showError(message);
     },
     { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
   );
+}
+
+byId('propertyManualQuoteBtn')?.addEventListener('click', () => {
+  hydrateLiveBidForm('other');
+  setServiceFlow('live_bid');
+  byId('liveBidPanel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 });
+
+$$('[data-use-current-location]').forEach((btn) => btn.addEventListener('click', requestCurrentLocation));
 
 byId('gpsConfirmYesBtn')?.addEventListener('click', () => {
   byId('gpsConfirmBar')?.classList.add('hidden');
@@ -3752,7 +5523,8 @@ byId('gpsConfirmNoBtn')?.addEventListener('click', () => {
   clearParcelLayer();
   clearMowLayer();
   byId('gpsStatusMsg')?.classList.add('hidden');
-  showQuoteFlowStep('start');
+  showPropertyConfirmationPanel(false);
+  showQuoteFlowStep('property');
 });
 byId('aiDetectGrassBtn')?.addEventListener('click', aiDetectGrassDraft);
 byId('useParcelShapeBtn')?.addEventListener('click', cloneParcelAsMowable);
@@ -3784,7 +5556,8 @@ byId('clearQuoteDraftBtn')?.addEventListener('click', () => {
     clearQuoteFormMissing: false,
   });
   setEstimateState('empty', { signature: '', payload: null });
-  showQuoteFlowStep('start');
+  showPropertyConfirmationPanel(false);
+  showQuoteFlowStep('property');
 });
 
 function quoteAddressFieldChanged(event) {
@@ -3907,7 +5680,7 @@ byId('jobForm')?.addEventListener('submit', async (event) => {
 
     payload.photos = photoUrls;
 
-      if (!getAuthToken()) {
+      if (!hasActiveSession()) {
         openAuthGate(() => form.requestSubmit());
         return;
       }
@@ -4009,16 +5782,22 @@ byId('whoAmIBtn')?.addEventListener('click', async () => {
     showResult('authResult', `<strong>Session active.</strong><br />${escapeHtml(data.user.email)} � ${escapeHtml(data.user.role)}`);
   } catch (error) {
     showResult('authResult', `<strong>No active session.</strong><br />${escapeHtml(prettyApiError(error))}`);
-    setAuthToken('');
+    clearFrontendSessionState();
   }
 });
 
-byId('logoutBtn')?.addEventListener('click', async () => {
-  try {
-    await api('/api/auth/logout', { method: 'POST', body: JSON.stringify({}) });
-  } catch {}
-  setAuthToken('');
-  showResult('authResult', '<strong>Logged out.</strong>');
+async function handleAccountLogout() {
+  await signOut();
+  setActiveView('quote');
+  showQuoteFlowStep('property');
+}
+
+byId('logoutBtn') && (byId('logoutBtn').onclick = handleAccountLogout);
+byId('drawerLogoutBtn') && (byId('drawerLogoutBtn').onclick = handleAccountLogout);
+
+byId('authPanelSignOutBtn')?.addEventListener('click', async () => {
+  toggleAuthPanel(false);
+  await signOut();
 });
 
 byId('aiRefineMowableBtn')?.addEventListener('click', aiRefineMowableArea);
@@ -4051,6 +5830,59 @@ byId('closeleadRequestPanel')?.addEventListener('click', () => {
   updateQuoteStepper();
 });
 
+byId('closeManualQuotePanel')?.addEventListener('click', hideManualQuotePanel);
+byId('cancelManualQuotePanel')?.addEventListener('click', hideManualQuotePanel);
+
+byId('manualQuoteForm')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const btn = byId('manualQuoteSubmitBtn');
+  const result = byId('manualQuoteResult');
+  const originalText = btn?.textContent || 'Submit Request';
+
+  try {
+    const payload = buildManualQuoteRequestPayload(e.target);
+    const missing = [];
+    if (!payload.name) missing.push('name');
+    if (!isValidLookingPhone(payload.phone)) missing.push('phone');
+    if (missing.length) {
+      if (missing.includes('phone')) showPhoneRequiredError('manualQuoteResult');
+      else showError(`Add ${missing.join(', ')} to request an in-person quote.`);
+      return;
+    }
+
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = 'Submitting...';
+    }
+
+    const data = await api('/api/quotes', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+
+    state.lastQuote = { ...payload, ...data.quote };
+    state.pendingQuote = state.lastQuote;
+    rememberProfilePhoneIfBlank(payload.phone);
+    if (result) {
+      result.innerHTML = `<strong>Request sent.</strong><br>Quote ID: ${escapeHtml(data.quote?.id || '')}<br><span class="meta">No payment was started.</span>`;
+      result.classList.remove('hidden');
+    }
+    showSuccess('In-person quote request sent');
+    if (isAdmin()) await loadAdmin().catch(() => {});
+  } catch (err) {
+    if (result) {
+      result.innerHTML = `<strong>Could not submit:</strong> ${escapeHtml(prettyApiError(err))}`;
+      result.classList.remove('hidden');
+    }
+    showError(prettyApiError(err));
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = originalText;
+    }
+  }
+});
+
 byId('leadRequestForm')?.addEventListener('submit', async (e) => {
   e.preventDefault();
   console.log('[MowNWA Checkout Debug] leadRequestForm submit fired');
@@ -4061,6 +5893,9 @@ byId('leadRequestForm')?.addEventListener('submit', async (e) => {
     const currentServiceAddress = syncServiceAddressFields();
     const fd = new FormData(form);
     const payload = Object.fromEntries(fd.entries());
+    if (form.elements.customerPhone) form.elements.customerPhone.value = String(form.elements.customerPhone.value || '').trim();
+    payload.customerPhone = String(payload.customerPhone || '').trim();
+    payload.phone = payload.customerPhone;
     const requestAvailableDays = checkedValues('available_days_json', form);
 
     // Merge in the quote form address/service data from hidden fields
@@ -4124,7 +5959,8 @@ byId('leadRequestForm')?.addEventListener('submit', async (e) => {
     const missing = bookingContactMissing(bookingQuote);
     console.log('[MowNWA Checkout Debug] bookingContactMissing result:', missing);
     if (missing.length) {
-      showError(`Add ${missing.join(', ')} to continue to secure checkout.`);
+      if (missing.includes('phone')) showPhoneRequiredError('leadRequestResult');
+      else showError(`Add ${missing.join(', ')} to continue to secure checkout.`);
       return;
     }
 
@@ -4178,7 +6014,7 @@ byId('liveBidForm')?.addEventListener('submit', async (e) => {
     payload.access_summary = buildAccessSummary(payload);
 
     const missingContact = !payload.customerName || !payload.customerPhone;
-    if (missingContact && !getAuthToken()) {
+    if (missingContact && !hasActiveSession()) {
       state.pendingExtraBid = payload;
       openAuthGate(async () => {
         await submitBidRequest(payload, 'liveBidResult');
@@ -4208,7 +6044,7 @@ async function loadAdminLeads() {
   const list = byId('leadsList');
   if (!list) return;
 
-  if (!getAuthToken()) {
+  if (!hasActiveSession()) {
     list.innerHTML = '<div style="color:var(--muted);padding:12px">Sign in as admin to view leads. Use the ADMIN_API_KEY as your Bearer token.</div>';
     return;
   }
@@ -4599,6 +6435,11 @@ async function bookQuoteAsJob(explicitBtn) {
     const missing = bookingContactMissing(q);
     if (missing.length) {
       showBookingContactPanel(q);
+      if (missing.includes('phone')) {
+        showPhoneRequiredError('leadRequestResult');
+      } else {
+        showWarning(`Add ${missing.join(', ')} to continue to secure checkout.`);
+      }
       if (btn) { btn.disabled = false; btn.textContent = originalText; }
       return;
     }
@@ -4608,6 +6449,7 @@ async function bookQuoteAsJob(explicitBtn) {
     const serviceLabel = q.serviceType
       ? String(q.serviceType).replace(/_/g, ' ').replace(/\b\w/g, (m) => m.toUpperCase())
       : 'Mowing';
+    const currentScopeFields = currentJobScopeSnapshotFields();
 
     const detailParts = [
       q.notes ? `Notes: ${q.notes}` : '',
@@ -4662,6 +6504,12 @@ async function bookQuoteAsJob(explicitBtn) {
       scope_locked: true,
       included_tasks_json: INCLUDED_MOW_TASKS,
       excluded_tasks_json: EXCLUDED_MOW_TASKS,
+      parcelGeoJSON: q.parcelGeoJSON || currentScopeFields.parcelGeoJSON,
+      selectedMowableGeoJSON: q.selectedMowableGeoJSON || q.mowableGeoJSON || currentScopeFields.selectedMowableGeoJSON,
+      mowableGeoJSON: q.mowableGeoJSON || q.selectedMowableGeoJSON || currentScopeFields.mowableGeoJSON,
+      excludedGeoJSON: q.excludedGeoJSON || q.cutoutGeoJSON || currentScopeFields.excludedGeoJSON,
+      mapCenter: q.mapCenter || currentScopeFields.mapCenter || null,
+      mapBounds: q.mapBounds || currentScopeFields.mapBounds || null,
     };
 
     const checkoutBody = {
@@ -4678,6 +6526,7 @@ async function bookQuoteAsJob(explicitBtn) {
       method: 'POST',
       body: JSON.stringify(checkoutBody),
     });
+    rememberProfilePhoneIfBlank(q.phone || q.customerPhone);
     console.log('[MowNWA Checkout Debug] checkout API response | ok=' + checkout.ok + ' session=' + (checkout.checkoutSessionId ? checkout.checkoutSessionId.slice(0, 12) + '...' : 'none') + ' url=' + (checkout.checkoutUrl ? 'present' : 'missing'));
     if (checkout.checkoutUrl) {
       if (btn) { btn.disabled = false; btn.textContent = btn.id === 'leadSubmitBtn' ? 'Book & Pay Securely' : (btn.textContent || 'Book & Pay Securely'); }
@@ -4847,6 +6696,139 @@ byId('accountRecommendLoginForm')?.addEventListener('submit', async (e) => {
   }
 });
 
+async function handleAuthReturn() {
+  const params = new URLSearchParams(window.location.search);
+  const auth = params.get('auth');
+  if (!auth) return false;
+
+  if (auth === 'error') {
+    const provider = params.get('provider') || 'account';
+    showError(`${provider.charAt(0).toUpperCase() + provider.slice(1)} sign-in could not be completed. Please try email instead.`);
+    return false;
+  }
+
+  if (auth !== 'success') return false;
+
+  try {
+    const meData = await api('/api/auth/me');
+    state.currentUser = meData.user;
+    updateSessionStatus(meData.user);
+    applyRoleVisibility();
+    showSuccess('Signed in');
+  } catch {
+    showError('Signed in, but the app could not restore your session yet.');
+    return false;
+  }
+
+  const context = loadAuthReturnContext();
+  const rawStep = params.get('step') || context?.step || 'request';
+  const step = rawStep === 'manual' ? 'manual' : normalizeQuoteStep(rawStep);
+
+  if (context) {
+    console.info('[Auth Resume] found context', {
+      source: context.source,
+      step: context.step,
+      hasQuote: Boolean(context.quote?.estimate),
+      hasGeoJSON: Boolean(context.drawnGeoJSON?.features?.length),
+      hasCustomerName: Boolean(context.customerFields?.customerName),
+    });
+  }
+  console.info('[Auth Resume] restoring step=' + step + ' source=' + (context?.source || 'none'));
+
+  if (context?.quote) {
+    state.pendingQuote = context.quote;
+    state.lastQuote = context.quote;
+  }
+
+  // Restore drawn polygon to the map source so the lasso area re-appears on the map
+  if (context?.drawnGeoJSON?.features?.length) {
+    state.mowableFeatureCollection = cloneFeatureCollection(context.drawnGeoJSON);
+    state.drawGroup = state.mowableFeatureCollection;
+    window.mowableFeatureCollection = state.mowableFeatureCollection;
+    updateMowableSource();
+    console.info('[Auth Resume] restored mowable geometry', { features: state.mowableFeatureCollection.features.length });
+  }
+
+  // Restore parcel GeoJSON so scope snapshot captures it on submission after redirect
+  if (context?.parcelGeoJSON) {
+    state.parcelFeature = context.parcelGeoJSON;
+    state.parcelLayer = context.parcelGeoJSON;
+    if (state.pendingQuote && !state.pendingQuote.parcelGeoJSON) {
+      state.pendingQuote = { ...state.pendingQuote, parcelGeoJSON: context.parcelGeoJSON };
+      state.lastQuote = state.pendingQuote;
+    }
+    withMapReady(() => {
+      updateParcelSource();
+    });
+    console.info('[Auth Resume] restored parcel GeoJSON');
+  }
+
+  // Pre-set the target step so setActiveView('quote') renders the right panel without flash
+  state.quoteFlowStep = step === 'manual'
+    ? 'estimate'
+    : step === 'request'
+      ? 'request'
+      : step;
+
+  setActiveView('quote');
+
+  const quotePayload = context?.quote || state.pendingQuote || null;
+  console.info('[Auth Resume] navigating to step=' + step);
+  if (step === 'manual' && quotePayload) {
+    showManualQuotePanel(quotePayload);
+  } else if (step === 'request' && quotePayload) {
+    showLeadRequestPanel(quotePayload);
+  } else if (step === 'draw' || step === 'estimate' || step === 'property') {
+    showQuoteFlowStep(step, { scroll: false });
+  } else if (quotePayload) {
+    showLeadRequestPanel(quotePayload);
+  } else {
+    showQuoteFlowStep('estimate', { scroll: false });
+  }
+
+  // Restore customer/job fields typed before social login redirect
+  if (context?.customerFields) {
+    const leadForm = byId('leadRequestForm');
+    if (leadForm) {
+      const cf = context.customerFields;
+      if (cf.customerName) leadForm.elements.customerName.value = cf.customerName;
+      if (cf.customerPhone) leadForm.elements.customerPhone.value = cf.customerPhone;
+      if (cf.customerEmail && leadForm.elements.customerEmail) leadForm.elements.customerEmail.value = cf.customerEmail;
+      if (cf.notes && leadForm.elements.notes) leadForm.elements.notes.value = cf.notes;
+      if (cf.preferredDate && leadForm.elements.preferredDate) leadForm.elements.preferredDate.value = cf.preferredDate;
+      if (cf.schedule_preference && leadForm.elements.schedule_preference) leadForm.elements.schedule_preference.value = cf.schedule_preference;
+      if (Array.isArray(cf.available_days_json)) {
+        $$('input[name="available_days_json"]', leadForm).forEach((cb) => {
+          cb.checked = cf.available_days_json.includes(cb.value);
+        });
+      }
+      console.info('[Auth Resume] restored forms', {
+        customerName: Boolean(cf.customerName),
+        customerPhone: Boolean(cf.customerPhone),
+      });
+    }
+  }
+
+  // Re-apply the single service address source after auth-return form restoration.
+  if (quotePayload) setCurrentServiceAddress(getCurrentServiceAddress(quotePayload), 'auth-return');
+  applyServiceAddressToLeadForm();
+  // Fill name/email blanks from the freshly-loaded user profile
+  hydrateLeadFormFromUser(state.currentUser);
+  console.info('[Auth UI] showing signed-in controls after auth return');
+
+  clearAuthReturnContext();
+  console.info('[Auth Resume] cleared context');
+
+  params.delete('auth');
+  params.delete('provider');
+  params.delete('reason');
+  params.delete('step');
+  const next = `${window.location.pathname}${params.toString() ? `?${params.toString()}` : ''}${window.location.hash}`;
+  window.history.replaceState({}, '', next || '/');
+
+  return true;
+}
+
 /* ─────────────────────────────────────────────────────────────────────────
    MY BOOKINGS (customer) + OPEN JOBS (provider)
 ───────────────────────────────────────────────────────────────────────── */
@@ -4867,11 +6849,11 @@ function navLinksHtml(job) {
   </div>`;
 }
 
-async function loadMyJobs() {
-  const list = byId('myJobsList');
+async function loadMyJobs(targetId = 'myJobsList') {
+  const list = byId(targetId);
   if (!list) return;
 
-  if (!getAuthToken()) {
+  if (!hasActiveSession()) {
     list.innerHTML = '<div style="color:var(--muted);padding:12px">Sign in to see your bookings.</div>';
     return;
   }
@@ -4889,10 +6871,12 @@ async function loadMyJobs() {
 
     data.jobs.forEach((job) => {
       const safe = sanitizeJobForPublic(job);
+      const scopeHtml = renderJobScopeSnapshot(job, safe);
       const c = card(`
         <h4>${escapeHtml(safe.title || 'Lawn Service')}</h4>
         <div class="meta">${escapeHtml(serviceLabel(safe.serviceType))} &middot; ${escapeHtml(safe.location)}</div>
         <div class="meta">Price: <strong>${money(safe.amount)}</strong> &nbsp;&middot;&nbsp; ${statusBadge(safe.status)}</div>
+        ${scopeHtml}
         <div class="meta" style="font-size:.85rem">Booked: ${safe.postedAt ? new Date(safe.postedAt).toLocaleDateString() : 'n/a'}</div>
       `);
       list.append(c);
@@ -4940,7 +6924,7 @@ async function loadOpenJobsForProvider() {
 }
 
 async function acceptJob(jobId, btn) {
-  if (!getAuthToken()) {
+  if (!hasActiveSession()) {
     openAuthGate(() => acceptJob(jobId, btn));
     return;
   }
@@ -4981,7 +6965,9 @@ byId('selectParcelBtn')?.addEventListener('click', () => {
   else enterParcelSelectMode();
 });
 
-byId('useThisParcelConfirmBtn')?.addEventListener('click', confirmParcelSelection);
+byId('useThisParcelConfirmBtn')?.addEventListener('click', () => {
+  confirmParcelSelection().catch((error) => showError('Parcel selection failed: ' + prettyApiError(error)));
+});
 byId('useThisParcelCancelBtn')?.addEventListener('click', exitParcelSelectMode);
 
 document.addEventListener('click', (e) => {
@@ -5039,7 +7025,7 @@ async function handleCheckoutReturn() {
         }
       }
     }
-    if (getAuthToken()) loadMyJobs().catch(() => {});
+    if (hasActiveSession()) loadMyJobs().catch(() => {});
   } else if (checkout === 'cancel') {
     setActiveView('quote');
     showQuoteFlowStep('estimate');
@@ -5086,7 +7072,7 @@ function renderCheckoutSuccess(session) {
   });
   const mowSqft = Number(svc.mowAreaSqft || 0);
   const lotSqft = Number(svc.lotAreaSqft || 0);
-  const isGuest = !getAuthToken();
+  const isGuest = !hasActiveSession();
   const accountSetup = s.accountSetup || {};
   const canSetPassword = Boolean(accountSetup.token);
   const setupEmail = accountSetup.email || customer.email || '';
@@ -5113,7 +7099,7 @@ function renderCheckoutSuccess(session) {
         ${job.status ? `<div><span class="meta">Job status:</span> <span class="status-badge ${escapeHtml(job.status)}">${escapeHtml(job.status)}</span></div>` : ''}
       </div>
       <div class="final-review" style="margin-top:12px">
-        <h4>${canSetPassword ? 'Set your password to manage your jobs' : getAuthToken() ? 'Manage your booking' : accountSetup.existingUser ? 'Log in to manage your jobs' : 'Next steps'}</h4>
+        <h4>${canSetPassword ? 'Set your password to manage your jobs' : hasActiveSession() ? 'Manage your booking' : accountSetup.existingUser ? 'Log in to manage your jobs' : 'Next steps'}</h4>
         <p class="meta">${canSetPassword
           ? `We created an account for ${escapeHtml(setupEmail)} after payment. Set a password to view this booking, receipts, and future jobs.`
           : accountSetup.existingUser
@@ -5131,7 +7117,7 @@ function renderCheckoutSuccess(session) {
         ` : ''}
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
-        ${getAuthToken() ? `<button class="btn secondary small" type="button" onclick="setActiveView('jobs')">View My Bookings</button>` : ''}
+        ${hasActiveSession() ? `<button class="btn secondary small" type="button" onclick="setActiveView('jobs')">View My Bookings</button>` : ''}
         ${isGuest && !canSetPassword ? `<button class="btn secondary small" type="button" id="successCreateAccountBtn">Log In / Create Account</button>` : ''}
         <button class="btn ghost small" type="button" onclick="setActiveView('quote')">Return Home</button>
       </div>
@@ -5193,6 +7179,7 @@ async function submitSuccessSetPassword(event) {
 }
 
 (async function init() {
+  applySocialLoginVisibility();
   initNavigation();
   initMap();
 
@@ -5217,18 +7204,17 @@ async function submitSuccessSetPassword(event) {
     console.warn('No Google Maps API key returned from /api/config');
   }
 
-  // Resolve current user so role-based UI (provider Accept, My Bookings, admin) works immediately
-  if (getAuthToken()) {
-    try {
-      const meData = await api('/api/auth/me');
-      state.currentUser = meData.user;
-      updateSessionStatus(meData.user);
-    } catch {
-      setAuthToken('');
-      state.currentUser = null;
-    }
+  // Resolve current user so role-based UI works for bearer and cookie sessions.
+  try {
+    const meData = await api('/api/auth/me');
+    state.currentUser = meData.user;
+    updateSessionStatus(meData.user);
+    hydrateLeadFormFromUser(meData.user); // pre-fill blanks for already-logged-in sessions
+  } catch {
+    clearFrontendSessionState();
   }
   applyRoleVisibility();
+  const authResumed = await handleAuthReturn();
   handleCheckoutReturn();
 
   updateSessionStatus();
@@ -5241,10 +7227,11 @@ async function submitSuccessSetPassword(event) {
 
   if (lat && lng) {
     placeMarker(lat, lng);
-    lookupParcel().catch((error) => showWarning(prettyApiError(error)));
-  } else {
+    // Skip parcel lookup on auth return because it would navigate back to Property and undo the resume.
+    if (!authResumed) lookupParcel().catch((error) => showWarning(prettyApiError(error)));
+  } else if (!authResumed) {
     updateMowAreaHelper(0, 0);
-    showQuoteFlowStep(state.quoteFlowStep || 'start', { scroll: false });
+    showQuoteFlowStep(state.quoteFlowStep || 'property', { scroll: false });
   }
   updateQuoteFlowState();
 })();

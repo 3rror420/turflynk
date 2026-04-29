@@ -1,6 +1,4 @@
 import dotenv from "dotenv";
-dotenv.config();
-
 import express from "express";
 import path from "path";
 import cors from "cors";
@@ -10,18 +8,29 @@ import fetch from "node-fetch";
 import uploadRoutes from "../routes/upload.js";
 import { fileURLToPath } from "url";
 import { createRequire } from "module";
-import { readFileSync, writeFileSync, renameSync, existsSync } from "fs";
+import { mkdirSync, readFileSync, writeFileSync, renameSync, existsSync } from "fs";
+
+// Load deployment config from the project root even when PM2 starts from another cwd.
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+dotenv.config({ path: path.join(__dirname, "..", ".env"), override: true });
 
 const require = createRequire(import.meta.url);
+const session = require("express-session");
+const passport = require("passport");
+const FacebookStrategy = require("passport-facebook").Strategy;
 
-const aiDetectGrassRouter = require('./routes/aiDetectGrass.cjs');
+let aiDetectGrassRouter = null;
+try {
+  aiDetectGrassRouter = require('./routes/aiDetectGrass.cjs');
+} catch (err) {
+  console.warn('AI grass detection route not loaded:', err.message);
+}
 
 const pgdb = require("./db.cjs");
 
-// FIX __dirname
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 const app = express();
+app.set("trust proxy", 1);
 
 const PORT = Number(process.env.PORT || 3000);
 const APP_NAME = process.env.APP_NAME || "TurfLynk";
@@ -36,14 +45,34 @@ const SITE_BRAND = process.env.SITE_BRAND || "MowNWA";
 const PUBLIC_DOMAIN = process.env.PUBLIC_DOMAIN || "mownwa.com";
 const PRIMARY_REGION = process.env.PRIMARY_REGION || "nwa";
 const ADMIN_API_KEY = process.env.ADMIN_API_KEY || "";
+const APP_BASE_URL = (process.env.APP_BASE_URL || publicAppOrigin()).replace(/\/+$/, "");
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "";
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || "";
+const FACEBOOK_APP_ID = process.env.FACEBOOK_APP_ID || "";
+const FACEBOOK_APP_SECRET = process.env.FACEBOOK_APP_SECRET || "";
+const FACEBOOK_CALLBACK_URL =
+  process.env.FACEBOOK_CALLBACK_URL ||
+  "https://mownwa.com/api/auth/facebook/callback";
+const EXPECTED_FACEBOOK_CALLBACK_URL = "https://mownwa.com/api/auth/facebook/callback";
+const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || "https://mownwa.com").replace(/\/+$/, "");
+const FACEBOOK_DATA_DELETION_BASE_URL = "https://mownwa.com";
+const SESSION_COOKIE_NAME = "turflynk_session";
+const OAUTH_STATE_COOKIE_NAME = "turflynk_oauth_state";
+
+console.info("[Env] FACEBOOK_APP_ID loaded:", Boolean(FACEBOOK_APP_ID));
+console.info("[Env] FACEBOOK_APP_SECRET loaded:", Boolean(FACEBOOK_APP_SECRET));
+console.info("[Env] APP_BASE_URL:", APP_BASE_URL);
 
 // Load JSON settings as fallback when DB is unavailable
-const SETTINGS_FILE = path.join(__dirname, "..", "data", "settings.json");
-const LEADS_FILE = path.join(__dirname, "..", "data", "leads.json");
-const BID_REQUESTS_FILE = path.join(__dirname, "..", "data", "bid_requests.json");
-const JOB_PHOTOS_FILE = path.join(__dirname, "..", "data", "job_photos.json");
-const PROVIDER_SERVICE_AREAS_FILE = path.join(__dirname, "..", "data", "provider_service_areas.json");
-const PAYMENTS_FILE = path.join(__dirname, "..", "data", "payments.json");
+const DATA_DIR = path.join(__dirname, "..", "data");
+const SETTINGS_FILE = path.join(DATA_DIR, "settings.json");
+const LEADS_FILE = path.join(DATA_DIR, "leads.json");
+const BID_REQUESTS_FILE = path.join(DATA_DIR, "bid_requests.json");
+const JOB_PHOTOS_FILE = path.join(DATA_DIR, "job_photos.json");
+const PROVIDER_SERVICE_AREAS_FILE = path.join(DATA_DIR, "provider_service_areas.json");
+const PAYMENTS_FILE = path.join(DATA_DIR, "payments.json");
+const ACCOUNT_SETUP_TOKENS_FILE = path.join(DATA_DIR, "account_setup_tokens.json");
+const FACEBOOK_DATA_DELETION_FILE = path.join(DATA_DIR, "facebook_data_deletion_requests.json");
 
 let localSettings = { services: [], regions: [] };
 try {
@@ -111,6 +140,12 @@ function checkoutReturnUrl(status, extraParams = {}) {
   return url.toString();
 }
 
+function accountSetupReturnUrl(token) {
+  const url = new URL(publicAppOrigin());
+  url.searchParams.set("account_setup", token);
+  return url.toString();
+}
+
 function verifyStripeWebhookSignature(req) {
   const secret = process.env.STRIPE_WEBHOOK_SECRET || "";
   if (!secret) return true;
@@ -134,6 +169,177 @@ function verifyStripeWebhookSignature(req) {
   return expectedBuffer.length === digestBuffer.length && crypto.timingSafeEqual(expectedBuffer, digestBuffer);
 }
 
+function base64UrlDecode(input) {
+  const normalized = String(input || "").replace(/-/g, "+").replace(/_/g, "/");
+  const padded = normalized + "=".repeat((4 - (normalized.length % 4)) % 4);
+  return Buffer.from(padded, "base64");
+}
+
+function parseFacebookSignedRequest(signedRequest) {
+  if (!FACEBOOK_APP_SECRET) return null;
+  const [encodedSignature, encodedPayload] = String(signedRequest || "").split(".");
+  if (!encodedSignature || !encodedPayload) return null;
+
+  const signature = base64UrlDecode(encodedSignature);
+  const expectedSignature = crypto
+    .createHmac("sha256", FACEBOOK_APP_SECRET)
+    .update(encodedPayload)
+    .digest();
+
+  if (
+    signature.length !== expectedSignature.length ||
+    !crypto.timingSafeEqual(signature, expectedSignature)
+  ) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(base64UrlDecode(encodedPayload).toString("utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function safeFacebookDeletionPayload(payload = {}) {
+  return {
+    user_id: payload.user_id || "",
+    algorithm: payload.algorithm || "",
+    issued_at: payload.issued_at || null
+  };
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function generateFacebookDeletionConfirmationCode() {
+  return crypto.randomBytes(12).toString("hex");
+}
+
+async function hasStoredFacebookUserData(facebookUserId) {
+  try {
+    const tableResult = await pgdb.query("SELECT to_regclass('public.user_auth_providers') AS table_name");
+    if (!tableResult.rows[0]?.table_name) return false;
+    const result = await pgdb.query(
+      `
+      SELECT 1
+      FROM user_auth_providers
+      WHERE provider = 'facebook'
+        AND provider_user_id = $1
+      LIMIT 1
+      `,
+      [String(facebookUserId || "")]
+    );
+    return result.rows.length > 0;
+  } catch (error) {
+    console.warn("Facebook deletion lookup skipped:", error.message);
+    return false;
+  }
+}
+
+function saveFacebookDataDeletionRequest(payload = {}, hasMatchingUser = false) {
+  const confirmationCode = generateFacebookDeletionConfirmationCode();
+  const statusUrl = `${FACEBOOK_DATA_DELETION_BASE_URL}/api/facebook/data-deletion/status/${encodeURIComponent(confirmationCode)}`;
+  const status = hasMatchingUser ? "pending" : "not_found";
+  const record = {
+    confirmationCode,
+    facebookUserId: String(payload.user_id || ""),
+    appScopedUserId: String(payload.user_id || ""),
+    status,
+    requestedAt: new Date().toISOString(),
+    completedAt: status === "not_found" ? new Date().toISOString() : null,
+    statusUrl,
+    rawPayload: safeFacebookDeletionPayload(payload)
+  };
+
+  mkdirSync(DATA_DIR, { recursive: true });
+  const records = readJsonArray(FACEBOOK_DATA_DELETION_FILE);
+  records.push(record);
+  writeJsonArray(FACEBOOK_DATA_DELETION_FILE, records);
+  return record;
+}
+
+function findFacebookDataDeletionRequest(confirmationCode) {
+  const records = readJsonArray(FACEBOOK_DATA_DELETION_FILE);
+  return records.find((record) => record.confirmationCode === confirmationCode) || null;
+}
+
+passport.serializeUser((user, done) => {
+  done(null, user);
+});
+
+passport.deserializeUser((user, done) => {
+  done(null, user);
+});
+
+if (FACEBOOK_APP_ID && FACEBOOK_APP_SECRET) {
+  passport.use(new FacebookStrategy(
+    {
+      clientID: FACEBOOK_APP_ID,
+      clientSecret: FACEBOOK_APP_SECRET,
+      callbackURL: FACEBOOK_CALLBACK_URL,
+      profileFields: ["id", "name", "email", "picture.type(large)"],
+      passReqToCallback: true
+    },
+    (req, _accessToken, _refreshToken, profile, done) => {
+      req.facebookVerifyCallbackRan = true;
+      req.facebookProfilePresent = Boolean(profile?.id);
+
+      const email = profile.emails?.[0]?.value || "";
+      const fullName = profile.displayName
+        || [profile.name?.givenName, profile.name?.familyName].filter(Boolean).join(" ")
+        || "";
+      const avatarUrl = profile.photos?.[0]?.value || profile._json?.picture?.data?.url || "";
+
+      console.info("[Facebook OAuth][Passport] verify callback ran", {
+        callbackURL: FACEBOOK_CALLBACK_URL,
+        profilePresent: Boolean(profile),
+        profileIdPresent: Boolean(profile?.id),
+        emailPresent: Boolean(email),
+        fullNamePresent: Boolean(fullName),
+        avatarUrlPresent: Boolean(avatarUrl)
+      });
+
+      if (!profile?.id) {
+        return done(new Error("Facebook profile missing id"));
+      }
+
+      if (!email) {
+        // No email — cannot create a DB record; fall back to raw session user
+        console.warn("[Facebook OAuth][Passport] no email in profile; using raw session user");
+        return done(null, {
+          provider: "facebook",
+          facebookId: profile.id,
+          displayName: fullName,
+          email: "",
+          avatarUrl
+        });
+      }
+
+      // Persist to DB so /api/auth/me can return a proper sanitized user with fullName + role
+      findOrCreateUserForOAuth({
+        provider: "facebook",
+        providerUserId: profile.id,
+        email,
+        fullName,
+        avatarUrl
+      }).then((dbUser) => {
+        done(null, dbUser);
+      }).catch((err) => {
+        console.warn("[Facebook OAuth][Passport] DB upsert failed; falling back to raw session user", err.message);
+        done(null, { provider: "facebook", facebookId: profile.id, displayName: fullName, email, avatarUrl });
+      });
+    }
+  ));
+} else {
+  console.warn("Facebook Login is not configured. Set FACEBOOK_APP_ID and FACEBOOK_APP_SECRET to enable it.");
+}
+
 // Middleware MUST come before API routes
 app.use(cors());
 app.use(express.json({
@@ -142,8 +348,22 @@ app.use(express.json({
     req.rawBody = buf;
   }
 }));
+app.use(express.urlencoded({ extended: false }));
+app.use(session({
+  secret: process.env.SESSION_SECRET || "mownwa-development-session-secret",
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production"
+  }
+}));
+app.use(passport.initialize());
+app.use(passport.session());
 
-app.use('/api/ai', aiDetectGrassRouter);
+if (aiDetectGrassRouter) {
+  app.use('/api/ai/detect-grass', aiDetectGrassRouter);
+}
 
 app.post('/api/ai/refine-mowable', async (req, res) => {
   try {
@@ -240,8 +460,527 @@ function sanitizeUser(user) {
     id: user.id,
     email: user.email,
     fullName: user.full_name || user.fullName || "",
+    phone: user.phone || "",
     role: user.role,
+    avatarUrl: user.avatar_url || user.avatarUrl || "",
     createdAt: user.created_at || user.createdAt || null
+  };
+}
+
+function phoneDigits(value) {
+  return String(value || "").replace(/\D/g, "");
+}
+
+function isValidLookingPhone(value) {
+  const digits = phoneDigits(value);
+  return digits.length >= 10 && digits.length <= 15;
+}
+
+function submittedPhone(payload = {}) {
+  return String(payload.phone || payload.customerPhone || payload.leadPhone || "").trim();
+}
+
+function phoneValidationError() {
+  return "A valid phone number is required before booking, payment, or request submission.";
+}
+
+let usersPhoneColumnEnsured = false;
+async function ensureUsersPhoneColumn() {
+  if (usersPhoneColumnEnsured) return true;
+  try {
+    await pgdb.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT");
+    usersPhoneColumnEnsured = true;
+    return true;
+  } catch (error) {
+    console.warn("Could not ensure users.phone column:", error.message);
+    return false;
+  }
+}
+
+let jobsScopeSnapshotColumnEnsured = false;
+async function ensureJobsScopeSnapshotColumn() {
+  if (jobsScopeSnapshotColumnEnsured) return true;
+  try {
+    await pgdb.query("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS scope_snapshot JSONB");
+    jobsScopeSnapshotColumnEnsured = true;
+    return true;
+  } catch (error) {
+    console.warn("Could not ensure jobs.scope_snapshot column:", error.message);
+    return false;
+  }
+}
+
+async function updateUserPhoneIfBlank(userId, phone) {
+  const trimmed = String(phone || "").trim();
+  if (!userId || !trimmed || !isValidLookingPhone(trimmed)) return false;
+  if (!(await ensureUsersPhoneColumn())) return false;
+  try {
+    const result = await pgdb.query(
+      `
+      UPDATE users
+      SET phone = $2
+      WHERE id = $1
+        AND COALESCE(TRIM(phone), '') = ''
+      RETURNING phone
+      `,
+      [userId, trimmed]
+    );
+    return result.rows.length > 0;
+  } catch (error) {
+    console.warn("Could not update blank user phone:", error.message);
+    return false;
+  }
+}
+
+function rejectMissingPhone(res) {
+  return res.status(400).json({ ok: false, error: phoneValidationError() });
+}
+
+async function userWithAvatar(user) {
+  if (!user?.id || user.avatar_url || user.avatarUrl) return user;
+  try {
+    const result = await pgdb.query(
+      `
+      SELECT avatar_url
+      FROM user_auth_providers
+      WHERE user_id = $1
+        AND COALESCE(avatar_url, '') <> ''
+      ORDER BY updated_at DESC
+      LIMIT 1
+      `,
+      [user.id]
+    );
+    return result.rows[0]?.avatar_url
+      ? { ...user, avatar_url: result.rows[0].avatar_url }
+      : user;
+  } catch {
+    return user;
+  }
+}
+
+async function findUserByEmail(email) {
+  const normalized = String(email || "").toLowerCase().trim();
+  if (!normalized) return null;
+  const result = await pgdb.query("SELECT * FROM users WHERE email = $1 LIMIT 1", [normalized]);
+  return result.rows[0] || null;
+}
+
+async function findOrCreateCustomerUser({ email, fullName } = {}) {
+  const normalized = String(email || "").toLowerCase().trim();
+  if (!normalized) return { user: null, created: false };
+
+  const existing = await findUserByEmail(normalized);
+  if (existing) return { user: existing, created: false };
+
+  try {
+    const result = await pgdb.query(
+      `
+      INSERT INTO users (id, email, password_hash, full_name, role)
+      VALUES ($1, $2, $3, $4, 'customer')
+      RETURNING *
+      `,
+      [nanoid(10), normalized, hashPassword(nanoid(40)), fullName || ""]
+    );
+    return { user: result.rows[0], created: true };
+  } catch (error) {
+    if (error.code === "23505") {
+      const raced = await findUserByEmail(normalized);
+      if (raced) return { user: raced, created: false };
+    }
+    throw error;
+  }
+}
+
+function parseCookies(req) {
+  return Object.fromEntries(
+    String(req.headers.cookie || "")
+      .split(";")
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .map((part) => {
+        const idx = part.indexOf("=");
+        if (idx < 0) return [part, ""];
+        return [part.slice(0, idx), decodeURIComponent(part.slice(idx + 1))];
+      })
+  );
+}
+
+function cookieSecure(req) {
+  return req.secure || req.headers["x-forwarded-proto"] === "https" || APP_BASE_URL.startsWith("https://");
+}
+
+function setSessionCookie(req, res, token) {
+  res.cookie(SESSION_COOKIE_NAME, token, {
+    httpOnly: true,
+    secure: cookieSecure(req),
+    sameSite: "lax",
+    path: "/",
+    maxAge: 30 * 24 * 60 * 60 * 1000
+  });
+}
+
+function clearSessionCookie(req, res) {
+  res.clearCookie(SESSION_COOKIE_NAME, {
+    httpOnly: true,
+    secure: cookieSecure(req),
+    sameSite: "lax",
+    path: "/"
+  });
+}
+
+function clearPassportSessionCookie(req, res) {
+  res.clearCookie("connect.sid", {
+    httpOnly: true,
+    secure: cookieSecure(req),
+    sameSite: "lax",
+    path: "/"
+  });
+}
+
+function authTokenFromRequest(req) {
+  const authHeader = req.headers.authorization || "";
+  const bearerToken = authHeader.startsWith("Bearer ")
+    ? authHeader.slice("Bearer ".length)
+    : "";
+  return bearerToken || parseCookies(req)[SESSION_COOKIE_NAME] || "";
+}
+
+async function createSessionForUser(userId) {
+  const token = nanoid(32);
+  await pgdb.query(
+    "INSERT INTO sessions (token, user_id) VALUES ($1, $2)",
+    [token, userId]
+  );
+  return token;
+}
+
+function safeQuoteReturnPath(returnTo = "") {
+  const fallback = "/?auth=success&view=quote";
+  const raw = String(returnTo || "").trim();
+  if (!raw) return fallback;
+  try {
+    const parsed = raw.startsWith("http")
+      ? new URL(raw)
+      : new URL(raw, APP_BASE_URL);
+    if (parsed.origin !== new URL(APP_BASE_URL).origin) return fallback;
+    return `${parsed.pathname}${parsed.search}${parsed.hash}` || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function appRedirectUrl(returnTo = "") {
+  return new URL(safeQuoteReturnPath(returnTo), APP_BASE_URL).toString();
+}
+
+function authErrorRedirect(provider, reason = "auth_failed") {
+  const url = new URL("/?auth=error&view=quote", APP_BASE_URL);
+  url.searchParams.set("provider", provider);
+  url.searchParams.set("reason", reason);
+  return url.toString();
+}
+
+function safeOAuthQuery(query = {}) {
+  const value = (key) => query[key] == null ? "" : String(query[key]);
+  const truncated = (key) => {
+    const raw = value(key);
+    return raw ? raw.slice(0, 160) : "";
+  };
+  return {
+    keys: Object.keys(query),
+    hasCode: Boolean(value("code")),
+    codeLength: value("code").length,
+    hasState: Boolean(value("state")),
+    stateLength: value("state").length,
+    error: truncated("error"),
+    errorReason: truncated("error_reason"),
+    errorDescription: truncated("error_description")
+  };
+}
+
+function safePassportInfo(info) {
+  if (!info) return null;
+  if (typeof info === "string") return info.slice(0, 160);
+  if (info.message) return String(info.message).slice(0, 160);
+  return {
+    name: info.name || null,
+    status: info.status || null
+  };
+}
+
+function safeFacebookLoginSource(value) {
+  const source = String(value || "").trim().toLowerCase();
+  return ["account", "checkout", "legacy_custom"].includes(source) ? source : "account";
+}
+
+function safeFacebookLoginStep(value) {
+  const step = String(value || "").trim().toLowerCase();
+  return ["manual", "request", "estimate", "start"].includes(step) ? step : "request";
+}
+
+function encodeStatePayload(payload) {
+  return Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
+}
+
+function decodeStatePayload(value) {
+  try {
+    return JSON.parse(Buffer.from(String(value || ""), "base64url").toString("utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function setOAuthStateCookie(req, res, payload) {
+  res.cookie(OAUTH_STATE_COOKIE_NAME, encodeStatePayload(payload), {
+    httpOnly: true,
+    secure: cookieSecure(req),
+    sameSite: "lax",
+    path: "/",
+    maxAge: 10 * 60 * 1000
+  });
+}
+
+function clearOAuthStateCookie(req, res) {
+  res.clearCookie(OAUTH_STATE_COOKIE_NAME, {
+    httpOnly: true,
+    secure: cookieSecure(req),
+    sameSite: "lax",
+    path: "/"
+  });
+}
+
+function oauthRedirectUri(provider) {
+  return `${APP_BASE_URL}/auth/${provider}/callback`;
+}
+
+console.info("[Facebook OAuth] config", {
+  appIdLoaded: Boolean(FACEBOOK_APP_ID),
+  appSecretLoaded: Boolean(FACEBOOK_APP_SECRET),
+  passportCallbackURL: FACEBOOK_CALLBACK_URL,
+  expectedPassportCallbackURL: EXPECTED_FACEBOOK_CALLBACK_URL,
+  passportCallbackMatchesExpected: FACEBOOK_CALLBACK_URL === EXPECTED_FACEBOOK_CALLBACK_URL,
+  facebookLoginRoute: "/api/auth/facebook"
+});
+
+let userAuthProvidersEnsured = false;
+
+async function ensureUserAuthProvidersTable() {
+  if (userAuthProvidersEnsured) return;
+  const result = await pgdb.query(
+    `
+    SELECT format_type(a.atttypid, a.atttypmod) AS user_id_type
+    FROM pg_attribute a
+    JOIN pg_class c ON c.oid = a.attrelid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE c.relname = 'users'
+      AND n.nspname = current_schema()
+      AND a.attname = 'id'
+      AND a.attnum > 0
+      AND NOT a.attisdropped
+    LIMIT 1
+    `
+  );
+  const userIdType = result.rows[0]?.user_id_type === "integer" ? "INTEGER" : "TEXT";
+  await pgdb.query(
+    `
+    CREATE TABLE IF NOT EXISTS user_auth_providers (
+      id SERIAL PRIMARY KEY,
+      user_id ${userIdType} NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      provider TEXT NOT NULL,
+      provider_user_id TEXT NOT NULL,
+      email TEXT,
+      avatar_url TEXT,
+      created_at TIMESTAMPTZ DEFAULT now(),
+      updated_at TIMESTAMPTZ DEFAULT now(),
+      UNIQUE(provider, provider_user_id)
+    )
+    `
+  );
+  await pgdb.query("ALTER TABLE user_auth_providers ADD COLUMN IF NOT EXISTS avatar_url TEXT");
+  userAuthProvidersEnsured = true;
+}
+
+async function linkPasswordProvider(user) {
+  if (!user?.id || !user?.email) return;
+  await ensureUserAuthProvidersTable();
+  const email = String(user.email).toLowerCase().trim();
+  await pgdb.query(
+    `
+    INSERT INTO user_auth_providers (user_id, provider, provider_user_id, email)
+    VALUES ($1, 'password', $2, $2)
+    ON CONFLICT (provider, provider_user_id)
+    DO UPDATE SET
+      user_id = EXCLUDED.user_id,
+      email = EXCLUDED.email,
+      updated_at = NOW()
+    `,
+    [user.id, email]
+  );
+}
+
+async function findOrCreateUserForOAuth({ provider, providerUserId, email, fullName, avatarUrl }) {
+  await ensureUserAuthProvidersTable();
+  const normalizedEmail = String(email || "").toLowerCase().trim();
+  const safeAvatarUrl = String(avatarUrl || "").trim().slice(0, 1000);
+  if (!provider || !providerUserId) throw new Error("Missing provider identity");
+  if (!normalizedEmail) throw new Error("Email permission is required");
+
+  const client = await pgdb.pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    const linked = await client.query(
+      `
+      SELECT u.*
+      FROM user_auth_providers uap
+      JOIN users u ON u.id = uap.user_id
+      WHERE uap.provider = $1
+        AND uap.provider_user_id = $2
+      LIMIT 1
+      `,
+      [provider, providerUserId]
+    );
+
+    if (linked.rows.length) {
+      await client.query(
+        `
+        UPDATE user_auth_providers
+        SET email = $3,
+            avatar_url = COALESCE(NULLIF($4, ''), avatar_url),
+            updated_at = NOW()
+        WHERE provider = $1
+          AND provider_user_id = $2
+        `,
+        [provider, providerUserId, normalizedEmail, safeAvatarUrl]
+      );
+      await client.query("COMMIT");
+      return { ...linked.rows[0], avatar_url: safeAvatarUrl || linked.rows[0].avatar_url || "" };
+    }
+
+    const userResult = await client.query(
+      `
+      INSERT INTO users (id, email, password_hash, full_name, role)
+      VALUES ($1, $2, $3, $4, 'customer')
+      ON CONFLICT (email) DO UPDATE SET
+        full_name = CASE
+          WHEN COALESCE(users.full_name, '') = '' THEN EXCLUDED.full_name
+          ELSE users.full_name
+        END
+      RETURNING *
+      `,
+      [nanoid(10), normalizedEmail, hashPassword(nanoid(40)), fullName || ""]
+    );
+
+    const user = userResult.rows[0];
+    await client.query(
+      `
+      INSERT INTO user_auth_providers (user_id, provider, provider_user_id, email, avatar_url)
+      VALUES ($1, $2, $3, $4, $5)
+      ON CONFLICT (provider, provider_user_id)
+      DO UPDATE SET
+        user_id = EXCLUDED.user_id,
+        email = EXCLUDED.email,
+        avatar_url = COALESCE(NULLIF(EXCLUDED.avatar_url, ''), user_auth_providers.avatar_url),
+        updated_at = NOW()
+      `,
+      [user.id, provider, providerUserId, normalizedEmail, safeAvatarUrl]
+    );
+
+    await client.query("COMMIT");
+    return { ...user, avatar_url: safeAvatarUrl };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function fetchJsonOrThrow(url, options = {}, label = "OAuth provider") {
+  const response = await fetchWithTimeout(url, options, 8000);
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(`${label} request failed`);
+  }
+  return data;
+}
+
+function decodeJwtPayload(token) {
+  const payload = String(token || "").split(".")[1];
+  if (!payload) return {};
+  try {
+    return JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+  } catch {
+    return {};
+  }
+}
+
+async function getGoogleProfile(code) {
+  const tokenParams = new URLSearchParams({
+    code,
+    client_id: GOOGLE_CLIENT_ID,
+    client_secret: GOOGLE_CLIENT_SECRET,
+    redirect_uri: oauthRedirectUri("google"),
+    grant_type: "authorization_code"
+  });
+
+  const tokenData = await fetchJsonOrThrow(
+    "https://oauth2.googleapis.com/token",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: tokenParams
+    },
+    "Google token"
+  );
+
+  if (!tokenData.id_token) throw new Error("Google did not return an identity token");
+
+  const verified = await fetchJsonOrThrow(
+    `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(tokenData.id_token)}`,
+    {},
+    "Google token verification"
+  );
+
+  if (verified.aud !== GOOGLE_CLIENT_ID) throw new Error("Invalid Google token audience");
+  if (!["accounts.google.com", "https://accounts.google.com"].includes(verified.iss)) {
+    throw new Error("Invalid Google token issuer");
+  }
+
+  const payload = decodeJwtPayload(tokenData.id_token);
+  return {
+    provider: "google",
+    providerUserId: verified.sub || payload.sub,
+    email: verified.email || payload.email || "",
+    fullName: verified.name || payload.name || "",
+    avatarUrl: verified.picture || payload.picture || ""
+  };
+}
+
+function createAccountSetupToken({ user, payment, createdUser }) {
+  if (!user || !createdUser) return null;
+  const token = nanoid(36);
+  const expiresAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString();
+  const rows = readJsonArray(ACCOUNT_SETUP_TOKENS_FILE)
+    .filter((item) => item.user_id !== user.id && item.payment_id !== payment.id && item.expires_at > new Date().toISOString());
+  const record = {
+    token,
+    user_id: user.id,
+    email: user.email,
+    payment_id: payment.id,
+    job_id: payment.job_id || null,
+    created_user: Boolean(createdUser),
+    expires_at: expiresAt,
+    created_at: new Date().toISOString()
+  };
+  rows.push(record);
+  writeJsonArray(ACCOUNT_SETUP_TOKENS_FILE, rows);
+  return {
+    token,
+    url: accountSetupReturnUrl(token),
+    email: user.email,
+    createdUser: Boolean(createdUser),
+    expiresAt
   };
 }
 
@@ -258,12 +997,22 @@ function parseJsonArray(value) {
   return [];
 }
 
+function parseJsonObject(value) {
+  if (value && typeof value === "object" && !Array.isArray(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    try {
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+  return {};
+}
+
 async function requireAuth(req, res, next) {
   try {
-    const authHeader = req.headers.authorization || "";
-    const token = authHeader.startsWith("Bearer ")
-      ? authHeader.slice("Bearer ".length)
-      : "";
+    const token = authTokenFromRequest(req);
 
     if (!token) {
       return res.status(401).json({ ok: false, error: "Missing auth token" });
@@ -291,7 +1040,7 @@ async function requireAuth(req, res, next) {
       return res.status(401).json({ ok: false, error: "Invalid session" });
     }
 
-    req.user = result.rows[0];
+    req.user = await userWithAvatar(result.rows[0]);
     req.authToken = token;
     next();
   } catch (error) {
@@ -301,10 +1050,7 @@ async function requireAuth(req, res, next) {
 
 async function optionalAuth(req, _res, next) {
   try {
-    const authHeader = req.headers.authorization || "";
-    const token = authHeader.startsWith("Bearer ")
-      ? authHeader.slice("Bearer ".length)
-      : "";
+    const token = authTokenFromRequest(req);
 
     if (!token) return next();
 
@@ -326,7 +1072,7 @@ async function optionalAuth(req, _res, next) {
     );
 
     if (result.rows.length) {
-      req.user = result.rows[0];
+      req.user = await userWithAvatar(result.rows[0]);
       req.authToken = token;
     }
   } catch (error) {
@@ -629,7 +1375,7 @@ async function lookupParcel(lat, lng, address = "", city = "", zip = "") {
   if (!ENABLE_LIVE_PARCEL_LOOKUP) return { ok: false, reason: "disabled" };
 
   const attempts = [];
-  const outFields = 'parcelid,countyid,countyfips,ownername,adrlabel,adrcity,adrzip5';
+  const outFields = '*';
 
   if (lat && lng) {
     const polygonHit = await fetchLayerQuery(6, {
@@ -739,7 +1485,7 @@ function firstNumber(...values) {
 
 function normalizeParcelFeature(feature) {
   if (!feature) return null;
-  const attrs = feature.attributes || {};
+  const attrs = { ...(feature.properties || {}), ...(feature.attributes || {}) };
   const acres = firstNumber(
     attrs.CALC_ACRES,
     attrs.calc_acres,
@@ -1012,7 +1758,7 @@ function bookingAccessNotesRequired(payload = {}) {
 function instantCheckoutMissingFields(payload = {}) {
   const missing = [];
   if (!String(payload.name || payload.customerName || "").trim()) missing.push("name");
-  if (!String(payload.phone || payload.customerPhone || "").trim()) missing.push("phone");
+  if (!isValidLookingPhone(payload.phone || payload.customerPhone || "")) missing.push("phone");
   if (!String(payload.email || payload.customerEmail || "").trim()) missing.push("email");
   if (!String(payload.address || "").trim()) missing.push("address");
   const accessNotes = payload.yard_access_notes || payload.access_notes || payload.notes || payload.community_access_instructions || "";
@@ -1022,7 +1768,7 @@ function instantCheckoutMissingFields(payload = {}) {
 
 function normalizeInstantCheckoutPayload(payload = {}, calculatedEstimate = 0) {
   const name = payload.name || payload.customerName || "";
-  const phone = payload.phone || payload.customerPhone || "";
+  const phone = submittedPhone(payload);
   const email = payload.email || payload.customerEmail || "";
   return {
     ...payload,
@@ -1047,7 +1793,8 @@ app.post("/api/checkout/instant-mow", optionalAuth, async (req, res) => {
     const quoteId = body.quote_id || jobPayload.quote_id || jobPayload.quoteId || "";
     const missing = instantCheckoutMissingFields(jobPayload);
     if (missing.length) {
-      return res.status(400).json({ ok: false, error: `Missing booking fields: ${missing.join(", ")}` });
+      const onlyPhone = missing.length === 1 && missing[0] === "phone";
+      return res.status(400).json({ ok: false, error: onlyPhone ? phoneValidationError() : `Missing booking fields: ${missing.join(", ")}` });
     }
 
     const settings = await loadSettingsFromDb();
@@ -1094,6 +1841,7 @@ app.post("/api/checkout/instant-mow", optionalAuth, async (req, res) => {
       const payments = readJsonArray(PAYMENTS_FILE);
       payments.push(payment);
       writeJsonArray(PAYMENTS_FILE, payments);
+      await updateUserPhoneIfBlank(req.user?.id, checkoutJobPayload.phone);
       return res.json({
         ok: true,
         paymentStatus: "checkout_pending",
@@ -1171,6 +1919,7 @@ app.post("/api/checkout/instant-mow", optionalAuth, async (req, res) => {
     payment.stripe_payment_intent_id = session.payment_intent || null;
     payment.updated_at = new Date().toISOString();
     writeJsonArray(PAYMENTS_FILE, payments);
+    await updateUserPhoneIfBlank(req.user?.id, checkoutJobPayload.phone);
 
     res.json({
       ok: true,
@@ -1188,6 +1937,8 @@ app.post("/api/checkout/instant-mow", optionalAuth, async (req, res) => {
 app.post("/api/payments/create-checkout-session", requireAuth, async (req, res) => {
   try {
     const body = req.body || {};
+    const paymentPhone = submittedPhone(body) || req.user?.phone || "";
+    if (!isValidLookingPhone(paymentPhone)) return rejectMissingPhone(res);
     const amount = Math.round(Number(body.amount || body.final_price || body.estimate || 0) * 100);
     if (amount <= 0) return res.status(400).json({ ok: false, error: "Checkout amount is required" });
 
@@ -1200,6 +1951,11 @@ app.post("/api/payments/create-checkout-session", requireAuth, async (req, res) 
         stripe_checkout_session_id: null,
         stripe_payment_intent_id: null,
         amount: amount / 100,
+        customer: {
+          name: body.name || body.customerName || req.user.full_name || "",
+          email: body.email || body.customerEmail || req.user.email || "",
+          phone: paymentPhone
+        },
         status: "checkout_pending",
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString()
@@ -1207,6 +1963,7 @@ app.post("/api/payments/create-checkout-session", requireAuth, async (req, res) 
       const payments = readJsonArray(PAYMENTS_FILE);
       payments.push(payment);
       writeJsonArray(PAYMENTS_FILE, payments);
+      await updateUserPhoneIfBlank(req.user.id, paymentPhone);
       return res.json({ ok: true, paymentStatus: payment.status, checkoutUrl: null, payment });
     }
 
@@ -1222,6 +1979,7 @@ app.post("/api/payments/create-checkout-session", requireAuth, async (req, res) 
     params.set("line_items[0][price_data][product_data][name]", body.description || "TurfLynk service payment");
     params.set("metadata[job_id]", body.job_id || "");
     params.set("metadata[bid_request_id]", body.bid_request_id || "");
+    params.set("metadata[customer_phone]", paymentPhone);
 
     const stripeRes = await fetch("https://api.stripe.com/v1/checkout/sessions", {
       method: "POST",
@@ -1241,6 +1999,11 @@ app.post("/api/payments/create-checkout-session", requireAuth, async (req, res) 
       stripe_checkout_session_id: session.id,
       stripe_payment_intent_id: session.payment_intent || null,
       amount: amount / 100,
+      customer: {
+        name: body.name || body.customerName || req.user.full_name || "",
+        email: body.email || body.customerEmail || req.user.email || "",
+        phone: paymentPhone
+      },
       status: "checkout_created",
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString()
@@ -1248,11 +2011,58 @@ app.post("/api/payments/create-checkout-session", requireAuth, async (req, res) 
     const payments = readJsonArray(PAYMENTS_FILE);
     payments.push(payment);
     writeJsonArray(PAYMENTS_FILE, payments);
+    await updateUserPhoneIfBlank(req.user.id, paymentPhone);
     res.json({ ok: true, paymentStatus: payment.status, checkoutUrl: session.url, checkoutSessionId: session.id, payment });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
 });
+
+async function ensurePaidPaymentAccount(payment = {}, session = {}) {
+  const metadata = session.metadata || {};
+  const customer = payment.customer || {};
+  const email = customer.email || session.customer_details?.email || metadata.customer_email || "";
+  if (!email) return null;
+
+  const fullName = customer.name || metadata.customer_name || session.customer_details?.name || "";
+  const { user, created } = await findOrCreateCustomerUser({ email, fullName });
+  if (!user) return null;
+  await updateUserPhoneIfBlank(user.id, customer.phone || metadata.customer_phone || session.customer_details?.phone || "");
+
+  if (payment.job_id) {
+    await pgdb.query(
+      "UPDATE jobs SET customer_user_id = COALESCE(customer_user_id, $2) WHERE id = $1",
+      [payment.job_id, user.id]
+    );
+  }
+
+  if (payment.quote_id) {
+    await pgdb.query(
+      "UPDATE quotes SET customer_user_id = COALESCE(customer_user_id, $2) WHERE id = $1",
+      [payment.quote_id, user.id]
+    );
+  }
+
+  payment.customer_user_id = payment.customer_user_id || user.id;
+  payment.customer = {
+    ...customer,
+    name: customer.name || fullName,
+    email: customer.email || user.email,
+    phone: customer.phone || metadata.customer_phone || session.customer_details?.phone || ""
+  };
+
+  if (!payment.account_setup && created) {
+    payment.account_setup = createAccountSetupToken({ user, payment, createdUser: created });
+  } else if (!payment.account_setup) {
+    payment.account_setup = {
+      email: user.email,
+      createdUser: false,
+      existingUser: true
+    };
+  }
+
+  return payment.account_setup;
+}
 
 async function markCheckoutSessionPaid(session = {}) {
   const metadata = session.metadata || {};
@@ -1294,6 +2104,8 @@ async function markCheckoutSessionPaid(session = {}) {
     phone: metadata.customer_phone || session.customer_details?.phone || "",
     email: session.customer_details?.email || ""
   };
+  const accountSetup = await ensurePaidPaymentAccount(payment, session);
+  if (accountSetup) payment.account_setup = accountSetup;
   payment.updated_at = new Date().toISOString();
   writeJsonArray(PAYMENTS_FILE, payments);
 
@@ -1366,6 +2178,12 @@ app.get("/api/parcel/lookup", async (req, res) => {
     );
 
     if (result.ok && result.feature) {
+      const attrs = { ...(result.feature.properties || {}), ...(result.feature.attributes || {}) };
+      result.feature = {
+        ...result.feature,
+        attributes: attrs,
+        properties: attrs
+      };
       result.normalized = normalizeParcelFeature(result.feature);
     }
 
@@ -1396,6 +2214,7 @@ app.post("/api/auth/register", async (req, res) => {
       `,
       [nanoid(10), String(email).toLowerCase().trim(), hashPassword(password), fullName || "", safeRole]
     );
+    await linkPasswordProvider(result.rows[0]);
 
     res.status(201).json({
       ok: true,
@@ -1424,16 +2243,59 @@ app.post("/api/auth/login", async (req, res) => {
       return res.status(401).json({ ok: false, error: "Invalid login" });
     }
 
-    const token = nanoid(32);
-
-    await pgdb.query(
-      "INSERT INTO sessions (token, user_id) VALUES ($1, $2)",
-      [token, user.id]
-    );
+    await linkPasswordProvider(user);
+    const token = await createSessionForUser(user.id);
+    setSessionCookie(req, res, token);
+    const sessionUser = await userWithAvatar(user);
 
     res.json({
       ok: true,
       token,
+      user: sanitizeUser(sessionUser)
+    });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+app.post("/api/auth/set-password", async (req, res) => {
+  try {
+    const { token, password } = req.body || {};
+    if (!token || !password) {
+      return res.status(400).json({ ok: false, error: "Missing setup token or password" });
+    }
+    if (String(password).length < 8) {
+      return res.status(400).json({ ok: false, error: "Password must be at least 8 characters" });
+    }
+
+    const now = new Date().toISOString();
+    const rows = readJsonArray(ACCOUNT_SETUP_TOKENS_FILE);
+    const record = rows.find((item) => item.token === token && item.expires_at > now);
+    if (!record) {
+      return res.status(400).json({ ok: false, error: "Account setup link is invalid or expired" });
+    }
+
+    const result = await pgdb.query(
+      "UPDATE users SET password_hash = $1 WHERE id = $2 RETURNING *",
+      [hashPassword(password), record.user_id]
+    );
+    const user = result.rows[0];
+    if (!user) {
+      return res.status(404).json({ ok: false, error: "Account not found" });
+    }
+
+    writeJsonArray(
+      ACCOUNT_SETUP_TOKENS_FILE,
+      rows.filter((item) => item.token !== token)
+    );
+
+    await linkPasswordProvider(user);
+    const sessionToken = await createSessionForUser(user.id);
+    setSessionCookie(req, res, sessionToken);
+
+    res.json({
+      ok: true,
+      token: sessionToken,
       user: sanitizeUser(user)
     });
   } catch (error) {
@@ -1441,20 +2303,251 @@ app.post("/api/auth/login", async (req, res) => {
   }
 });
 
-app.get("/api/auth/me", requireAuth, (req, res) => {
+app.get("/api/auth/me", optionalAuth, (req, res) => {
   res.json({
     ok: true,
-    user: sanitizeUser(req.user)
+    user: req.user?.role ? sanitizeUser(req.user) : (req.user || null)
   });
 });
 
-app.post("/api/auth/logout", requireAuth, async (req, res) => {
+app.post("/api/auth/logout", async (req, res) => {
   try {
-    await pgdb.query("DELETE FROM sessions WHERE token = $1", [req.authToken]);
-    res.json({ ok: true });
+    const token = authTokenFromRequest(req);
+    if (token) {
+      await pgdb.query("DELETE FROM sessions WHERE token = $1", [token]);
+    }
+    clearSessionCookie(req, res);
+    clearPassportSessionCookie(req, res);
+    const finish = () => res.json({ ok: true });
+    const destroySession = () => {
+      if (!req.session) return finish();
+      req.session.destroy((error) => {
+        if (error) {
+          return res.status(500).json({ ok: false, error: error.message });
+        }
+        finish();
+      });
+    };
+    req.logout((error) => {
+      if (error) {
+        return res.status(500).json({ ok: false, error: error.message });
+      }
+      destroySession();
+    });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
   }
+});
+
+app.get("/api/auth/facebook", (req, res, next) => {
+  const source = safeFacebookLoginSource(req.query.source);
+  const step = safeFacebookLoginStep(req.query.step);
+  if (req.session) {
+    req.session.facebookLoginSource = source;
+    req.session.facebookLoginStep = step;
+  }
+  console.info(`[Facebook Login] source=${source} route=/api/auth/facebook`);
+  console.info("[Facebook OAuth][Passport] start", {
+    source,
+    step,
+    appIdLoaded: Boolean(FACEBOOK_APP_ID),
+    appSecretLoaded: Boolean(FACEBOOK_APP_SECRET),
+    callbackURL: FACEBOOK_CALLBACK_URL,
+    callbackMatchesExpected: FACEBOOK_CALLBACK_URL === EXPECTED_FACEBOOK_CALLBACK_URL
+  });
+  if (!FACEBOOK_APP_ID || !FACEBOOK_APP_SECRET) {
+    console.warn("[Facebook OAuth][Passport] start failed: provider_unconfigured", {
+      source,
+      step,
+      appIdLoaded: Boolean(FACEBOOK_APP_ID),
+      appSecretLoaded: Boolean(FACEBOOK_APP_SECRET),
+      callbackURL: FACEBOOK_CALLBACK_URL
+    });
+    return res.redirect("/auth-failed.html");
+  }
+  return passport.authenticate("facebook", { scope: ["email"] })(req, res, next);
+});
+
+app.get("/api/auth/facebook/callback", (req, res, next) => {
+  const source = safeFacebookLoginSource(req.session?.facebookLoginSource);
+  const step = safeFacebookLoginStep(req.session?.facebookLoginStep);
+  console.info("[Facebook OAuth][Passport] callback received", {
+    source,
+    step,
+    callbackURL: FACEBOOK_CALLBACK_URL,
+    callbackMatchesExpected: FACEBOOK_CALLBACK_URL === EXPECTED_FACEBOOK_CALLBACK_URL,
+    query: safeOAuthQuery(req.query)
+  });
+  if (!FACEBOOK_APP_ID || !FACEBOOK_APP_SECRET) {
+    console.warn("[Facebook OAuth][Passport] callback failed: provider_unconfigured", {
+      source,
+      step,
+      appIdLoaded: Boolean(FACEBOOK_APP_ID),
+      appSecretLoaded: Boolean(FACEBOOK_APP_SECRET),
+      callbackURL: FACEBOOK_CALLBACK_URL,
+      query: safeOAuthQuery(req.query)
+    });
+    return res.redirect("/auth-failed.html");
+  }
+
+  return passport.authenticate("facebook", { session: true }, (error, user, info) => {
+    if (error || !user) {
+      console.warn("[Facebook OAuth][Passport] callback failed", {
+        errorMessage: error?.message || null,
+        info: safePassportInfo(info),
+        query: safeOAuthQuery(req.query),
+        userPresent: Boolean(user),
+        verifyCallbackRan: Boolean(req.facebookVerifyCallbackRan),
+        profilePresent: Boolean(req.facebookProfilePresent),
+        source,
+        step,
+        callbackURL: FACEBOOK_CALLBACK_URL
+      });
+      return res.redirect("/auth-failed.html");
+    }
+
+    return req.logIn(user, (loginError) => {
+      if (loginError) {
+        console.warn("[Facebook OAuth][Passport] session login failed", {
+          errorMessage: loginError.message,
+          userPresent: Boolean(user),
+          emailPresent: Boolean(user.email),
+          verifyCallbackRan: Boolean(req.facebookVerifyCallbackRan),
+          profilePresent: Boolean(req.facebookProfilePresent),
+          source,
+          step,
+          callbackURL: FACEBOOK_CALLBACK_URL
+        });
+        return res.redirect("/auth-failed.html");
+      }
+
+      console.info("[Facebook OAuth][Passport] callback succeeded", {
+        userPresent: true,
+        emailPresent: Boolean(user.email),
+        verifyCallbackRan: Boolean(req.facebookVerifyCallbackRan),
+        profilePresent: Boolean(req.facebookProfilePresent),
+        provider: user.provider || "facebook",
+        source,
+        step,
+        callbackURL: FACEBOOK_CALLBACK_URL
+      });
+      const returnStep = source === "checkout" ? step : "request";
+      delete req.session.facebookLoginSource;
+      delete req.session.facebookLoginStep;
+      return res.redirect(appRedirectUrl(`/?auth=success&view=quote&step=${encodeURIComponent(returnStep)}`));
+    });
+  })(req, res, next);
+});
+
+app.post("/api/facebook/data-deletion", async (req, res) => {
+  const signedRequest = req.body?.signed_request;
+  if (!signedRequest) {
+    return res.status(400).json({ ok: false, error: "Missing signed_request" });
+  }
+
+  const payload = parseFacebookSignedRequest(signedRequest);
+  if (!payload?.user_id) {
+    return res.status(400).json({ ok: false, error: "Invalid signed_request" });
+  }
+
+  const hasMatchingUser = await hasStoredFacebookUserData(payload.user_id);
+  const record = saveFacebookDataDeletionRequest(payload, hasMatchingUser);
+  res.type("application/json").json({
+    url: record.statusUrl,
+    confirmation_code: record.confirmationCode
+  });
+});
+
+app.get("/api/facebook/data-deletion/status/:code", (req, res) => {
+  const confirmationCode = String(req.params.code || "");
+  const record = findFacebookDataDeletionRequest(confirmationCode);
+  const status = record?.status || "not found";
+  const message = record
+    ? record.status === "not_found"
+      ? "No matching Facebook data was found and no further action is required."
+      : "MowNWA received the Facebook data deletion request and will delete or anonymize user data associated with this request."
+    : "No matching Facebook data was found and no further action is required.";
+  res.type("html").send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MowNWA Facebook Data Deletion Status</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <main class="legal-page auth-status-page">
+    <p class="legal-brand">MowNWA.com</p>
+    <h1>Your data deletion request has been received</h1>
+    <p><strong>Confirmation code:</strong> ${escapeHtml(confirmationCode)}</p>
+    <p><strong>Current status:</strong> ${escapeHtml(status)}</p>
+    <p>${escapeHtml(message)}</p>
+    <p>MowNWA will delete or anonymize user data associated with this request.</p>
+    <p>Retention may still be required for legal, security, billing, or service-record reasons.</p>
+    <p><a href="/">Back to MowNWA.com</a></p>
+  </main>
+</body>
+</html>`);
+});
+
+app.get("/auth/google", (req, res) => {
+  if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
+    return res.redirect(authErrorRedirect("google", "provider_unconfigured"));
+  }
+
+  const state = crypto.randomBytes(24).toString("hex");
+  const returnTo = safeQuoteReturnPath(req.query.returnTo || "/?auth=success&view=quote&step=request");
+  setOAuthStateCookie(req, res, { provider: "google", state, returnTo });
+
+  const params = new URLSearchParams({
+    client_id: GOOGLE_CLIENT_ID,
+    redirect_uri: oauthRedirectUri("google"),
+    response_type: "code",
+    scope: "openid email profile",
+    state,
+    prompt: "select_account"
+  });
+  res.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`);
+});
+
+app.get("/auth/google/callback", async (req, res) => {
+  try {
+    const stateCookie = decodeStatePayload(parseCookies(req)[OAUTH_STATE_COOKIE_NAME]);
+    clearOAuthStateCookie(req, res);
+    if (!stateCookie || stateCookie.provider !== "google" || stateCookie.state !== req.query.state) {
+      return res.redirect(authErrorRedirect("google", "invalid_state"));
+    }
+    if (req.query.error) return res.redirect(authErrorRedirect("google", "provider_denied"));
+    if (!req.query.code) return res.redirect(authErrorRedirect("google", "missing_code"));
+
+    const profile = await getGoogleProfile(String(req.query.code));
+    const user = await findOrCreateUserForOAuth(profile);
+    const token = await createSessionForUser(user.id);
+    setSessionCookie(req, res, token);
+    res.redirect(appRedirectUrl(stateCookie.returnTo));
+  } catch (error) {
+    console.warn("Google OAuth failed:", error.message);
+    res.redirect(authErrorRedirect("google", "auth_failed"));
+  }
+});
+
+app.get("/auth/facebook", (req, res) => {
+  const step = safeFacebookLoginStep(new URL(req.query.returnTo || "/?step=request", APP_BASE_URL).searchParams.get("step"));
+  console.warn("[Facebook OAuth][Custom] disabled; redirecting to Passport route", {
+    route: "/api/auth/facebook",
+    passportCallbackURL: FACEBOOK_CALLBACK_URL
+  });
+  res.redirect(`/api/auth/facebook?source=legacy_custom&step=${encodeURIComponent(step)}`);
+});
+
+app.get("/auth/facebook/callback", (req, res) => {
+  const qs = new URLSearchParams(req.query).toString();
+  console.warn("[Facebook OAuth][Legacy] /auth/facebook/callback → /api/auth/facebook/callback", {
+    passportCallbackURL: FACEBOOK_CALLBACK_URL,
+    hasCode: Boolean(req.query.code),
+    hasState: Boolean(req.query.state)
+  });
+  res.redirect(302, `/api/auth/facebook/callback${qs ? `?${qs}` : ""}`);
 });
 
 /* -------------------- PROVIDERS (still JSON-backed for now) -------------------- */
@@ -1849,6 +2942,7 @@ function mapJobRow(row) {
     preferredDate: row.preferred_date || null,
     details,
     photos: parseJsonArray(row.photos),
+    scopeSnapshot: parseJsonObject(row.scope_snapshot),
     status: row.status || "open",
     gate_size_category: detailValue("Gate size"),
     gate_width_inches: Number(detailValue("Gate width inches") || 0) || null,
@@ -1864,6 +2958,46 @@ function mapJobRow(row) {
     pet_waste_level: detailValue("Pet waste"),
     obstacles_list: listField(detailValue("Obstacles")),
     postedAt: row.created_at
+  };
+}
+
+function sanitizeCustomerName(fullName) {
+  const parts = String(fullName || "").trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return "Customer";
+  const first = parts[0];
+  const lastInitial = parts.length > 1 ? `${parts[parts.length - 1].charAt(0).toUpperCase()}.` : "";
+  return [first, lastInitial].filter(Boolean).join(" ");
+}
+
+function sanitizeJobForPublic(job = {}) {
+  return {
+    id: job.id || "",
+    title: job.title || "",
+    customerName: sanitizeCustomerName(job.customerName || job.customer_name || job.name || ""),
+    city: job.city || "",
+    state: job.state || "",
+    regionId: job.regionId || job.region_id || "",
+    budget: Number(job.budget || job.estimate || 0),
+    serviceType: job.serviceType || job.service_type || "mowing",
+    preferredDate: job.preferredDate || job.preferred_date || null,
+    status: job.status || "open",
+    postedAt: job.postedAt || job.createdAt || job.created_at || null
+  };
+}
+
+function sanitizeJobForOwner(job = {}) {
+  return {
+    ...sanitizeJobForPublic(job),
+    address: job.address || "",
+    zip: job.zip || "",
+    budget: Number(job.budget || 0),
+    details: job.details || "",
+    gate_size_category: job.gate_size_category || "",
+    gate_width_inches: job.gate_width_inches || null,
+    mower_access: job.mower_access || "",
+    yard_access_notes: job.yard_access_notes || "",
+    community_access_type: job.community_access_type || "",
+    scopeSnapshot: parseJsonObject(job.scopeSnapshot || job.scope_snapshot)
   };
 }
 
@@ -1897,7 +3031,79 @@ function buildJobDetails(body = {}) {
   ].filter(Boolean).join("\n");
 }
 
+function geoJsonField(body = {}, ...keys) {
+  for (const key of keys) {
+    const value = body[key];
+    if (!value) continue;
+    const parsed = typeof value === "string" ? parseJsonObject(value) : value;
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      ["FeatureCollection", "Feature", "Polygon", "MultiPolygon"].includes(parsed.type)
+    ) {
+      return parsed;
+    }
+  }
+  return null;
+}
+
+function buildJobScopeSnapshot(body = {}) {
+  const serviceFields = servicePayloadFields(body);
+  const finalAmount = Number(body.final_price || body.finalPrice || body.paidAmount || body.paymentAmount || body.budget || body.estimate || 0);
+  const tipAmount = Number(body.tipAmount || body.tip_amount || body.gratuity || 0);
+  const snapshot = {
+    parcelGeoJSON: geoJsonField(body, "parcelGeoJSON", "parcelGeoJson", "parcel_geojson"),
+    selectedMowableGeoJSON: geoJsonField(body, "selectedMowableGeoJSON", "selectedMowableGeoJson", "mowableGeoJSON", "mowableGeoJson", "mowable_geojson"),
+    excludedGeoJSON: geoJsonField(body, "excludedGeoJSON", "excludedGeoJson", "cutoutGeoJSON", "cutoutGeoJson", "cutout_geojson"),
+    mowableAreaSqFt: Number(body.mowAreaSqft || body.mowableAreaSqFt || body.mowable_area_sqft || body.areaSqft || 0),
+    lotAreaSqFt: Number(body.lotAreaSqft || body.lotAreaSqFt || body.lot_area_sqft || body.parcelAreaSqft || 0),
+    serviceType: body.serviceType || body.service_type || "mowing",
+    finalAmount,
+    paidAmount: Number(body.paidAmount || body.paymentAmount || 0) || finalAmount,
+    tipAmount,
+    access: {
+      gateSize: serviceFields.gate_size_category,
+      gateAccessType: serviceFields.gate_access_type,
+      gateWidthInches: serviceFields.gate_width_inches,
+      gateLocked: serviceFields.gate_locked,
+      mowerAccess: serviceFields.mower_access,
+      yardAccessNotes: serviceFields.yard_access_notes,
+      communityAccessType: serviceFields.community_access_type,
+      communityAccessPrivate: Boolean(serviceFields.community_access_instructions_encrypted)
+    },
+    serviceOptions: {
+      quoteType: serviceFields.quote_type,
+      scopeLocked: serviceFields.scope_locked,
+      selectedYardAreas: serviceFields.selected_yard_areas,
+      requestedTasks: serviceFields.requested_tasks,
+      includedTasks: serviceFields.included_tasks_json,
+      excludedTasks: serviceFields.excluded_tasks_json,
+      grassHeight: serviceFields.grass_height_range,
+      frequency: serviceFields.service_frequency,
+      pets: serviceFields.pets,
+      petWaste: serviceFields.pet_waste_level,
+      obstacles: serviceFields.obstacles_list,
+      availableDays: serviceFields.available_days_json,
+      timePreference: serviceFields.time_preference,
+      scheduleFlexibility: serviceFields.schedule_flexibility,
+      availableDateStart: serviceFields.available_date_start,
+      availableDateEnd: serviceFields.available_date_end,
+      specificServiceDate: serviceFields.specific_service_date
+    },
+    customerNotes: serviceFields.customer_notes,
+    map: {
+      center: body.mapCenter || body.map_center || null,
+      bounds: body.mapBounds || body.map_bounds || null
+    },
+    createdAt: new Date().toISOString()
+  };
+
+  return Object.fromEntries(Object.entries(snapshot).filter(([, value]) => value !== null && value !== undefined));
+}
+
 async function insertJobForUser(userId, body = {}, status = "open") {
+  await ensureJobsScopeSnapshotColumn();
+  const scopeSnapshot = buildJobScopeSnapshot(body);
   const result = await pgdb.query(
     `
     INSERT INTO jobs (
@@ -1915,10 +3121,11 @@ async function insertJobForUser(userId, body = {}, status = "open") {
       preferred_date,
       details,
       photos,
+      scope_snapshot,
       status
     )
     VALUES (
-      $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
+      $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb, $16
     )
     RETURNING *
     `,
@@ -1937,6 +3144,7 @@ async function insertJobForUser(userId, body = {}, status = "open") {
       body.preferredDate || null,
       buildJobDetails(body),
       JSON.stringify(Array.isArray(body.photos) ? body.photos : []),
+      JSON.stringify(scopeSnapshot),
       status
     ]
   );
@@ -1946,6 +3154,7 @@ async function insertJobForUser(userId, body = {}, status = "open") {
 
 app.get("/api/jobs", requireAuth, async (req, res) => {
   try {
+    await ensureJobsScopeSnapshotColumn();
     let result;
 
     if (req.user.role === "admin") {
@@ -1980,7 +3189,7 @@ app.get("/api/jobs", requireAuth, async (req, res) => {
 
     const jobs = result.rows.map(mapJobRow);
 
-    res.json({ ok: true, jobs });
+    res.json({ ok: true, jobs: req.user.role === "admin" ? jobs : jobs.map(sanitizeJobForPublic) });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
   }
@@ -1993,7 +3202,12 @@ app.post("/api/jobs", requireAuth, async (req, res) => {
 
   try {
     const body = req.body || {};
+    const phone = submittedPhone(body);
+    if (!isValidLookingPhone(phone)) return rejectMissingPhone(res);
+    body.phone = phone;
+    body.customerPhone = phone;
     const job = await insertJobForUser(user.id, body, "open");
+    await updateUserPhoneIfBlank(user.id, phone);
 
     res.status(201).json({
       ok: true,
@@ -2005,15 +3219,17 @@ app.post("/api/jobs", requireAuth, async (req, res) => {
 });
 
 // Public alias: POST /api/leads — same as unauthenticated /api/jobs
-app.post("/api/leads", async (req, res) => {
+app.post("/api/leads", optionalAuth, async (req, res) => {
   try {
     const body = req.body || {};
+    const phone = submittedPhone(body);
+    if (!isValidLookingPhone(phone)) return rejectMissingPhone(res);
     const lead = {
       id: nanoid(10),
       createdAt: new Date().toISOString(),
       status: "new",
       customerName: body.customerName || body.name || "",
-      customerPhone: body.customerPhone || body.phone || "",
+      customerPhone: phone,
       customerEmail: body.customerEmail || body.email || "",
       address: body.address || "",
       city: body.city || "",
@@ -2040,6 +3256,7 @@ app.post("/api/leads", async (req, res) => {
     const leads = readLeads();
     leads.push(lead);
     writeLeads(leads);
+    await updateUserPhoneIfBlank(req.user?.id, phone);
 
     res.status(201).json({ ok: true, lead, job: lead });
   } catch (err) {
@@ -2047,9 +3264,11 @@ app.post("/api/leads", async (req, res) => {
   }
 });
 
-app.post("/api/bid-requests", async (req, res) => {
+app.post("/api/bid-requests", optionalAuth, async (req, res) => {
   try {
     const body = req.body || {};
+    const phone = submittedPhone(body);
+    if (!isValidLookingPhone(phone)) return rejectMissingPhone(res);
     const photoUrls = listField(body.photos);
     const serviceTypes = listField(body.service_types || body.serviceTypes || body.requested_tasks);
     const bidRequest = {
@@ -2060,7 +3279,7 @@ app.post("/api/bid-requests", async (req, res) => {
       related_job_id: body.related_job_id || body.relatedJobId || null,
       customer_user_id: body.customer_user_id || null,
       customerName: body.customerName || body.name || "",
-      customerPhone: body.customerPhone || body.phone || "",
+      customerPhone: phone,
       customerEmail: body.customerEmail || body.email || "",
       address: body.address || "",
       city: body.city || "",
@@ -2081,6 +3300,7 @@ app.post("/api/bid-requests", async (req, res) => {
     const bidRequests = readJsonArray(BID_REQUESTS_FILE);
     bidRequests.push(bidRequest);
     writeJsonArray(BID_REQUESTS_FILE, bidRequests);
+    await updateUserPhoneIfBlank(req.user?.id, phone);
 
     if (photoUrls.length) {
       const photos = readJsonArray(JOB_PHOTOS_FILE);
@@ -2377,18 +3597,22 @@ app.get("/api/quotes", requireAuth, requireRole("admin"), async (_req, res) => {
   }
 });
 
-app.post("/api/quotes", async (req, res) => {
+app.post("/api/quotes", optionalAuth, async (req, res) => {
   try {
     const body = req.body || {};
+    const phone = submittedPhone(body);
+    if (!isValidLookingPhone(phone)) return rejectMissingPhone(res);
     const settings = await loadSettingsFromDb();
     const estimate = estimateQuote(body, settings);
     const serviceFields = servicePayloadFields(body);
+    const requestedStatus = String(body.status || "").trim();
+    const status = requestedStatus === "manual_requested" ? "manual_requested" : "new";
 
     const quote = {
       id: nanoid(10),
       createdAt: new Date().toISOString(),
       name: body.name || "",
-      phone: body.phone || "",
+      phone,
       email: body.email || "",
       serviceType: body.serviceType || "mowing",
       regionId: body.regionId || "",
@@ -2415,7 +3639,7 @@ app.post("/api/quotes", async (req, res) => {
       estimated_price_high: serviceFields.estimated_price_high,
       final_price: estimate,
       estimate,
-      status: "new"
+      status
     };
 
     await pgdb.query(
@@ -2483,9 +3707,10 @@ app.post("/api/quotes", async (req, res) => {
         quote.notes,
         quote.estimate,
         quote.status,
-        null
+        req.user?.id || null
       ]
     );
+    await updateUserPhoneIfBlank(req.user?.id, phone);
 
     res.status(201).json({ ok: true, quote });
   } catch (err) {
@@ -2508,6 +3733,7 @@ app.post("/api/quotes/:id/convert-to-job", requireAuth, requireRole("admin"), as
     }
 
     const quote = quoteResult.rows[0];
+    if (!isValidLookingPhone(quote.phone || "")) return rejectMissingPhone(res);
 
     if (quote.converted_to_job_id) {
       const existingJob = await pgdb.query(
@@ -2555,6 +3781,7 @@ app.post("/api/quotes/:id/convert-to-job", requireAuth, requireRole("admin"), as
 
       customerUserId = insertedUser.rows[0].id;
     }
+    await updateUserPhoneIfBlank(customerUserId, quote.phone);
 
     const serviceLabel = String(quote.service_type || "mowing")
       .replace(/_/g, " ")
@@ -2655,11 +3882,12 @@ app.post("/api/quotes/:id/convert-to-job", requireAuth, requireRole("admin"), as
 // Customer: their own bookings (no role restriction — any logged-in user sees their jobs)
 app.get("/api/jobs/my", requireAuth, async (req, res) => {
   try {
+    await ensureJobsScopeSnapshotColumn();
     const result = await pgdb.query(
       "SELECT * FROM jobs WHERE customer_user_id = $1 ORDER BY created_at DESC",
       [req.user.id]
     );
-    res.json({ ok: true, jobs: result.rows.map(mapJobRow) });
+    res.json({ ok: true, jobs: result.rows.map(mapJobRow).map(sanitizeJobForOwner) });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
   }
@@ -2671,7 +3899,27 @@ app.get("/api/jobs/open", async (_req, res) => {
     const result = await pgdb.query(
       "SELECT * FROM jobs WHERE status = 'open' ORDER BY created_at DESC LIMIT 50"
     );
-    res.json({ ok: true, jobs: result.rows.map(mapJobRow) });
+    res.json({ ok: true, jobs: result.rows.map(mapJobRow).map(sanitizeJobForPublic) });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+app.get("/api/jobs/:id", requireAuth, async (req, res) => {
+  try {
+    await ensureJobsScopeSnapshotColumn();
+    const result = await pgdb.query("SELECT * FROM jobs WHERE id = $1 LIMIT 1", [req.params.id]);
+    if (!result.rows.length) return res.status(404).json({ ok: false, error: "Job not found" });
+
+    const row = result.rows[0];
+    const isOwner = row.customer_user_id && String(row.customer_user_id) === String(req.user.id);
+    const isAdmin = req.user.role === "admin";
+    const isProvider = req.user.role === "provider" && (!row.provider_user_id || String(row.provider_user_id) === String(req.user.id));
+    if (!isOwner && !isAdmin && !isProvider) {
+      return res.status(403).json({ ok: false, error: "Not authorized for this job" });
+    }
+
+    res.json({ ok: true, job: mapJobRow(row) });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
   }
@@ -2837,6 +4085,13 @@ app.get("/api/payments/session/:sessionId", async (req, res) => {
     if (!payment) {
       return res.status(404).json({ ok: false, error: "Payment session not found" });
     }
+    if (payment.status === "paid" && !payment.account_setup) {
+      const accountSetup = await ensurePaidPaymentAccount(payment, {});
+      if (accountSetup) {
+        payment.account_setup = accountSetup;
+        writeJsonArray(PAYMENTS_FILE, payments);
+      }
+    }
     let jobDetails = null;
     if (payment.job_id) {
       try {
@@ -2881,6 +4136,16 @@ app.get("/api/payments/session/:sessionId", async (req, res) => {
           email: payment.customer?.email || "",
           phone: payment.customer?.phone || ""
         },
+        accountSetup: payment.account_setup
+          ? {
+              token: payment.account_setup.token || "",
+              url: payment.account_setup.url || "",
+              email: payment.account_setup.email || payment.customer?.email || "",
+              createdUser: Boolean(payment.account_setup.createdUser),
+              existingUser: Boolean(payment.account_setup.existingUser),
+              expiresAt: payment.account_setup.expiresAt || ""
+            }
+          : null,
         service: payment.service || null,
         job: jobDetails
       }
@@ -2940,7 +4205,7 @@ app.get("/api/customer/bookings", requireAuth, async (req, res) => {
       const payment = payments.find((p) => p.job_id === j.id);
       return { ...j, paymentAmount: payment?.amount || null, paymentStatus: payment?.status || null, paidAt: payment?.paid_at || null };
     });
-    res.json({ ok: true, jobs });
+    res.json({ ok: true, jobs: jobs.map(sanitizeJobForPublic) });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
@@ -2980,7 +4245,7 @@ app.get("/api/provider/paid-jobs", requireAuth, requireRole("provider"), async (
       const payment = payments.find((p) => p.job_id === j.id);
       return { ...j, paymentAmount: payment?.amount || null, paymentStatus: payment?.status || null, paidAt: payment?.paid_at || null };
     });
-    res.json({ ok: true, jobs });
+    res.json({ ok: true, jobs: jobs.map(sanitizeJobForPublic) });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
@@ -3014,4 +4279,5 @@ app.get("*", (_req, res) => {
 
 app.listen(PORT, () => {
   console.log(`${APP_NAME} listening on http://0.0.0.0:${PORT}`);
+  ensureJobsScopeSnapshotColumn().catch((err) => console.warn('[Startup] scope_snapshot column ensure failed:', err.message));
 });

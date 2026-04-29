@@ -27,18 +27,30 @@ function showResult(id, html) {
   el.classList.remove('hidden');
 }
 
-function showToast(message, type = 'info') {
+function showToast(message, type = 'info', options = {}) {
   const layer = byId('toastLayer');
   if (!layer) return;
+  const text = String(message || '').trim();
+  if (!text) return;
+  const maxVisible = Math.max(1, Number(options.maxVisible || 2));
+  const duration = Math.max(1400, Number(options.duration || (type === 'error' ? 5200 : 2800)));
+  const duplicate = Array.from(layer.children).find((item) => item.dataset.message === text && item.dataset.type === type);
+  if (duplicate) duplicate.remove();
+  while (layer.children.length >= maxVisible) {
+    layer.firstElementChild?.remove();
+  }
   const toast = document.createElement('div');
   toast.className = `toast ${type}`;
-  toast.textContent = String(message || '');
+  toast.dataset.message = text;
+  toast.dataset.type = type;
+  toast.setAttribute('role', type === 'error' || type === 'warning' ? 'alert' : 'status');
+  toast.textContent = text;
   layer.append(toast);
   setTimeout(() => {
     toast.style.opacity = '0';
     toast.style.transform = 'translateY(8px)';
     setTimeout(() => toast.remove(), 180);
-  }, 3200);
+  }, duration);
 }
 
 const showSuccess = (message) => showToast(message, 'success');
