@@ -3076,6 +3076,16 @@ function updateQuoteFlowState(options = {}) {
   setElementVisible('mapToolsToggle', parcelLoaded && state.quoteFlowStep === 'draw' && byId('mapToolsPanel')?.classList.contains('hidden'));
   if (!parcelLoaded || state.quoteFlowStep !== 'draw') setMapToolPanelOpen(false);
 
+  const aiDetectBtn = byId('aiDetectMowableBtn');
+  const parcelGeoJson = parcelLoaded ? currentParcelGeoJSON() : null;
+  const aiDetectReady = Boolean(parcelGeoJson && !editing && !drawing && !state.aiDetectMowableLoading);
+  setElementVisible('aiDetectMowableBtn', parcelLoaded && !editing && !drawing);
+  if (aiDetectBtn) {
+    aiDetectBtn.disabled = !aiDetectReady;
+    aiDetectBtn.classList.toggle('disabled', !aiDetectReady);
+    aiDetectBtn.textContent = state.aiDetectMowableLoading ? 'Detecting...' : 'AI Detect Yard';
+  }
+
   setElementVisible('useParcelShapeBtn', parcelLoaded && !mowSelected && !editing && !drawing);
   setElementVisible('lassoYardBtn', parcelLoaded && !editing && !drawing);
   setElementVisible('finishLassoBtn', parcelLoaded && drawing);
@@ -3191,6 +3201,70 @@ async function aiDetectGrassDraft() {
   } catch (error) {
     console.error('AI grass detection failed', error);
     showResult('parcelInfo', `<strong>AI detection failed.</strong><br>${escapeHtml(error.message || error)}`);
+  }
+}
+
+function mowableFeaturesFromAiResponse(data = {}) {
+  const collection = data.featureCollection;
+  if (!collection || collection.type !== 'FeatureCollection' || !Array.isArray(collection.features)) {
+    return [];
+  }
+  return collection.features.filter((feature) => feature?.geometry);
+}
+
+async function aiDetectMowableArea() {
+  const parcelGeoJson = currentParcelGeoJSON();
+  if (!parcelGeoJson || !state.map) {
+    showResult('parcelInfo', '<strong>No parcel shape yet.</strong><br>Lookup the parcel first.');
+    updateQuoteFlowState();
+    return;
+  }
+
+  const center = state.map.getCenter?.();
+  const payload = {
+    parcelGeoJson,
+    center: center ? {
+      lng: Number(center.lng ?? center[0]),
+      lat: Number(center.lat ?? center[1]),
+    } : null,
+    zoom: Number(state.map.getZoom?.() || 0) || null,
+    source: 'maplibre',
+  };
+
+  stopToolModes();
+  state.aiDetectMowableLoading = true;
+  updateQuoteFlowState();
+  showResult('parcelInfo', 'Detecting mowable area...');
+
+  try {
+    const data = await api('/api/ai/detect-mowable', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    const features = mowableFeaturesFromAiResponse(data);
+
+    if (!data?.ok || !features.length) {
+      showResult('parcelInfo', 'AI could not detect this yard yet. Use Lasso Yard to draw it manually.');
+      return;
+    }
+
+    state.mowUndoStack = [];
+    state.selectedMowableFeatureId = null;
+    setMowableFeatures(features);
+    clearCutoutFeatures();
+    reorderMapOverlays();
+    syncMowAreaFromLayers();
+    await refreshEstimate({ force: true }).catch((error) => {
+      showError(prettyApiError(error));
+    });
+
+    showResult('parcelInfo', 'AI suggested a mowable area. You can edit it before booking.');
+  } catch (error) {
+    console.error('AI mowable detection failed', error);
+    showResult('parcelInfo', 'AI could not detect this yard yet. Use Lasso Yard to draw it manually.');
+  } finally {
+    state.aiDetectMowableLoading = false;
+    updateQuoteFlowState();
   }
 }
 
@@ -5526,7 +5600,7 @@ byId('gpsConfirmNoBtn')?.addEventListener('click', () => {
   showPropertyConfirmationPanel(false);
   showQuoteFlowStep('property');
 });
-byId('aiDetectGrassBtn')?.addEventListener('click', aiDetectGrassDraft);
+byId('aiDetectMowableBtn')?.addEventListener('click', aiDetectMowableArea);
 byId('useParcelShapeBtn')?.addEventListener('click', cloneParcelAsMowable);
 byId('lassoYardBtn')?.addEventListener('click', () => {
   if (state.parcelSelectMode) exitParcelSelectMode();

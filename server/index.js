@@ -365,6 +365,108 @@ if (aiDetectGrassRouter) {
   app.use('/api/ai/detect-grass', aiDetectGrassRouter);
 }
 
+function emptyFeatureCollection() {
+  return {
+    type: "FeatureCollection",
+    features: []
+  };
+}
+
+function mowableFallback(mode = "placeholder") {
+  return {
+    ok: true,
+    featureCollection: emptyFeatureCollection(),
+    areaSqft: 0,
+    mode
+  };
+}
+
+function isFeatureCollection(value) {
+  return (
+    value &&
+    typeof value === "object" &&
+    value.type === "FeatureCollection" &&
+    Array.isArray(value.features)
+  );
+}
+
+function normalizeMowableResponse(payload = {}) {
+  if (payload.ok !== true) return null;
+
+  if (isFeatureCollection(payload.featureCollection)) {
+    return {
+      ok: true,
+      featureCollection: payload.featureCollection,
+      areaSqft: Number(payload.areaSqft || payload.mowableAreaSqFt || 0),
+      mode: payload.mode || payload.diagnostics?.mode || "ai"
+    };
+  }
+
+  if (Array.isArray(payload.polygons)) {
+    return {
+      ok: true,
+      featureCollection: {
+        type: "FeatureCollection",
+        features: payload.polygons
+          .filter((geometry) => geometry && typeof geometry === "object")
+          .map((geometry) => ({
+            type: "Feature",
+            properties: { source: "vision_service" },
+            geometry
+          }))
+      },
+      areaSqft: Number(payload.areaSqft || payload.mowableAreaSqFt || 0),
+      mode: payload.mode || payload.diagnostics?.mode || "ai"
+    };
+  }
+
+  return null;
+}
+
+app.post("/api/ai/detect-mowable", async (req, res) => {
+  const body = req.body || {};
+  const visionServiceUrl = (process.env.VISION_SERVICE_URL || "").replace(/\/+$/, "");
+
+  if (!visionServiceUrl) {
+    return res.json(mowableFallback("placeholder"));
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8000);
+
+  try {
+    const upstream = await fetch(`${visionServiceUrl}/detect-mowable`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        parcelGeoJson: body.parcelGeoJson,
+        center: body.center,
+        zoom: body.zoom,
+        source: body.source
+      }),
+      signal: controller.signal
+    });
+
+    if (!upstream.ok) {
+      return res.json(mowableFallback("ai-unavailable"));
+    }
+
+    const payload = await upstream.json().catch(() => null);
+    const normalized = normalizeMowableResponse(payload);
+
+    if (!normalized) {
+      return res.json(mowableFallback("ai-unavailable"));
+    }
+
+    return res.json(normalized);
+  } catch (err) {
+    console.warn("AI mowable detection unavailable:", err.message);
+    return res.json(mowableFallback("ai-unavailable"));
+  } finally {
+    clearTimeout(timeout);
+  }
+});
+
 app.post('/api/ai/refine-mowable', async (req, res) => {
   try {
     const body = req.body || {};
