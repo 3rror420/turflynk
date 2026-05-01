@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Provider Dashboard | MowNWA</title>
+  <link rel="icon" href="/assets/brand/mownwa_logo.png" />
+  <link rel="stylesheet" href="/styles.css" />
+  <style>
+    .prov-wrap { max-width: 920px; margin: 0 auto; padding: 20px 16px 80px; }
+    .prov-topbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--line); background: rgba(7,12,23,.94); backdrop-filter: blur(14px); position: sticky; top: 0; z-index: 90; }
+    .prov-topbar a { font-weight: 900; font-size: 1.1rem; color: var(--primary); text-decoration: none; }
+    .prov-topbar-right { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .user-chip { background: #0c162b; border: 1px solid var(--line); border-radius: 999px; padding: 6px 14px; font-size: .88rem; font-weight: 700; color: #dbe7f7; }
+    .section-gap { margin-top: 24px; }
+    .job-addr { color: var(--muted); font-size: .9rem; margin: 3px 0 6px; }
+    .job-meta-row { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
+    .job-card-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; flex-wrap: wrap; }
+    .job-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+    .auth-wall { max-width: 420px; margin: 60px auto; }
+    .auth-wall h2 { margin-bottom: 8px; }
+    .auth-wall p { color: var(--muted); margin: 0 0 20px; }
+    .auth-err { color: #fca5a5; font-size: .9rem; margin-top: 8px; }
+    .tab-row { display: flex; gap: 8px; margin-bottom: 18px; flex-wrap: wrap; }
+    .tab-btn { appearance: none; background: #0c162b; border: 1px solid var(--line); border-radius: 12px; color: #dbe7f7; padding: 11px 18px; font-weight: 700; cursor: pointer; font-size: .9rem; }
+    .tab-btn.active { background: rgba(34,197,94,.16); border-color: rgba(34,197,94,.4); color: #eafff1; }
+    .empty-msg { color: var(--muted); padding: 16px 0; }
+    .metrics { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; margin-bottom: 18px; }
+    .metric { background: #0c162b; border: 1px solid var(--line); border-radius: 16px; padding: 16px; }
+    .metric strong { display: block; font-size: 1.6rem; font-weight: 900; color: var(--primary); margin-bottom: 4px; }
+    .metric span { color: var(--muted); font-size: .85rem; }
+    .prov-role-note { background: rgba(245,158,11,.08); border: 1px solid rgba(245,158,11,.25); border-radius: 14px; padding: 14px 16px; color: #fcd34d; font-size: .9rem; margin-bottom: 20px; }
+    .pay-badge { display: inline-block; border-radius: 999px; padding: 3px 10px; font-size: .78rem; font-weight: 700; letter-spacing: .02em; }
+    .pay-badge.unpaid { background: rgba(239,68,68,.14); color: #fca5a5; border: 1px solid rgba(239,68,68,.3); }
+    .pay-badge.deposit_paid { background: rgba(245,158,11,.12); color: #fcd34d; border: 1px solid rgba(245,158,11,.3); }
+    .pay-badge.paid { background: rgba(34,197,94,.13); color: #86efac; border: 1px solid rgba(34,197,94,.3); }
+    @media (max-width: 600px) { .prov-wrap { padding: 14px 12px 60px; } }
+  </style>
+</head>
+<body>
+
+<div id="toastLayer" class="toast-layer" aria-live="polite" aria-atomic="true"></div>
+
+<header class="prov-topbar">
+  <a href="/">MowNWA</a>
+  <div class="prov-topbar-right">
+    <span id="userChip" class="user-chip" style="display:none"></span>
+    <a href="/dashboard.html" class="btn secondary small">Customer View</a>
+    <button id="signOutBtn" class="btn ghost small" style="display:none" type="button">Sign Out</button>
+  </div>
+</header>
+
+<!-- Auth wall -->
+<div id="authWall" class="prov-wrap auth-wall" style="display:none">
+  <h2>Provider Login</h2>
+  <p>Sign in with your provider account to manage jobs.</p>
+  <form id="loginForm" class="stack" style="gap:12px">
+    <label><span>Email</span><input name="email" type="email" autocomplete="email" required /></label>
+    <label><span>Password</span><input name="password" type="password" autocomplete="current-password" required /></label>
+    <button class="btn primary" type="submit">Login</button>
+    <div id="loginErr" class="auth-err"></div>
+  </form>
+  <p style="margin-top:16px;color:var(--muted);font-size:.88rem">
+    Don't have a provider account? <a href="/">Register on the main site</a> with role "Provider".
+  </p>
+</div>
+
+<!-- Provider dashboard -->
+<div id="provContent" class="prov-wrap" style="display:none">
+
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px;margin-bottom:20px">
+    <div>
+      <div class="eyebrow">Provider Dashboard</div>
+      <h1 id="welcomeHeading" style="font-size:1.55rem;margin:4px 0 0">Provider Area</h1>
+    </div>
+    <button class="btn secondary small" type="button" onclick="loadOverview()">Refresh Stats</button>
+  </div>
+
+  <!-- Metrics -->
+  <div id="metricsRow" class="metrics"></div>
+
+  <!-- Tabs -->
+  <div class="tab-row">
+    <button class="tab-btn active" type="button" onclick="switchTab('open')" id="tabOpen">Open Jobs</button>
+    <button class="tab-btn" type="button" onclick="switchTab('mine')" id="tabMine">My Jobs</button>
+  </div>
+
+  <!-- Open Jobs panel -->
+  <section id="panelOpen">
+    <div class="panel">
+      <div class="panel-head">
+        <div>
+          <h2 style="font-size:1.15rem;margin:0">Available Jobs</h2>
+          <p class="section-copy" style="margin:4px 0 0">Open jobs you can accept.</p>
+        </div>
+        <button class="btn secondary small" type="button" onclick="loadOpenJobs()">Refresh</button>
+      </div>
+      <div id="openJobsList" class="card-list">
+        <div class="empty-msg">Loading open jobs…</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- My Jobs panel -->
+  <section id="panelMine" style="display:none">
+    <div class="panel">
+      <div class="panel-head">
+        <div>
+          <h2 style="font-size:1.15rem;margin:0">My Jobs</h2>
+          <p class="section-copy" style="margin:4px 0 0">Jobs assigned to you.</p>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <select id="myJobsFilter" style="width:auto;padding:8px 12px;font-size:.88rem" onchange="loadMyJobs()">
+            <option value="active">Active</option>
+            <option value="history">History</option>
+            <option value="all">All</option>
+          </select>
+          <button class="btn secondary small" type="button" onclick="loadMyJobs()">Refresh</button>
+        </div>
+      </div>
+      <div id="myJobsList" class="card-list">
+        <div class="empty-msg">Loading jobs…</div>
+      </div>
+    </div>
+  </section>
+
+</div>
+
+<script>
+const TOKEN_KEY = 'turflynk.authToken';
+let currentUser = null;
+
+function token() { return localStorage.getItem(TOKEN_KEY) || ''; }
+
+function esc(s) {
+  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function money(v) {
+  const n = Number(v || 0);
+  return '$' + n.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+
+function statusBadge(s) {
+  return `<span class="status-badge ${esc(s || 'open')}">${esc(s || 'open').replace(/_/g,' ')}</span>`;
+}
+
+function paymentBadge(ps) {
+  const label = { unpaid: 'Unpaid', deposit_paid: 'Deposit Paid', paid: 'Paid' }[ps] || 'Unpaid';
+  const cls = ps === 'paid' ? 'paid' : ps === 'deposit_paid' ? 'deposit_paid' : 'unpaid';
+  return `<span class="pay-badge ${cls}">${label}</span>`;
+}
+
+function serviceLabel(s) {
+  const MAP = {
+    mowing:'Lawn Mowing', mowing_edging:'Mowing + Edging', yard_cleanup:'Yard Cleanup',
+    leaf_cleanup:'Leaf Cleanup', brush_cleanup:'Brush Cleanup', landscaping:'Landscaping',
+    hauling:'Hauling', instant_mow:'Instant Mow', other:'Other',
+  };
+  return MAP[s] || String(s || 'Service').replace(/_/g,' ');
+}
+
+function toast(msg, type = 'info') {
+  const layer = document.getElementById('toastLayer');
+  if (!layer) return;
+  const el = document.createElement('div');
+  el.className = `toast ${type}`;
+  el.textContent = msg;
+  layer.appendChild(el);
+  setTimeout(() => el.remove(), 4500);
+}
+
+async function api(path, opts = {}) {
+  const t = token();
+  const res = await fetch(path, {
+    headers: {
+      'Content-Type': 'application/json',
+      ...(t ? { Authorization: `Bearer ${t}` } : {}),
+      ...(opts.headers || {}),
+    },
+    ...opts,
+  });
+  if (!res.ok) {
+    let msg = `Error ${res.status}`;
+    try { const j = await res.json(); msg = j.error || msg; } catch { try { msg = await res.text() || msg; } catch {} }
+    throw new Error(msg);
+  }
+  return res.json();
+}
+
+async function init() {
+  if (!token()) { showAuthWall(); return; }
+  try {
+    const data = await api('/api/auth/me');
+    currentUser = data.user;
+    if (!['provider','admin'].includes(currentUser.role)) {
+      document.getElementById('authWall').style.display = '';
+      document.getElementById('authWall').innerHTML = `
+        <h2>Provider Access Required</h2>
+        <p>This dashboard is for lawn service providers. Your account has role: <strong>${esc(currentUser.role)}</strong>.</p>
+        <p><a href="/dashboard.html" class="btn primary" style="display:inline-block;margin-top:10px">Go to Customer Dashboard</a></p>
+      `;
+      document.getElementById('provContent').style.display = 'none';
+      return;
+    }
+    showDash();
+  } catch {
+    showAuthWall();
+  }
+}
+
+function showAuthWall() {
+  document.getElementById('authWall').style.display = '';
+  document.getElementById('provContent').style.display = 'none';
+  document.getElementById('userChip').style.display = 'none';
+  document.getElementById('signOutBtn').style.display = 'none';
+}
+
+function showDash() {
+  document.getElementById('authWall').style.display = 'none';
+  document.getElementById('provContent').style.display = '';
+  const chip = document.getElementById('userChip');
+  chip.textContent = currentUser.fullName || currentUser.email || 'Provider';
+  chip.style.display = '';
+  document.getElementById('signOutBtn').style.display = '';
+  document.getElementById('welcomeHeading').textContent =
+    'Welcome, ' + (currentUser.fullName || currentUser.email || 'Provider');
+  loadOverview();
+  loadOpenJobs();
+}
+
+function switchTab(tab) {
+  document.getElementById('panelOpen').style.display = tab === 'open' ? '' : 'none';
+  document.getElementById('panelMine').style.display = tab === 'mine' ? '' : 'none';
+  document.getElementById('tabOpen').classList.toggle('active', tab === 'open');
+  document.getElementById('tabMine').classList.toggle('active', tab === 'mine');
+  if (tab === 'mine') loadMyJobs();
+}
+
+// ── Overview metrics ─────────────────────────────────────────────────────────
+
+async function loadOverview() {
+  const row = document.getElementById('metricsRow');
+  try {
+    const data = await api('/api/provider/overview');
+    const m = data.metrics || {};
+    row.innerHTML = `
+      <div class="metric"><strong>${m.openAssignedJobs ?? 0}</strong><span>Active jobs</span></div>
+      <div class="metric"><strong>${m.upcomingJobs ?? 0}</strong><span>Upcoming</span></div>
+      <div class="metric"><strong>${m.completedJobs ?? 0}</strong><span>Completed</span></div>
+      <div class="metric"><strong>${money(m.estimatedRevenuePipeline ?? 0)}</strong><span>Revenue pipeline</span></div>
+    `;
+  } catch {
+    row.innerHTML = '<div class="metric"><strong>–</strong><span>Stats unavailable</span></div>';
+  }
+}
+
+// ── Open jobs ────────────────────────────────────────────────────────────────
+
+async function loadOpenJobs() {
+  const list = document.getElementById('openJobsList');
+  list.innerHTML = '<div class="empty-msg">Loading…</div>';
+  try {
+    const data = await fetch('/api/jobs/open').then(r => r.json());
+    const jobs = data.jobs || [];
+    if (!jobs.length) {
+      list.innerHTML = '<div class="empty-msg">No open jobs right now. Check back soon.</div>';
+      return;
+    }
+    list.innerHTML = '';
+    jobs.forEach(job => renderOpenJobCard(list, job));
+  } catch (err) {
+    list.innerHTML = `<div class="empty-msg">Could not load jobs: ${esc(err.message)}</div>`;
+  }
+}
+
+function renderOpenJobCard(list, job) {
+  const card = document.createElement('div');
+  card.className = 'card';
+  card.dataset.jobId = job.id;
+  const addr = [job.city, job.state].filter(Boolean).join(', ') || 'NW Arkansas';
+  const scope = job.scopeSnapshot || {};
+  const sqft = Number(scope.mowableAreaSqFt || scope.mowAreaSqft || 0);
+  card.innerHTML = `
+    <div class="job-card-head">
+      <div style="min-width:0;flex:1">
+        <h4 style="margin:0 0 3px">${esc(job.title || serviceLabel(job.serviceType))}</h4>
+        <div class="job-addr">${esc(serviceLabel(job.serviceType))} &middot; ${esc(addr)}</div>
+        <div class="job-meta-row">
+          <span>Price: <strong>${money(job.budget || job.amount)}</strong></span>
+          ${sqft ? `<span>${sqft.toLocaleString()} sq ft</span>` : ''}
+          ${job.preferredDate ? `<span style="color:var(--primary);font-size:.85rem">Req. date: ${esc(new Date(job.preferredDate).toLocaleDateString())}</span>` : ''}
+        </div>
+        <div class="meta" style="font-size:.82rem">Posted: ${job.postedAt ? new Date(job.postedAt).toLocaleDateString() : 'recently'}</div>
+      </div>
+      ${statusBadge(job.status)}
+    </div>
+    <div class="job-actions">
+      <button class="btn primary small" type="button" data-accept="${esc(job.id)}">Accept Job</button>
+    </div>
+  `;
+  list.appendChild(card);
+  card.querySelector('[data-accept]').addEventListener('click', e => acceptJob(job.id, e.target));
+}
+
+async function acceptJob(jobId, btn) {
+  btn.disabled = true;
+  btn.textContent = 'Accepting…';
+  try {
+    await api(`/api/jobs/${jobId}/accept`, { method: 'POST', body: '{}' });
+    toast('Job accepted! It is now in My Jobs.', 'success');
+    await Promise.allSettled([loadOpenJobs(), loadOverview()]);
+    switchTab('mine');
+    loadMyJobs();
+  } catch (err) {
+    btn.disabled = false;
+    btn.textContent = 'Accept Job';
+    toast('Could not accept job: ' + err.message, 'error');
+  }
+}
+
+// ── My jobs ──────────────────────────────────────────────────────────────────
+
+async function loadMyJobs() {
+  const list = document.getElementById('myJobsList');
+  const filter = document.getElementById('myJobsFilter').value || 'active';
+  list.innerHTML = '<div class="empty-msg">Loading…</div>';
+  try {
+    const data = await api(`/api/provider/jobs?filter=${filter}`);
+    const jobs = data.jobs || [];
+    if (!jobs.length) {
+      list.innerHTML = '<div class="empty-msg">No jobs yet. Accept an open job to get started.</div>';
+      return;
+    }
+    list.innerHTML = '';
+    jobs.forEach(job => renderMyJobCard(list, job));
+  } catch (err) {
+    list.innerHTML = `<div class="empty-msg">Could not load jobs: ${esc(err.message)}</div>`;
+  }
+}
+
+function renderMyJobCard(list, job) {
+  const card = document.createElement('div');
+  card.className = 'card';
+  card.dataset.jobId = job.id;
+  const addr = [job.address, job.city, job.state, job.zip].filter(Boolean).join(', ') || 'Address on file';
+  const scope = job.scopeSnapshot || {};
+  const sqft = Number(scope.mowableAreaSqFt || scope.mowAreaSqft || 0);
+  const notes = job.yard_access_notes || job.details || '';
+  const ps = job.paymentStatus || 'unpaid';
+
+  const actionBtns = buildActionButtons(job);
+
+  card.innerHTML = `
+    <div class="job-card-head">
+      <div style="min-width:0;flex:1">
+        <h4 style="margin:0 0 3px">${esc(job.title || serviceLabel(job.serviceType))}</h4>
+        <div class="job-addr">${esc(addr)}</div>
+        <div class="job-meta-row">
+          <span>Price: <strong>${money(job.estimateAtBooking || job.budget)}</strong></span>
+          ${sqft ? `<span>${sqft.toLocaleString()} sq ft</span>` : ''}
+          ${job.preferredDate ? `<span style="color:var(--primary);font-size:.85rem">Date: ${esc(new Date(job.preferredDate).toLocaleDateString())}</span>` : ''}
+          ${paymentBadge(ps)}
+        </div>
+        ${notes ? `<div class="meta" style="font-size:.85rem;margin-top:4px">Notes: ${esc(notes.slice(0,160))}${notes.length > 160 ? '…' : ''}</div>` : ''}
+      </div>
+      ${statusBadge(job.status)}
+    </div>
+    ${actionBtns ? `<div class="job-actions">${actionBtns}</div>` : ''}
+  `;
+
+  list.appendChild(card);
+
+  card.querySelectorAll('[data-set-status]').forEach(btn => {
+    btn.addEventListener('click', () => updateJobStatus(job.id, btn.dataset.setStatus, btn));
+  });
+}
+
+function buildActionButtons(job) {
+  const s = job.status;
+  const btns = [];
+  if (s === 'assigned' || s === 'open') {
+    btns.push(`<button class="btn secondary small" type="button" data-set-status="in_progress">Mark In Progress</button>`);
+    btns.push(`<button class="btn ghost small" type="button" data-set-status="completed">Mark Complete</button>`);
+  } else if (s === 'in_progress') {
+    btns.push(`<button class="btn primary small" type="button" data-set-status="completed">Mark Complete</button>`);
+  } else if (s === 'scheduled') {
+    btns.push(`<button class="btn secondary small" type="button" data-set-status="in_progress">Mark In Progress</button>`);
+  }
+  return btns.join('');
+}
+
+async function updateJobStatus(jobId, status, btn) {
+  btn.disabled = true;
+  btn.textContent = 'Updating…';
+  try {
+    await api(`/api/provider/jobs/${jobId}/status`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status }),
+    });
+    const label = status === 'in_progress' ? 'In Progress' : 'Completed';
+    toast(`Job marked as ${label}.`, 'success');
+    await loadMyJobs();
+    loadOverview();
+  } catch (err) {
+    btn.disabled = false;
+    btn.textContent = btn.dataset.setStatus === 'in_progress' ? 'Mark In Progress' : 'Mark Complete';
+    toast('Could not update job: ' + err.message, 'error');
+  }
+}
+
+// ── Auth ─────────────────────────────────────────────────────────────────────
+
+document.getElementById('loginForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const errEl = document.getElementById('loginErr');
+  errEl.textContent = '';
+  try {
+    const data = await api('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email: fd.get('email'), password: fd.get('password') }),
+    });
+    localStorage.setItem(TOKEN_KEY, data.token);
+    currentUser = data.user;
+    if (!['provider','admin'].includes(currentUser.role)) {
+      errEl.textContent = 'This account does not have provider access. Role: ' + currentUser.role;
+      localStorage.removeItem(TOKEN_KEY);
+      return;
+    }
+    showDash();
+  } catch (err) {
+    errEl.textContent = err.message;
+  }
+});
+
+document.getElementById('signOutBtn').addEventListener('click', async () => {
+  try { await api('/api/auth/logout', { method: 'POST', body: '{}' }); } catch {}
+  localStorage.removeItem(TOKEN_KEY);
+  currentUser = null;
+  showAuthWall();
+});
+
+init();
+</script>
+</body>
+</html>

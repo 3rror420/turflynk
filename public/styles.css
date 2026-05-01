@@ -901,6 +901,49 @@ table{
   line-height:1.55;
 }
 
+.price-breakdown{
+  border:1px solid var(--line);
+  border-radius:10px;
+  overflow:hidden;
+}
+
+.price-breakdown h4{
+  margin:0;
+  padding:8px 12px;
+  font-size:.82rem;
+  text-transform:uppercase;
+  letter-spacing:.06em;
+  color:var(--muted);
+  background:rgba(255,255,255,.03);
+  border-bottom:1px solid var(--line);
+}
+
+.breakdown-table{
+  width:100%;
+  border-collapse:collapse;
+  font-size:.88rem;
+}
+
+.breakdown-table tbody tr td{
+  padding:6px 12px;
+  color:#dbe7f7;
+  border-bottom:1px solid rgba(255,255,255,.05);
+}
+
+.breakdown-amount{
+  text-align:right;
+  white-space:nowrap;
+  font-variant-numeric:tabular-nums;
+}
+
+.breakdown-total td{
+  padding:8px 12px;
+  font-weight:800;
+  color:#e8f2ff;
+  background:rgba(255,255,255,.04);
+  border-top:1px solid var(--line);
+}
+
 .scope-ack{
   display:flex;
   grid-template-columns:none;

@@ -1299,6 +1299,113 @@ function phoneValidationError() {
   return "A valid phone number is required before booking, payment, or request submission.";
 }
 
+/* =========================================================
+   IDEMPOTENT PRICING SCHEMA SETUP
+   Runs at startup — safe to run on every start (IF NOT EXISTS).
+   Covers all pricing tables the estimate engine depends on.
+   ========================================================= */
+
+let pricingSchemaEnsured = false;
+async function ensurePricingSchema() {
+  if (pricingSchemaEnsured) return true;
+  try {
+    await pgdb.query(`
+      CREATE TABLE IF NOT EXISTS app_settings (
+        id INTEGER PRIMARY KEY DEFAULT 1,
+        app_name TEXT,
+        default_state TEXT DEFAULT 'AR',
+        parcel_mode TEXT,
+        maps_mode TEXT,
+        minimum_cut_price NUMERIC(10,2) DEFAULT 38,
+        complexity_rules JSONB DEFAULT '{}',
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+
+    await pgdb.query(`
+      CREATE TABLE IF NOT EXISTS services (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        base_fee NUMERIC(10,2) DEFAULT 0,
+        rate_per_1000_sqft NUMERIC(10,4) DEFAULT 0,
+        minimum_price NUMERIC(10,2) DEFAULT 0,
+        active BOOLEAN DEFAULT true,
+        sort_order INTEGER DEFAULT 0,
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+
+    await pgdb.query(`
+      CREATE TABLE IF NOT EXISTS regions (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        state TEXT DEFAULT 'AR',
+        market_multiplier NUMERIC(6,4) DEFAULT 1.0,
+        travel_fee NUMERIC(10,2) DEFAULT 0,
+        minimum_job NUMERIC(10,2) DEFAULT 0,
+        featured_cities TEXT[] DEFAULT '{}',
+        active BOOLEAN DEFAULT true,
+        sort_order INTEGER DEFAULT 0,
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+
+    await pgdb.query(`
+      CREATE TABLE IF NOT EXISTS provider_pricing (
+        id TEXT PRIMARY KEY,
+        provider_id TEXT NOT NULL,
+        base_fee NUMERIC(10,2) DEFAULT 0,
+        rate_per_1000_sqft NUMERIC(10,4) DEFAULT 0,
+        minimum_price NUMERIC(10,2) DEFAULT 0,
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+
+    /* Per-service provider pricing overrides (replaces the one-row-per-provider limitation) */
+    await pgdb.query(`
+      CREATE TABLE IF NOT EXISTS provider_service_pricing (
+        id TEXT PRIMARY KEY,
+        provider_id TEXT NOT NULL,
+        service_id TEXT NOT NULL,
+        base_fee NUMERIC(10,2),
+        rate_per_1000_sqft NUMERIC(10,4),
+        minimum_price NUMERIC(10,2),
+        enabled BOOLEAN DEFAULT true,
+        notes TEXT,
+        updated_at TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(provider_id, service_id)
+      )
+    `);
+
+    /* Tiered / bracket pricing: different $/k-sqft rates at different lot sizes */
+    await pgdb.query(`
+      CREATE TABLE IF NOT EXISTS price_tiers (
+        id TEXT PRIMARY KEY,
+        service_id TEXT NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+        min_sqft INTEGER NOT NULL DEFAULT 0,
+        max_sqft INTEGER,
+        rate_per_1000_sqft NUMERIC(10,4) NOT NULL,
+        label TEXT,
+        sort_order INTEGER DEFAULT 0,
+        active BOOLEAN DEFAULT true,
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+
+    /* Snapshot of the pricing breakdown used at booking time */
+    await pgdb.query(`
+      ALTER TABLE jobs ADD COLUMN IF NOT EXISTS pricing_breakdown JSONB
+    `).catch(() => {});
+
+    pricingSchemaEnsured = true;
+    console.log('[Startup] Pricing schema ensured (all IF NOT EXISTS).');
+    return true;
+  } catch (err) {
+    console.warn('[Startup] Could not ensure pricing schema:', err.message);
+    return false;
+  }
+}
+
 let usersPhoneColumnEnsured = false;
 async function ensureUsersPhoneColumn() {
   if (usersPhoneColumnEnsured) return true;
@@ -1321,6 +1428,24 @@ async function ensureJobsScopeSnapshotColumn() {
     return true;
   } catch (error) {
     console.warn("Could not ensure jobs.scope_snapshot column:", error.message);
+    return false;
+  }
+}
+
+let paymentColumnsEnsured = false;
+async function ensurePaymentColumns() {
+  if (paymentColumnsEnsured) return true;
+  try {
+    await pgdb.query("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS payment_status TEXT DEFAULT 'unpaid'");
+    await pgdb.query("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS stripe_checkout_session_id TEXT");
+    await pgdb.query("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS stripe_payment_intent_id TEXT");
+    await pgdb.query("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS paid_at TIMESTAMPTZ");
+    await pgdb.query("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS estimate_at_booking NUMERIC");
+    await pgdb.query("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS pricing_breakdown_json JSONB");
+    paymentColumnsEnsured = true;
+    return true;
+  } catch (error) {
+    console.warn("Could not ensure payment columns:", error.message);
     return false;
   }
 }
@@ -1918,17 +2043,29 @@ function findService(settings, serviceId) {
 
 async function loadSettingsFromDb() {
   try {
-    const settingsResult = await pgdb.query(
-      "SELECT * FROM app_settings WHERE id = 1 LIMIT 1"
-    );
-    const servicesResult = await pgdb.query(
-      "SELECT * FROM services WHERE active = true ORDER BY sort_order ASC, name ASC"
-    );
-    const regionsResult = await pgdb.query(
-      "SELECT * FROM regions WHERE active = true ORDER BY sort_order ASC, name ASC"
-    );
+    const [settingsResult, servicesResult, regionsResult, tiersResult] = await Promise.all([
+      pgdb.query("SELECT * FROM app_settings WHERE id = 1 LIMIT 1"),
+      pgdb.query("SELECT * FROM services WHERE active = true ORDER BY sort_order ASC, name ASC"),
+      pgdb.query("SELECT * FROM regions WHERE active = true ORDER BY sort_order ASC, name ASC"),
+      pgdb.query("SELECT * FROM price_tiers WHERE active = true ORDER BY service_id, sort_order ASC, min_sqft ASC").catch(() => ({ rows: [] }))
+    ]);
 
     const row = settingsResult.rows[0] || {};
+
+    /* Group tiers by service_id for O(1) lookup in estimate */
+    const tiersByService = {};
+    for (const t of tiersResult.rows) {
+      if (!tiersByService[t.service_id]) tiersByService[t.service_id] = [];
+      tiersByService[t.service_id].push({
+        id: t.id,
+        serviceId: t.service_id,
+        minSqft: Number(t.min_sqft || 0),
+        maxSqft: t.max_sqft != null ? Number(t.max_sqft) : null,
+        ratePer1000Sqft: Number(t.rate_per_1000_sqft || 0),
+        label: t.label || "",
+        sortOrder: Number(t.sort_order || 0)
+      });
+    }
 
     const dbServices = servicesResult.rows.map((s) => ({
       id: s.id,
@@ -1938,7 +2075,8 @@ async function loadSettingsFromDb() {
       ratePer1000Sqft: Number(s.rate_per_1000_sqft || 0),
       minimumPrice: Number(s.minimum_price || 0),
       active: Boolean(s.active),
-      sortOrder: Number(s.sort_order || 0)
+      sortOrder: Number(s.sort_order || 0),
+      tiers: tiersByService[s.id] || []
     }));
 
     const dbRegions = regionsResult.rows.map((r) => ({
@@ -1949,6 +2087,7 @@ async function loadSettingsFromDb() {
       marketMultiplier: Number(r.market_multiplier || 1),
       travelFee: Number(r.travel_fee || 0),
       minimumJob: Number(r.minimum_job || 0),
+      featuredCities: Array.isArray(r.featured_cities) ? r.featured_cities : [],
       active: Boolean(r.active),
       sortOrder: Number(r.sort_order || 0)
     }));
@@ -1961,14 +2100,16 @@ async function loadSettingsFromDb() {
       minimumCutPrice: Number(row.minimum_cut_price || 38),
       complexityRules: row.complexity_rules || defaultSettings.complexityRules,
       services: dbServices.length ? dbServices : (localSettings.services || []),
-      regions: dbRegions.length ? dbRegions : (localSettings.regions || [])
+      regions: dbRegions.length ? dbRegions : (localSettings.regions || []),
+      tiersByService
     };
   } catch (err) {
     console.warn("DB unavailable, using local settings.json fallback:", err.message);
     return {
       ...defaultSettings,
       services: localSettings.services || [],
-      regions: localSettings.regions || []
+      regions: localSettings.regions || [],
+      tiersByService: {}
     };
   }
 }
@@ -2002,36 +2143,221 @@ function estimateQuote(payload, settings) {
   if (mowAreaSqft <= 0) return roundToNearestFive(0);
 
   const areaUnits = mowAreaSqft > 0 ? mowAreaSqft / 1000 : 0;
+  const breakdown = [];
 
-  let estimate = Math.max(
-    Number(service?.minimumPrice || settings.minimumCutPrice || 0),
-    areaUnits * Number(service?.ratePer1000Sqft || 0) + Number(service?.baseFee || 0)
-  );
+  const baseFee = Number(service?.baseFee || 0);
+  const ratePer1000 = Number(service?.ratePer1000Sqft || 0);
+  const areaCharge = areaUnits * ratePer1000;
+  const serviceMinimum = Number(service?.minimumPrice || settings.minimumCutPrice || 0);
+  const rawServiceCharge = baseFee + areaCharge;
+  const appliedMinimum = rawServiceCharge < serviceMinimum;
+
+  let estimate = Math.max(serviceMinimum, rawServiceCharge);
+
+  if (appliedMinimum) {
+    breakdown.push({ label: "Service minimum", amount: estimate });
+  } else {
+    if (baseFee > 0) breakdown.push({ label: "Base fee", amount: baseFee });
+    breakdown.push({ label: `Area charge (${Math.round(mowAreaSqft).toLocaleString()} sq ft × $${ratePer1000}/k)`, amount: Math.round(areaCharge * 100) / 100 });
+  }
 
   const regionMinimum = Number(region?.minimumJob || 0);
-  if (regionMinimum > 0) estimate = Math.max(estimate, regionMinimum);
+  if (regionMinimum > 0 && estimate < regionMinimum) {
+    estimate = regionMinimum;
+    breakdown.length = 0;
+    breakdown.push({ label: "Region minimum", amount: estimate });
+  }
 
-  estimate *= Number(region?.marketMultiplier || 1);
-  estimate += Number(region?.travelFee || 0);
+  const marketMultiplier = Number(region?.marketMultiplier || 1);
+  if (marketMultiplier !== 1) {
+    const adj = estimate * (marketMultiplier - 1);
+    estimate *= marketMultiplier;
+    breakdown.push({ label: `Market adjustment (${Math.round((marketMultiplier - 1) * 100)}%)`, amount: Math.round(adj * 100) / 100 });
+  }
+
+  const travelFee = Number(region?.travelFee || 0);
+  if (travelFee > 0) {
+    estimate += travelFee;
+    breakdown.push({ label: "Travel fee", amount: travelFee });
+  }
 
   const yardType = String(payload.yardType || "standard");
+  if (yardType === "open_flat") {
+    const adj = estimate * -0.15;
+    estimate *= 0.85;
+    breakdown.push({ label: "Open / flat yard discount (−15%)", amount: Math.round(adj * 100) / 100 });
+  }
+  if (yardType === "tight_cutup") {
+    const adj = estimate * 0.25;
+    estimate *= 1.25;
+    breakdown.push({ label: "Tight / cut-up yard upcharge (+25%)", amount: Math.round(adj * 100) / 100 });
+  }
+  if (yardType === "heavy_trimming") {
+    const adj = estimate * 0.35;
+    estimate *= 1.35;
+    breakdown.push({ label: "Heavy trimming upcharge (+35%)", amount: Math.round(adj * 100) / 100 });
+  }
 
-  if (yardType === "open_flat") estimate *= 0.85;
-  if (yardType === "tight_cutup") estimate *= 1.25;
-  if (yardType === "heavy_trimming") estimate *= 1.35;
+  if (payload.propertyType === "corner") { const v = Number(rules.cornerLotUpcharge || 0); if (v) { estimate += v; breakdown.push({ label: "Corner lot", amount: v }); } }
+  if (payload.propertyType === "double_corner") { const v = Number(rules.doubleCornerUpcharge || 0); if (v) { estimate += v; breakdown.push({ label: "Double corner lot", amount: v }); } }
+  if (payload.fenced) { const v = Number(rules.fencedUpcharge || 0); if (v) { estimate += v; breakdown.push({ label: "Fenced yard", amount: v }); } }
+  if (payload.obstacles) { const v = Number(rules.obstaclesUpcharge || 0); if (v) { estimate += v; breakdown.push({ label: "Obstacles / tight areas", amount: v }); } }
+  if (payload.rushJob) { const v = Number(rules.rushJobUpcharge || 0); if (v) { estimate += v; breakdown.push({ label: "Rush job", amount: v }); } }
+  if (payload.limitedAccess) { const v = Number(rules.limitedAccessUpcharge || 0); if (v) { estimate += v; breakdown.push({ label: "Limited access", amount: v }); } }
+  if (payload.gates) { const v = Number(rules.gateHandlingUpcharge || 0); if (v) { estimate += v; breakdown.push({ label: "Gate handling", amount: v }); } }
 
-  if (payload.propertyType === "corner") estimate += Number(rules.cornerLotUpcharge || 0);
-  if (payload.propertyType === "double_corner") estimate += Number(rules.doubleCornerUpcharge || 0);
-  if (payload.fenced) estimate += Number(rules.fencedUpcharge || 0);
-  if (payload.obstacles) estimate += Number(rules.obstaclesUpcharge || 0);
-  if (payload.rushJob) estimate += Number(rules.rushJobUpcharge || 0);
-  if (payload.limitedAccess) estimate += Number(rules.limitedAccessUpcharge || 0);
-  if (payload.gates) estimate += Number(rules.gateHandlingUpcharge || 0);
-  if (payload.overgrown) estimate *= Number(rules.overgrownMultiplier || 1);
-  if (payload.slopedTerrain) estimate *= Number(rules.slopedTerrainMultiplier || 1);
-  if (payload.denseVegetation) estimate *= Number(rules.denseVegetationMultiplier || 1);
+  if (payload.overgrown) {
+    const m = Number(rules.overgrownMultiplier || 1);
+    if (m !== 1) { const adj = estimate * (m - 1); estimate *= m; breakdown.push({ label: `Overgrown yard (+${Math.round((m - 1) * 100)}%)`, amount: Math.round(adj * 100) / 100 }); }
+  }
+  if (payload.slopedTerrain) {
+    const m = Number(rules.slopedTerrainMultiplier || 1);
+    if (m !== 1) { const adj = estimate * (m - 1); estimate *= m; breakdown.push({ label: `Sloped terrain (+${Math.round((m - 1) * 100)}%)`, amount: Math.round(adj * 100) / 100 }); }
+  }
+  if (payload.denseVegetation) {
+    const m = Number(rules.denseVegetationMultiplier || 1);
+    if (m !== 1) { const adj = estimate * (m - 1); estimate *= m; breakdown.push({ label: `Dense vegetation (+${Math.round((m - 1) * 100)}%)`, amount: Math.round(adj * 100) / 100 }); }
+  }
 
-  return roundToNearestFive(Math.round(estimate * 100) / 100);
+  const final = roundToNearestFive(Math.round(estimate * 100) / 100);
+  return final;
+}
+
+/* Apply tiered / step pricing if the service has price_tiers configured.
+   Returns { areaCharge, tierLines } where tierLines are per-bracket breakdown rows.
+   Falls back to the flat rate when no tiers are defined. */
+function applyTieredAreaCharge(mowAreaSqft, service) {
+  const tiers = Array.isArray(service?.tiers) ? service.tiers : [];
+  const activeTiers = tiers
+    .filter((t) => t.ratePer1000Sqft != null)
+    .sort((a, b) => a.minSqft - b.minSqft);
+
+  if (!activeTiers.length) {
+    /* No tiers — use the flat service rate */
+    const ratePer1000 = Number(service?.ratePer1000Sqft || 0);
+    const areaCharge = (mowAreaSqft / 1000) * ratePer1000;
+    const label = service?.tiers?.length
+      ? `Area charge (${Math.round(mowAreaSqft).toLocaleString()} sq ft × $${ratePer1000}/k sq ft)`
+      : `Area charge (${Math.round(mowAreaSqft).toLocaleString()} sq ft × $${ratePer1000}/k sq ft)`;
+    return {
+      areaCharge: Math.round(areaCharge * 100) / 100,
+      tierLines: [{ label, amount: Math.round(areaCharge * 100) / 100 }]
+    };
+  }
+
+  /* Step through tiers smallest-first */
+  let remaining = mowAreaSqft;
+  let total = 0;
+  const tierLines = [];
+
+  for (const tier of activeTiers) {
+    if (remaining <= 0) break;
+    const tierStart = tier.minSqft;
+    const tierEnd = tier.maxSqft != null ? tier.maxSqft : Infinity;
+    const tierWidth = tierEnd === Infinity ? remaining : Math.max(0, tierEnd - tierStart);
+    const sqftInTier = Math.min(remaining, tierWidth);
+    if (sqftInTier <= 0) continue;
+
+    const charge = (sqftInTier / 1000) * Number(tier.ratePer1000Sqft || 0);
+    total += charge;
+    const rangeLabel = tier.maxSqft != null
+      ? `${Math.round(tierStart).toLocaleString()}–${Math.round(tier.maxSqft).toLocaleString()} sq ft`
+      : `${Math.round(tierStart).toLocaleString()}+ sq ft`;
+    const lineLabel = tier.label || `${rangeLabel} @ $${tier.ratePer1000Sqft}/k sq ft`;
+    tierLines.push({ label: lineLabel, amount: Math.round(charge * 100) / 100 });
+    remaining -= sqftInTier;
+  }
+
+  return { areaCharge: Math.round(total * 100) / 100, tierLines };
+}
+
+function estimateQuoteWithBreakdown(payload, settings) {
+  const service = findService(settings, payload.serviceType) || settings.services[0];
+  const region = findRegion(settings, payload.regionId);
+  const rules = settings.complexityRules || {};
+  const mowAreaSqft = Number(payload.mowAreaSqft || 0);
+  if (mowAreaSqft <= 0) return { estimate: 0, breakdown: [] };
+
+  const breakdown = [];
+
+  const baseFee = Number(service?.baseFee || 0);
+  const serviceMinimum = Number(service?.minimumPrice || settings.minimumCutPrice || 0);
+
+  /* Tiered or flat area charge */
+  const { areaCharge, tierLines } = applyTieredAreaCharge(mowAreaSqft, service);
+  const rawServiceCharge = baseFee + areaCharge;
+  const appliedMinimum = rawServiceCharge < serviceMinimum;
+
+  let estimate = Math.max(serviceMinimum, rawServiceCharge);
+
+  if (appliedMinimum) {
+    breakdown.push({ label: "Service minimum", amount: estimate });
+  } else {
+    if (baseFee > 0) breakdown.push({ label: "Base fee", amount: baseFee });
+    for (const line of tierLines) breakdown.push(line);
+  }
+
+  const regionMinimum = Number(region?.minimumJob || 0);
+  if (regionMinimum > 0 && estimate < regionMinimum) {
+    estimate = regionMinimum;
+    breakdown.length = 0;
+    breakdown.push({ label: "Region minimum", amount: estimate });
+  }
+
+  const marketMultiplier = Number(region?.marketMultiplier || 1);
+  if (Math.abs(marketMultiplier - 1) > 0.001) {
+    const adj = estimate * (marketMultiplier - 1);
+    estimate *= marketMultiplier;
+    const pct = Math.round((marketMultiplier - 1) * 100);
+    breakdown.push({ label: `Market adjustment (${pct > 0 ? '+' : ''}${pct}%)`, amount: Math.round(adj * 100) / 100 });
+  }
+
+  const travelFee = Number(region?.travelFee || 0);
+  if (travelFee > 0) {
+    estimate += travelFee;
+    breakdown.push({ label: "Travel fee", amount: travelFee });
+  }
+
+  const yardType = String(payload.yardType || "standard");
+  if (yardType === "open_flat") {
+    const adj = estimate * -0.15;
+    estimate *= 0.85;
+    breakdown.push({ label: "Open / flat yard (−15%)", amount: Math.round(adj * 100) / 100 });
+  } else if (yardType === "tight_cutup") {
+    const adj = estimate * 0.25;
+    estimate *= 1.25;
+    breakdown.push({ label: "Tight / cut-up yard (+25%)", amount: Math.round(adj * 100) / 100 });
+  } else if (yardType === "heavy_trimming") {
+    const adj = estimate * 0.35;
+    estimate *= 1.35;
+    breakdown.push({ label: "Heavy trimming (+35%)", amount: Math.round(adj * 100) / 100 });
+  }
+
+  const addUpcharge = (cond, label, amount) => {
+    if (!cond || !amount) return;
+    estimate += amount;
+    breakdown.push({ label, amount });
+  };
+  const addMultiplier = (cond, label, multiplier) => {
+    if (!cond || Math.abs(multiplier - 1) < 0.001) return;
+    const adj = estimate * (multiplier - 1);
+    estimate *= multiplier;
+    breakdown.push({ label, amount: Math.round(adj * 100) / 100 });
+  };
+
+  addUpcharge(payload.propertyType === "corner", "Corner lot upcharge", Number(rules.cornerLotUpcharge || 0));
+  addUpcharge(payload.propertyType === "double_corner", "Double corner lot upcharge", Number(rules.doubleCornerUpcharge || 0));
+  addUpcharge(payload.fenced, "Fenced yard upcharge", Number(rules.fencedUpcharge || 0));
+  addUpcharge(payload.obstacles, "Obstacles / tight areas upcharge", Number(rules.obstaclesUpcharge || 0));
+  addUpcharge(payload.rushJob, "Rush job upcharge", Number(rules.rushJobUpcharge || 0));
+  addUpcharge(payload.limitedAccess, "Limited access upcharge", Number(rules.limitedAccessUpcharge || 0));
+  addUpcharge(payload.gates, "Gate handling upcharge", Number(rules.gateHandlingUpcharge || 0));
+  addMultiplier(payload.overgrown, `Overgrown yard (+${Math.round((Number(rules.overgrownMultiplier || 1) - 1) * 100)}%)`, Number(rules.overgrownMultiplier || 1));
+  addMultiplier(payload.slopedTerrain, `Sloped terrain (+${Math.round((Number(rules.slopedTerrainMultiplier || 1) - 1) * 100)}%)`, Number(rules.slopedTerrainMultiplier || 1));
+  addMultiplier(payload.denseVegetation, `Dense vegetation (+${Math.round((Number(rules.denseVegetationMultiplier || 1) - 1) * 100)}%)`, Number(rules.denseVegetationMultiplier || 1));
+
+  const final = roundToNearestFive(Math.round(estimate * 100) / 100);
+  return { estimate: final, breakdown };
 }
 
 function numberField(body, name) {
@@ -2555,14 +2881,209 @@ app.put("/api/regions/:id", requireAuth, requireRole("admin"), async (req, res) 
   }
 });
 
+/* =========================================================
+   PRICE TIERS — admin CRUD for tiered/bracket pricing
+   GET  /api/price-tiers          — all tiers (optionally ?serviceId=)
+   POST /api/price-tiers          — create tier
+   PUT  /api/price-tiers/:id      — update tier
+   DELETE /api/price-tiers/:id    — remove tier
+   ========================================================= */
+
+app.get("/api/price-tiers", requireAuth, requireRole("admin"), async (req, res) => {
+  try {
+    const serviceId = req.query.serviceId;
+    const result = serviceId
+      ? await pgdb.query(
+          "SELECT * FROM price_tiers WHERE service_id = $1 ORDER BY sort_order ASC, min_sqft ASC",
+          [serviceId]
+        )
+      : await pgdb.query("SELECT * FROM price_tiers ORDER BY service_id, sort_order ASC, min_sqft ASC");
+    res.json({
+      ok: true,
+      tiers: result.rows.map((t) => ({
+        id: t.id,
+        serviceId: t.service_id,
+        minSqft: Number(t.min_sqft || 0),
+        maxSqft: t.max_sqft != null ? Number(t.max_sqft) : null,
+        ratePer1000Sqft: Number(t.rate_per_1000_sqft || 0),
+        label: t.label || "",
+        sortOrder: Number(t.sort_order || 0),
+        active: Boolean(t.active)
+      }))
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.post("/api/price-tiers", requireAuth, requireRole("admin"), async (req, res) => {
+  try {
+    const body = req.body || {};
+    if (!body.serviceId) return res.status(400).json({ ok: false, error: "serviceId required" });
+    if (body.minSqft == null) return res.status(400).json({ ok: false, error: "minSqft required" });
+    if (body.ratePer1000Sqft == null) return res.status(400).json({ ok: false, error: "ratePer1000Sqft required" });
+    const result = await pgdb.query(
+      `INSERT INTO price_tiers (id, service_id, min_sqft, max_sqft, rate_per_1000_sqft, label, sort_order, active, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW()) RETURNING *`,
+      [
+        nanoid(10),
+        String(body.serviceId),
+        Number(body.minSqft),
+        body.maxSqft != null ? Number(body.maxSqft) : null,
+        Number(body.ratePer1000Sqft),
+        String(body.label || ""),
+        Number(body.sortOrder || 0),
+        body.active !== false
+      ]
+    );
+    const t = result.rows[0];
+    res.status(201).json({
+      ok: true,
+      tier: {
+        id: t.id, serviceId: t.service_id, minSqft: Number(t.min_sqft), maxSqft: t.max_sqft != null ? Number(t.max_sqft) : null,
+        ratePer1000Sqft: Number(t.rate_per_1000_sqft), label: t.label || "", sortOrder: Number(t.sort_order), active: Boolean(t.active)
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.put("/api/price-tiers/:id", requireAuth, requireRole("admin"), async (req, res) => {
+  try {
+    const body = req.body || {};
+    const result = await pgdb.query(
+      `UPDATE price_tiers SET
+        min_sqft = COALESCE($2, min_sqft),
+        max_sqft = CASE WHEN $3::boolean THEN $4::integer ELSE max_sqft END,
+        rate_per_1000_sqft = COALESCE($5, rate_per_1000_sqft),
+        label = COALESCE($6, label),
+        sort_order = COALESCE($7, sort_order),
+        active = COALESCE($8, active),
+        updated_at = NOW()
+       WHERE id = $1 RETURNING *`,
+      [
+        req.params.id,
+        body.minSqft != null ? Number(body.minSqft) : null,
+        "maxSqft" in body,
+        body.maxSqft != null ? Number(body.maxSqft) : null,
+        body.ratePer1000Sqft != null ? Number(body.ratePer1000Sqft) : null,
+        body.label != null ? String(body.label) : null,
+        body.sortOrder != null ? Number(body.sortOrder) : null,
+        body.active != null ? Boolean(body.active) : null
+      ]
+    );
+    if (!result.rows.length) return res.status(404).json({ ok: false, error: "Tier not found" });
+    const t = result.rows[0];
+    res.json({
+      ok: true,
+      tier: {
+        id: t.id, serviceId: t.service_id, minSqft: Number(t.min_sqft), maxSqft: t.max_sqft != null ? Number(t.max_sqft) : null,
+        ratePer1000Sqft: Number(t.rate_per_1000_sqft), label: t.label || "", sortOrder: Number(t.sort_order), active: Boolean(t.active)
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.delete("/api/price-tiers/:id", requireAuth, requireRole("admin"), async (req, res) => {
+  try {
+    const result = await pgdb.query("DELETE FROM price_tiers WHERE id = $1 RETURNING id", [req.params.id]);
+    if (!result.rows.length) return res.status(404).json({ ok: false, error: "Tier not found" });
+    res.json({ ok: true, deleted: result.rows[0].id });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+/* =========================================================
+   PROVIDER SERVICE PRICING — per-service overrides
+   GET  /api/provider/pricing      — provider's per-service pricing
+   PUT  /api/provider/pricing      — save per-service pricing
+   ========================================================= */
+
+app.get("/api/provider/pricing", requireAuth, providerAccessMiddleware, async (req, res) => {
+  try {
+    if (req.user.role === "admin") return res.json({ ok: true, pricing: [] });
+    const provider = await ensureProviderProfileForUser(req.user, {});
+    const result = await pgdb.query(
+      "SELECT * FROM provider_service_pricing WHERE provider_id = $1 ORDER BY service_id",
+      [provider.id]
+    );
+    res.json({
+      ok: true,
+      pricing: result.rows.map((r) => ({
+        serviceId: r.service_id,
+        baseFee: r.base_fee != null ? Number(r.base_fee) : null,
+        ratePer1000Sqft: r.rate_per_1000_sqft != null ? Number(r.rate_per_1000_sqft) : null,
+        minimumPrice: r.minimum_price != null ? Number(r.minimum_price) : null,
+        enabled: Boolean(r.enabled),
+        notes: r.notes || ""
+      }))
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.put("/api/provider/pricing", requireAuth, requireRole("provider"), async (req, res) => {
+  try {
+    const body = req.body || {};
+    const rows = Array.isArray(body.pricing) ? body.pricing : [];
+    const provider = await ensureProviderProfileForUser(req.user, {});
+    for (const item of rows) {
+      if (!item.serviceId) continue;
+      await pgdb.query(
+        `INSERT INTO provider_service_pricing (id, provider_id, service_id, base_fee, rate_per_1000_sqft, minimum_price, enabled, notes, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+         ON CONFLICT (provider_id, service_id) DO UPDATE SET
+           base_fee = EXCLUDED.base_fee,
+           rate_per_1000_sqft = EXCLUDED.rate_per_1000_sqft,
+           minimum_price = EXCLUDED.minimum_price,
+           enabled = EXCLUDED.enabled,
+           notes = EXCLUDED.notes,
+           updated_at = NOW()`,
+        [
+          nanoid(10),
+          provider.id,
+          String(item.serviceId),
+          item.baseFee != null ? Number(item.baseFee) : null,
+          item.ratePer1000Sqft != null ? Number(item.ratePer1000Sqft) : null,
+          item.minimumPrice != null ? Number(item.minimumPrice) : null,
+          item.enabled !== false,
+          String(item.notes || "").slice(0, 1000)
+        ]
+      );
+    }
+    const saved = await pgdb.query(
+      "SELECT * FROM provider_service_pricing WHERE provider_id = $1 ORDER BY service_id",
+      [provider.id]
+    );
+    res.json({
+      ok: true,
+      pricing: saved.rows.map((r) => ({
+        serviceId: r.service_id,
+        baseFee: r.base_fee != null ? Number(r.base_fee) : null,
+        ratePer1000Sqft: r.rate_per_1000_sqft != null ? Number(r.rate_per_1000_sqft) : null,
+        minimumPrice: r.minimum_price != null ? Number(r.minimum_price) : null,
+        enabled: Boolean(r.enabled),
+        notes: r.notes || ""
+      }))
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 app.post("/api/estimate", async (req, res) => {
   try {
     const _body = req.body || {};
     console.log('[TurfLynk Area Trace] F. /api/estimate received | mowAreaSqft=' + Number(_body.mowAreaSqft || 0) + ' lotAreaSqft=' + Number(_body.lotAreaSqft || 0) + ' serviceType=' + (_body.serviceType || '') + ' source=request.body');
     const settings = await loadSettingsFromDb();
-    const estimate = estimateQuote(_body, settings);
+    const { estimate, breakdown } = estimateQuoteWithBreakdown(_body, settings);
     console.log('[TurfLynk Area Trace] F. /api/estimate result | estimate=' + estimate + ' mowAreaSqft=' + Number(_body.mowAreaSqft || 0));
-    res.json({ ok: true, estimate });
+    res.json({ ok: true, estimate, breakdown });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
   }
@@ -2889,6 +3410,7 @@ async function ensurePaidPaymentAccount(payment = {}, session = {}) {
 }
 
 async function markCheckoutSessionPaid(session = {}) {
+  await ensurePaymentColumns();
   const metadata = session.metadata || {};
   const payments = readJsonArray(PAYMENTS_FILE);
   let payment = payments.find((item) => item.stripe_checkout_session_id === session.id);
@@ -2938,7 +3460,10 @@ async function markCheckoutSessionPaid(session = {}) {
       `
       UPDATE jobs
       SET
-        status = 'open',
+        status = CASE WHEN status IN ('payment_pending', 'checkout_pending') THEN 'open' ELSE status END,
+        payment_status = 'paid',
+        stripe_payment_intent_id = COALESCE($3, stripe_payment_intent_id),
+        paid_at = COALESCE(paid_at, NOW()),
         details = CASE
           WHEN COALESCE(details, '') ILIKE '%Payment status: paid%' THEN details
           ELSE CONCAT(
@@ -2950,7 +3475,7 @@ async function markCheckoutSessionPaid(session = {}) {
         END
       WHERE id = $1
       `,
-      [payment.job_id, session.id || ""]
+      [payment.job_id, session.id || "", session.payment_intent || null]
     );
   }
 
@@ -4094,7 +4619,11 @@ function mapJobRow(row) {
     obstacles_list: listField(detailValue("Obstacles")),
     postedAt: row.created_at,
     createdAt: row.created_at,
-    updatedAt: row.updated_at || null
+    updatedAt: row.updated_at || null,
+    paymentStatus: row.payment_status || "unpaid",
+    estimateAtBooking: row.estimate_at_booking != null ? Number(row.estimate_at_booking) : null,
+    stripeCheckoutSessionId: row.stripe_checkout_session_id || null,
+    paidAt: row.paid_at || null,
   };
 }
 
@@ -4118,6 +4647,7 @@ function sanitizeJobForPublic(job = {}) {
     serviceType: job.serviceType || job.service_type || "mowing",
     preferredDate: job.preferredDate || job.preferred_date || null,
     status: job.status || "open",
+    paymentStatus: job.paymentStatus || job.payment_status || "unpaid",
     postedAt: job.postedAt || job.createdAt || job.created_at || null
   };
 }
@@ -4134,7 +4664,12 @@ function sanitizeJobForOwner(job = {}) {
     mower_access: job.mower_access || "",
     yard_access_notes: job.yard_access_notes || "",
     community_access_type: job.community_access_type || "",
-    scopeSnapshot: parseJsonObject(job.scopeSnapshot || job.scope_snapshot)
+    scopeSnapshot: parseJsonObject(job.scopeSnapshot || job.scope_snapshot),
+    estimateAtBooking: job.estimateAtBooking != null ? Number(job.estimateAtBooking) : null,
+    stripeCheckoutSessionId: job.stripeCheckoutSessionId || null,
+    paidAt: job.paidAt || null,
+    createdAt: job.createdAt || job.postedAt || null,
+    updatedAt: job.updatedAt || null
   };
 }
 
@@ -4146,8 +4681,6 @@ function sanitizeJobForProvider(job = {}) {
     customerEmail: job.customerEmail || "",
     customerPhone: job.customerPhone || "",
     photos: Array.isArray(job.photos) ? job.photos : [],
-    createdAt: job.createdAt || job.postedAt || null,
-    updatedAt: job.updatedAt || null
   };
 }
 
@@ -4197,7 +4730,7 @@ function geoJsonField(body = {}, ...keys) {
   return null;
 }
 
-function buildJobScopeSnapshot(body = {}) {
+function buildJobScopeSnapshot(body = {}, pricingBreakdown = null) {
   const serviceFields = servicePayloadFields(body);
   const finalAmount = Number(body.final_price || body.finalPrice || body.paidAmount || body.paymentAmount || body.budget || body.estimate || 0);
   const tipAmount = Number(body.tipAmount || body.tip_amount || body.gratuity || 0);
@@ -4211,6 +4744,7 @@ function buildJobScopeSnapshot(body = {}) {
     finalAmount,
     paidAmount: Number(body.paidAmount || body.paymentAmount || 0) || finalAmount,
     tipAmount,
+    pricingBreakdown: Array.isArray(pricingBreakdown) ? pricingBreakdown : null,
     access: {
       gateSize: serviceFields.gate_size_category,
       gateAccessType: serviceFields.gate_access_type,
@@ -4253,7 +4787,21 @@ function buildJobScopeSnapshot(body = {}) {
 
 async function insertJobForUser(userId, body = {}, status = "open") {
   await ensureJobsScopeSnapshotColumn();
-  const scopeSnapshot = buildJobScopeSnapshot(body);
+  await ensurePaymentColumns();
+  /* Compute pricing breakdown at insert time so it's snapshotted permanently */
+  let pricingBreakdown = null;
+  let estimateTotal = Number(body.budget || body.final_price || body.estimate || 0);
+  try {
+    if (Number(body.mowAreaSqft || body.areaSqft || 0) > 0) {
+      const settings = await loadSettingsFromDb();
+      const result = estimateQuoteWithBreakdown(body, settings);
+      pricingBreakdown = result.breakdown;
+      if (result.estimate > 0) estimateTotal = result.estimate;
+    }
+  } catch (bErr) {
+    console.warn('[Job] Could not compute pricing breakdown for snapshot:', bErr.message);
+  }
+  const scopeSnapshot = buildJobScopeSnapshot(body, pricingBreakdown);
   const result = await pgdb.query(
     `
     INSERT INTO jobs (
@@ -4272,10 +4820,14 @@ async function insertJobForUser(userId, body = {}, status = "open") {
       details,
       photos,
       scope_snapshot,
-      status
+      status,
+      payment_status,
+      estimate_at_booking,
+      pricing_breakdown_json
     )
     VALUES (
-      $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb, $16
+      $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb, $16,
+      'unpaid', $17, $18::jsonb
     )
     RETURNING *
     `,
@@ -4295,7 +4847,9 @@ async function insertJobForUser(userId, body = {}, status = "open") {
       buildJobDetails(body),
       JSON.stringify(Array.isArray(body.photos) ? body.photos : []),
       JSON.stringify(scopeSnapshot),
-      status
+      status,
+      estimateTotal > 0 ? estimateTotal : null,
+      pricingBreakdown ? JSON.stringify(pricingBreakdown) : null
     ]
   );
 
@@ -4352,7 +4906,7 @@ app.post("/api/jobs", requireAuth, async (req, res) => {
 
   try {
     const body = req.body || {};
-    const phone = submittedPhone(body);
+    const phone = submittedPhone(body) || String(user?.phone || "").trim();
     if (!isValidLookingPhone(phone)) return rejectMissingPhone(res);
     body.phone = phone;
     body.customerPhone = phone;
@@ -4747,6 +5301,23 @@ app.get("/api/quotes", requireAuth, requireRole("admin"), async (_req, res) => {
   }
 });
 
+// Customer: their own quotes by user_id or email
+app.get("/api/customer/quotes", requireAuth, async (req, res) => {
+  try {
+    const result = await pgdb.query(
+      `SELECT * FROM quotes
+       WHERE customer_user_id = $1
+          OR (email <> '' AND email = $2)
+       ORDER BY created_at DESC
+       LIMIT 30`,
+      [req.user.id, req.user.email || ""]
+    );
+    res.json({ ok: true, quotes: result.rows });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 app.post("/api/quotes", optionalAuth, async (req, res) => {
   try {
     const body = req.body || {};
@@ -5094,6 +5665,70 @@ app.post("/api/jobs/:id/accept", requireAuth, requireRole("provider"), async (re
   }
 });
 
+// Customer (or admin) creates a Stripe Checkout session for a job
+app.post("/api/jobs/:id/create-checkout-session", requireAuth, async (req, res) => {
+  try {
+    await ensurePaymentColumns();
+    const jobResult = await pgdb.query("SELECT * FROM jobs WHERE id = $1 LIMIT 1", [req.params.id]);
+    if (!jobResult.rows.length) return res.status(404).json({ ok: false, error: "Job not found" });
+
+    const row = jobResult.rows[0];
+    const isAdmin = req.user.role === "admin";
+    const isOwner = row.customer_user_id && String(row.customer_user_id) === String(req.user.id);
+
+    if (!isAdmin && !isOwner) {
+      return res.status(403).json({ ok: false, error: "forbidden" });
+    }
+
+    const secretKey = stripeSecretKey();
+    if (!secretKey) {
+      return res.status(503).json({ ok: false, error: "Payment processing not configured" });
+    }
+    assertStripeTestMode(secretKey);
+
+    const job = mapJobRow(row);
+    const amountCents = Math.round(Number(row.estimate_at_booking || row.budget || 0) * 100);
+    if (amountCents < 50) {
+      return res.status(400).json({ ok: false, error: "Job has no valid price for checkout" });
+    }
+
+    const params = new URLSearchParams();
+    params.set("mode", "payment");
+    params.set("line_items[0][price_data][currency]", "usd");
+    params.set("line_items[0][price_data][unit_amount]", String(amountCents));
+    params.set("line_items[0][price_data][product_data][name]",
+      job.title || `${job.serviceType} Service` || "Lawn Service");
+    params.set("line_items[0][quantity]", "1");
+    params.set("success_url", checkoutReturnUrl("success", { job_id: job.id }));
+    params.set("cancel_url", checkoutReturnUrl("cancel", { job_id: job.id }));
+    params.set("metadata[job_id]", job.id);
+    params.set("metadata[customer_user_id]", String(row.customer_user_id || ""));
+
+    const stripeRes = await fetch("https://api.stripe.com/v1/checkout/sessions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${secretKey}`,
+        "Content-Type": "application/x-www-form-urlencoded"
+      },
+      body: params.toString()
+    });
+
+    const stripeSession = await stripeRes.json();
+    if (!stripeRes.ok) {
+      return res.status(502).json({ ok: false, error: stripeSession.error?.message || "Stripe checkout failed" });
+    }
+
+    await pgdb.query(
+      "UPDATE jobs SET stripe_checkout_session_id = $1 WHERE id = $2",
+      [stripeSession.id, job.id]
+    );
+
+    res.json({ ok: true, url: stripeSession.url, sessionId: stripeSession.id });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 /* -------------------- ADMIN LEADS (JSON-backed) -------------------- */
 
 const VALID_LEAD_STATUSES = new Set(["new", "quoted", "bidding", "scheduled", "completed", "canceled"]);
@@ -5167,6 +5802,40 @@ app.patch("/api/admin/jobs/:id/status", requireAuth, requireRole("admin"), async
   }
 });
 
+// Admin: manually override payment status on a DB job
+app.patch("/api/admin/jobs/:id/payment", requireAuth, requireRole("admin"), async (req, res) => {
+  try {
+    await ensurePaymentColumns();
+    const { payment_status, note } = req.body || {};
+    const allowed = new Set(["unpaid", "deposit_paid", "paid"]);
+    if (!payment_status || !allowed.has(payment_status)) {
+      return res.status(400).json({ ok: false, error: `payment_status must be one of: ${[...allowed].join(", ")}` });
+    }
+
+    const noteText = String(note || "").trim().slice(0, 500);
+    const params = [req.params.id, payment_status];
+    let detailsSql = "";
+    if (noteText) {
+      detailsSql = `, details = CONCAT(COALESCE(details, ''), CASE WHEN COALESCE(details, '') = '' THEN '' ELSE CHR(10) END, $3)`;
+      params.push(`Admin payment note: ${noteText}`);
+    }
+    if (payment_status === "paid") {
+      detailsSql += ", paid_at = COALESCE(paid_at, NOW())";
+    }
+
+    const result = await pgdb.query(
+      `UPDATE jobs SET payment_status = $2${detailsSql} WHERE id = $1 RETURNING *`,
+      params
+    );
+    if (!result.rows.length) {
+      return res.status(404).json({ ok: false, error: "Job not found" });
+    }
+    res.json({ ok: true, job: mapJobRow(result.rows[0]) });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 /* -------------------- ADMIN -------------------- */
 
 app.get("/api/admin/overview", requireAuth, requireRole("admin"), async (_req, res) => {
@@ -5199,8 +5868,16 @@ app.get("/api/admin/overview", requireAuth, requireRole("admin"), async (_req, r
       "SELECT COUNT(*) FROM jobs WHERE status = 'open'"
     );
 
+    const totalJobs = await pgdb.query(
+      "SELECT COUNT(*) FROM jobs"
+    );
+
+    const completedJobs = await pgdb.query(
+      "SELECT COUNT(*) FROM jobs WHERE status = 'completed'"
+    );
+
     const latestJobs = await pgdb.query(
-      "SELECT * FROM jobs ORDER BY created_at DESC LIMIT 6"
+      "SELECT * FROM jobs ORDER BY created_at DESC LIMIT 20"
     );
 
     const byRegion = {};
@@ -5212,7 +5889,9 @@ app.get("/api/admin/overview", requireAuth, requireRole("admin"), async (_req, r
       ok: true,
       metrics: {
         totalQuotes: Number(quoteCount.rows[0].count),
+        totalJobs: Number(totalJobs.rows[0].count),
         openJobs: Number(openJobs.rows[0].count),
+        completedJobs: Number(completedJobs.rows[0].count),
         providers: Number(providerCount.rows[0].count),
         revenuePipeline: Number(revenueResult.rows[0].total)
       },
@@ -5526,5 +6205,7 @@ app.get("*", (_req, res) => {
 
 app.listen(PORT, () => {
   console.log(`${APP_NAME} listening on http://0.0.0.0:${PORT}`);
+  ensurePricingSchema().catch((err) => console.warn('[Startup] pricing schema ensure failed:', err.message));
   ensureJobsScopeSnapshotColumn().catch((err) => console.warn('[Startup] scope_snapshot column ensure failed:', err.message));
+  ensurePaymentColumns().catch((err) => console.warn('[Startup] payment columns ensure failed:', err.message));
 });

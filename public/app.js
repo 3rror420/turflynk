@@ -2942,6 +2942,7 @@ function setEstimateState(status, details = {}) {
   const next = {
     status,
     estimate: Number(details.estimate || 0),
+    breakdown: Array.isArray(details.breakdown) ? details.breakdown : [],
     signature: details.signature || '',
     payload: details.payload || null,
     error: details.error || '',
@@ -3046,6 +3047,7 @@ async function refreshEstimate(options = {}) {
       signature,
       payload: freshPayload,
       estimate: data.estimate,
+      breakdown: Array.isArray(data.breakdown) ? data.breakdown : [],
     });
     if (options.navigate) showQuoteFlowStep('estimate');
     return estimateState;
@@ -5505,7 +5507,9 @@ async function loadAdmin() {
 
   metrics.innerHTML = `
     <div class="metric"><strong>${data.metrics.totalQuotes}</strong><span>Total quotes</span></div>
+    <div class="metric"><strong>${data.metrics.totalJobs ?? data.metrics.openJobs}</strong><span>Total jobs</span></div>
     <div class="metric"><strong>${data.metrics.openJobs}</strong><span>Open jobs</span></div>
+    <div class="metric"><strong>${data.metrics.completedJobs ?? 0}</strong><span>Completed jobs</span></div>
     <div class="metric"><strong>${data.metrics.providers}</strong><span>Providers</span></div>
     <div class="metric"><strong>${money(data.metrics.revenuePipeline)}</strong><span>Revenue pipeline</span></div>
   `;
@@ -5530,12 +5534,44 @@ async function loadAdmin() {
     latestJobs.innerHTML = '';
     (data.latestJobs.length
       ? data.latestJobs
-      : [{ title: 'No jobs yet', details: 'Post a job to see it here.', regionId: '', serviceType: '' }]).forEach((job) => {
-        latestJobs.append(card(`
-          <h4>${escapeHtml(job.title)}</h4>
-          <div class="meta">${escapeHtml(regionLabel(job.regionId || job.region_id))} � ${escapeHtml(serviceLabel(job.serviceType || job.service_type))}</div>
-          <p>${escapeHtml(job.details || '')}</p>
-        `));
+      : [{ title: 'No jobs yet', address: '', service_type: '', status: 'open', budget: 0 }]).forEach((job) => {
+        const addr = [job.address, job.city, job.state].filter(Boolean).join(', ');
+        const jobCard = card(`
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:6px">
+            <div>
+              <h4 style="margin:0 0 4px">${escapeHtml(job.title || 'Job')}</h4>
+              ${addr ? `<div class="meta">${escapeHtml(addr)}</div>` : ''}
+              <div class="meta">${escapeHtml(serviceLabel(job.service_type || job.serviceType))} &middot; <strong>${money(job.budget || 0)}</strong></div>
+            </div>
+            ${statusBadge(job.status || 'open')}
+          </div>
+          <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+            <select class="admin-job-status-select" data-job-id="${escapeHtml(job.id || '')}" style="width:auto;padding:6px 8px;font-size:.85rem">
+              <option value="">Move to&hellip;</option>
+              <option value="open">Open</option>
+              <option value="assigned">Assigned</option>
+              <option value="in_progress">In Progress</option>
+              <option value="completed">Completed</option>
+              <option value="canceled">Canceled</option>
+            </select>
+          </div>
+        `);
+        latestJobs.append(jobCard);
+    });
+    latestJobs.querySelectorAll('.admin-job-status-select').forEach((sel) => {
+      sel.addEventListener('change', async () => {
+        const jobId = sel.dataset.jobId;
+        const status = sel.value;
+        if (!jobId || !status) return;
+        try {
+          await api(`/api/admin/jobs/${jobId}/status`, { method: 'PATCH', body: JSON.stringify({ status }) });
+          showToast(`Job status updated to ${status}`, 'success');
+          loadAdmin().catch(() => {});
+        } catch (err) {
+          showError('Could not update status: ' + prettyApiError(err));
+          sel.value = '';
+        }
+      });
     });
   }
 
@@ -5805,6 +5841,30 @@ function renderEstimateResult(payload) {
     return;
   }
 
+  const breakdown = Array.isArray(state.currentEstimate?.breakdown) ? state.currentEstimate.breakdown : [];
+  const breakdownHtml = breakdown.length > 1
+    ? `<div class="price-breakdown">
+        <h4>Price breakdown</h4>
+        <table class="breakdown-table">
+          <tbody>
+            ${breakdown.map((item) => `<tr>
+              <td>${escapeHtml(item.label)}</td>
+              <td class="breakdown-amount">${item.amount < 0 ? '−' + money(Math.abs(item.amount)) : money(item.amount)}</td>
+            </tr>`).join('')}
+          </tbody>
+          <tfoot>
+            <tr class="breakdown-total">
+              <td>Total</td>
+              <td class="breakdown-amount">${money(payload.estimate)}</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>`
+    : '';
+
+  const accessSummary = buildAccessSummary(payload);
+  const equipRec = equipmentRecommendation(payload);
+
   showResult(
     'quoteResult',
     `<div class="estimate-card">
@@ -5816,6 +5876,7 @@ function renderEstimateResult(payload) {
         </div>
         <div class="preview-pill"><span>Mowable area</span><strong>${formatSqft(area)}</strong></div>
       </div>
+      ${breakdownHtml}
       <div class="scope-grid">
         <div>
           <h4>Includes</h4>
@@ -5829,8 +5890,8 @@ function renderEstimateResult(payload) {
       <div class="final-review">
         <h4>Access review</h4>
         <div class="meta">Price shown: ${money(payload.estimate)}.</div>
-        <div class="meta">${escapeHtml(buildAccessSummary(payload) || 'Gate/access: no special access entered.')}</div>
-        <div class="meta">${escapeHtml(equipmentRecommendation(payload) || '')}</div>
+        ${accessSummary ? `<div class="meta">${escapeHtml(accessSummary)}</div>` : ''}
+        ${equipRec ? `<div class="meta">${escapeHtml(equipRec)}</div>` : ''}
       </div>
     </div>`
   );

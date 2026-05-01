@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>My Dashboard | MowNWA</title>
+  <link rel="icon" href="/assets/brand/mownwa_logo.png" />
+  <link rel="stylesheet" href="/styles.css" />
+  <style>
+    .dash-wrap { max-width: 860px; margin: 0 auto; padding: 20px 16px 80px; }
+    .dash-topbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--line); background: rgba(7,12,23,.94); backdrop-filter: blur(14px); position: sticky; top: 0; z-index: 90; }
+    .dash-topbar a { font-weight: 900; font-size: 1.1rem; color: var(--primary); text-decoration: none; }
+    .dash-topbar-right { display: flex; align-items: center; gap: 10px; }
+    .user-chip { background: #0c162b; border: 1px solid var(--line); border-radius: 999px; padding: 6px 14px; font-size: .88rem; font-weight: 700; color: #dbe7f7; }
+    .section-gap { margin-top: 24px; }
+    .quote-addr { color: var(--muted); font-size: .9rem; margin: 2px 0 6px; }
+    .job-row { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 8px; }
+    .auth-wall { max-width: 420px; margin: 60px auto; }
+    .auth-wall h2 { margin-bottom: 8px; }
+    .auth-wall p { color: var(--muted); margin: 0 0 20px; }
+    .auth-err { color: #fca5a5; font-size: .9rem; margin-top: 8px; }
+    .tab-row { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+    .tab-btn { appearance: none; background: #0c162b; border: 1px solid var(--line); border-radius: 12px; color: #dbe7f7; padding: 10px 16px; font-weight: 700; cursor: pointer; font-size: .9rem; }
+    .tab-btn.active { background: rgba(34,197,94,.16); border-color: rgba(34,197,94,.4); color: #eafff1; }
+    .empty-msg { color: var(--muted); padding: 16px 0; }
+    .card-actions { margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap; }
+    .scheduled-tag { color: var(--primary); font-size: .85rem; font-weight: 700; }
+    .pay-badge { display: inline-block; border-radius: 999px; padding: 3px 10px; font-size: .78rem; font-weight: 700; letter-spacing: .02em; }
+    .pay-badge.unpaid { background: rgba(239,68,68,.14); color: #fca5a5; border: 1px solid rgba(239,68,68,.3); }
+    .pay-badge.deposit_paid { background: rgba(245,158,11,.12); color: #fcd34d; border: 1px solid rgba(245,158,11,.3); }
+    .pay-badge.paid { background: rgba(34,197,94,.13); color: #86efac; border: 1px solid rgba(34,197,94,.3); }
+    @media (max-width: 600px) { .dash-wrap { padding: 14px 12px 60px; } }
+  </style>
+</head>
+<body>
+
+<div id="toastLayer" class="toast-layer" aria-live="polite" aria-atomic="true"></div>
+
+<header class="dash-topbar">
+  <a href="/">MowNWA</a>
+  <div class="dash-topbar-right">
+    <span id="userChip" class="user-chip" style="display:none"></span>
+    <a href="/" class="btn secondary small">Get Quote</a>
+    <button id="signOutBtn" class="btn ghost small" style="display:none" type="button">Sign Out</button>
+  </div>
+</header>
+
+<!-- Auth wall -->
+<div id="authWall" class="dash-wrap auth-wall" style="display:none">
+  <h2>Sign in to your dashboard</h2>
+  <p>View your quotes, track jobs, and manage your lawn service.</p>
+
+  <div class="tab-row">
+    <button class="tab-btn active" type="button" onclick="showAuthTab('login')">Login</button>
+    <button class="tab-btn" type="button" onclick="showAuthTab('register')">Sign Up</button>
+  </div>
+
+  <form id="loginForm" class="stack" style="gap:12px">
+    <label><span>Email</span><input name="email" type="email" autocomplete="email" required /></label>
+    <label><span>Password</span><input name="password" type="password" autocomplete="current-password" required /></label>
+    <button class="btn primary" type="submit">Login</button>
+    <div id="loginErr" class="auth-err"></div>
+  </form>
+
+  <form id="registerForm" class="stack hidden" style="gap:12px">
+    <label><span>Full Name</span><input name="fullName" autocomplete="name" required /></label>
+    <label><span>Email</span><input name="email" type="email" autocomplete="email" required /></label>
+    <label><span>Phone</span><input name="phone" type="tel" autocomplete="tel" required /></label>
+    <label><span>Password</span><input name="password" type="password" autocomplete="new-password" required /></label>
+    <button class="btn primary" type="submit">Create Account</button>
+    <div id="registerErr" class="auth-err"></div>
+  </form>
+</div>
+
+<!-- Dashboard content -->
+<div id="dashContent" class="dash-wrap" style="display:none">
+
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px;margin-bottom:20px">
+    <div>
+      <div class="eyebrow">Customer Dashboard</div>
+      <h1 id="welcomeHeading" style="font-size:1.55rem;margin:4px 0 0">My Account</h1>
+    </div>
+    <a href="/" class="btn primary">Get New Quote</a>
+  </div>
+
+  <!-- Quotes -->
+  <section class="panel section-gap">
+    <div class="panel-head">
+      <div>
+        <h2 style="font-size:1.2rem;margin:0">My Quotes</h2>
+        <p class="section-copy" style="margin:4px 0 0">Request a job from any quote below.</p>
+      </div>
+      <button class="btn secondary small" type="button" onclick="loadQuotes()">Refresh</button>
+    </div>
+    <div id="quotesList" class="card-list">
+      <div class="empty-msg">Loading quotes…</div>
+    </div>
+  </section>
+
+  <!-- Jobs -->
+  <section class="panel section-gap">
+    <div class="panel-head">
+      <div>
+        <h2 style="font-size:1.2rem;margin:0">My Jobs</h2>
+        <p class="section-copy" style="margin:4px 0 0">Active and past lawn service jobs.</p>
+      </div>
+      <button class="btn secondary small" type="button" onclick="loadJobs()">Refresh</button>
+    </div>
+    <div id="jobsList" class="card-list">
+      <div class="empty-msg">Loading jobs…</div>
+    </div>
+  </section>
+
+</div>
+
+<!-- Phone prompt modal -->
+<div id="phoneModal" class="modal-overlay" style="display:none">
+  <div class="modal-box">
+    <h3>Phone Number Required</h3>
+    <p style="color:var(--muted);margin:0">Your phone number is needed to book service so a provider can contact you.</p>
+    <label><span>Phone</span><input id="phoneInput" type="tel" autocomplete="tel" placeholder="(555) 555-5555" /></label>
+    <div style="display:flex;gap:10px">
+      <button class="btn primary" type="button" id="phoneConfirmBtn">Confirm &amp; Book</button>
+      <button class="btn ghost" type="button" id="phoneCancelBtn">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const TOKEN_KEY = 'turflynk.authToken';
+let currentUser = null;
+let pendingQuoteData = null;
+
+function token() { return localStorage.getItem(TOKEN_KEY) || ''; }
+
+function esc(s) {
+  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function money(v) {
+  const n = Number(v || 0);
+  return '$' + n.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+
+function statusBadge(s) {
+  return `<span class="status-badge ${esc(s || 'open')}">${esc(s || 'open').replace(/_/g,' ')}</span>`;
+}
+
+function paymentBadge(ps) {
+  const label = { unpaid: 'Unpaid', deposit_paid: 'Deposit Paid', paid: 'Paid' }[ps] || 'Unpaid';
+  const cls = ps === 'paid' ? 'paid' : ps === 'deposit_paid' ? 'deposit_paid' : 'unpaid';
+  return `<span class="pay-badge ${cls}">${label}</span>`;
+}
+
+function serviceLabel(s) {
+  const MAP = {
+    mowing: 'Lawn Mowing', mowing_edging: 'Mowing + Edging', yard_cleanup: 'Yard Cleanup',
+    leaf_cleanup: 'Leaf Cleanup', brush_cleanup: 'Brush Cleanup', landscaping: 'Landscaping',
+    hauling: 'Hauling', instant_mow: 'Instant Mow', other: 'Other Service',
+    long_grass: 'Long Grass', recurring: 'Recurring Care',
+  };
+  return MAP[s] || String(s || 'Service').replace(/_/g,' ');
+}
+
+function toast(msg, type = 'info') {
+  const layer = document.getElementById('toastLayer');
+  if (!layer) return;
+  const el = document.createElement('div');
+  el.className = `toast ${type}`;
+  el.textContent = msg;
+  layer.appendChild(el);
+  setTimeout(() => el.remove(), 4000);
+}
+
+async function api(path, opts = {}) {
+  const t = token();
+  const res = await fetch(path, {
+    headers: {
+      'Content-Type': 'application/json',
+      ...(t ? { Authorization: `Bearer ${t}` } : {}),
+      ...(opts.headers || {}),
+    },
+    ...opts,
+  });
+  if (!res.ok) {
+    let msg = `Error ${res.status}`;
+    try { const j = await res.json(); msg = j.error || msg; } catch { try { msg = await res.text() || msg; } catch {} }
+    throw new Error(msg);
+  }
+  return res.json();
+}
+
+async function init() {
+  if (!token()) { showAuthWall(); return; }
+  try {
+    const data = await api('/api/auth/me');
+    currentUser = data.user;
+    showDash();
+  } catch {
+    showAuthWall();
+  }
+}
+
+function showAuthWall() {
+  document.getElementById('authWall').style.display = '';
+  document.getElementById('dashContent').style.display = 'none';
+  document.getElementById('userChip').style.display = 'none';
+  document.getElementById('signOutBtn').style.display = 'none';
+}
+
+function showDash() {
+  document.getElementById('authWall').style.display = 'none';
+  document.getElementById('dashContent').style.display = '';
+  const chip = document.getElementById('userChip');
+  chip.textContent = currentUser.fullName || currentUser.email || 'Account';
+  chip.style.display = '';
+  document.getElementById('signOutBtn').style.display = '';
+  document.getElementById('welcomeHeading').textContent =
+    'Welcome, ' + (currentUser.fullName || currentUser.email || 'Customer');
+  loadQuotes();
+  loadJobs();
+}
+
+function showAuthTab(tab) {
+  document.getElementById('loginForm').classList.toggle('hidden', tab !== 'login');
+  document.getElementById('registerForm').classList.toggle('hidden', tab !== 'register');
+  document.querySelectorAll('.tab-btn').forEach((b, i) => {
+    b.classList.toggle('active', (i === 0 && tab === 'login') || (i === 1 && tab === 'register'));
+  });
+}
+
+// ── Payment ──────────────────────────────────────────────────────────────────
+
+async function handlePayNow(jobId, btn) {
+  btn.disabled = true;
+  btn.textContent = 'Loading…';
+  try {
+    const data = await api(`/api/jobs/${jobId}/create-checkout-session`, { method: 'POST', body: '{}' });
+    if (data.url) {
+      window.location.href = data.url;
+    } else {
+      throw new Error('No checkout URL returned');
+    }
+  } catch (err) {
+    btn.disabled = false;
+    btn.textContent = 'Pay Now';
+    toast('Could not start payment: ' + err.message, 'error');
+  }
+}
+
+// ── Quotes ──────────────────────────────────────────────────────────────────
+
+async function loadQuotes() {
+  const list = document.getElementById('quotesList');
+  list.innerHTML = '<div class="empty-msg">Loading…</div>';
+  try {
+    const data = await api('/api/customer/quotes');
+    const quotes = data.quotes || [];
+    if (!quotes.length) {
+      list.innerHTML = '<div class="empty-msg">No quotes yet. <a href="/">Get an estimate →</a></div>';
+      return;
+    }
+    list.innerHTML = '';
+    quotes.forEach(q => {
+      const card = document.createElement('div');
+      card.className = 'card';
+      const addr = [q.address, q.city, q.state, q.zip].filter(Boolean).join(', ');
+      const sqft = Number(q.mow_area_sqft || 0);
+      const estimate = Number(q.estimate || q.final_price || 0);
+      const hasJob = Boolean(q.converted_to_job_id);
+      card.innerHTML = `
+        <div class="job-row">
+          <div style="min-width:0;flex:1">
+            <h4 style="margin:0 0 4px">${esc(serviceLabel(q.service_type || q.serviceType))}</h4>
+            ${addr ? `<div class="quote-addr">${esc(addr)}</div>` : ''}
+            <div class="meta" style="display:flex;gap:14px;flex-wrap:wrap">
+              <span>Estimate: <strong>${money(estimate)}</strong></span>
+              ${sqft ? `<span>${sqft.toLocaleString()} sq ft</span>` : ''}
+              <span style="font-size:.82rem;color:var(--muted)">${q.created_at ? new Date(q.created_at).toLocaleDateString() : ''}</span>
+            </div>
+          </div>
+        </div>
+        <div class="card-actions">
+          ${hasJob
+            ? `<span class="pill muted" style="margin:0">Job requested ✓</span>`
+            : `<button class="btn primary small" type="button"
+                 data-quote-id="${esc(q.id)}"
+                 data-addr="${esc(addr)}"
+                 data-estimate="${estimate}"
+                 data-service="${esc(q.service_type || q.serviceType || 'mowing')}"
+                 data-sqft="${sqft}"
+                 data-city="${esc(q.city||'')}"
+                 data-state="${esc(q.state||'AR')}"
+                 data-zip="${esc(q.zip||'')}">Request Job</button>`}
+        </div>
+      `;
+      list.appendChild(card);
+    });
+    list.querySelectorAll('[data-quote-id]').forEach(btn => {
+      btn.addEventListener('click', () => handleRequestJob(btn));
+    });
+  } catch (err) {
+    list.innerHTML = `<div class="empty-msg">Could not load quotes: ${esc(err.message)}</div>`;
+  }
+}
+
+function handleRequestJob(btn) {
+  pendingQuoteData = {
+    quote_id: btn.dataset.quoteId,
+    address: btn.dataset.addr || '',
+    budget: Number(btn.dataset.estimate || 0),
+    serviceType: btn.dataset.service || 'mowing',
+    mowAreaSqft: Number(btn.dataset.sqft || 0),
+    city: btn.dataset.city || '',
+    state: btn.dataset.state || 'AR',
+    zip: btn.dataset.zip || '',
+    btn,
+  };
+
+  if (currentUser?.phone) {
+    submitJobRequest(currentUser.phone);
+  } else {
+    document.getElementById('phoneInput').value = '';
+    document.getElementById('phoneModal').style.display = 'flex';
+    document.getElementById('phoneInput').focus();
+  }
+}
+
+document.getElementById('phoneConfirmBtn').addEventListener('click', () => {
+  const phone = document.getElementById('phoneInput').value.trim();
+  if (!phone) { toast('Phone number is required', 'error'); return; }
+  document.getElementById('phoneModal').style.display = 'none';
+  submitJobRequest(phone);
+});
+
+document.getElementById('phoneCancelBtn').addEventListener('click', () => {
+  document.getElementById('phoneModal').style.display = 'none';
+  pendingQuoteData = null;
+});
+
+async function submitJobRequest(phone) {
+  if (!pendingQuoteData) return;
+  const { btn, ...payload } = pendingQuoteData;
+  pendingQuoteData = null;
+  if (btn) { btn.disabled = true; btn.textContent = 'Booking…'; }
+  try {
+    await api('/api/jobs', {
+      method: 'POST',
+      body: JSON.stringify({ ...payload, phone, title: serviceLabel(payload.serviceType) + ' Service' }),
+    });
+    if (btn) { btn.textContent = 'Booked!'; btn.className = 'btn ghost small'; }
+    toast('Job requested! Check My Jobs below.', 'success');
+    await loadJobs();
+  } catch (err) {
+    if (btn) { btn.disabled = false; btn.textContent = 'Request Job'; }
+    toast('Could not create job: ' + err.message, 'error');
+  }
+}
+
+// ── Jobs ────────────────────────────────────────────────────────────────────
+
+async function loadJobs() {
+  const list = document.getElementById('jobsList');
+  list.innerHTML = '<div class="empty-msg">Loading…</div>';
+  try {
+    const data = await api('/api/jobs/my');
+    const jobs = data.jobs || [];
+    if (!jobs.length) {
+      list.innerHTML = '<div class="empty-msg">No jobs yet. Request a job from a quote above.</div>';
+      return;
+    }
+    list.innerHTML = '';
+    jobs.forEach(job => {
+      const card = document.createElement('div');
+      card.className = 'card';
+      const addr = [job.address, job.city, job.state, job.zip].filter(Boolean).join(', ');
+      const scope = job.scopeSnapshot || {};
+      const sqft = Number(scope.mowableAreaSqFt || scope.mowAreaSqft || 0);
+      const ps = job.paymentStatus || 'unpaid';
+      const showPayNow = ps === 'unpaid' && job.status !== 'canceled';
+      card.innerHTML = `
+        <div class="job-row">
+          <div style="min-width:0;flex:1">
+            <h4 style="margin:0 0 4px">${esc(job.title || serviceLabel(job.serviceType))}</h4>
+            ${addr ? `<div class="quote-addr">${esc(addr)}</div>` : ''}
+            <div class="meta" style="display:flex;gap:14px;flex-wrap:wrap;align-items:center">
+              <span>Price: <strong>${money(job.estimateAtBooking || job.budget)}</strong></span>
+              ${sqft ? `<span>${sqft.toLocaleString()} sq ft</span>` : ''}
+              ${job.preferredDate ? `<span class="scheduled-tag">Scheduled: ${esc(new Date(job.preferredDate).toLocaleDateString())}</span>` : ''}
+              ${paymentBadge(ps)}
+            </div>
+            ${job.createdAt ? `<div class="meta" style="font-size:.82rem">Booked: ${new Date(job.createdAt).toLocaleDateString()}</div>` : ''}
+          </div>
+          <div style="flex-shrink:0">${statusBadge(job.status)}</div>
+        </div>
+        ${showPayNow ? `<div class="card-actions"><button class="btn primary small" type="button" data-pay-job="${esc(job.id)}">Pay Now</button></div>` : ''}
+      `;
+      list.appendChild(card);
+    });
+
+    list.querySelectorAll('[data-pay-job]').forEach(btn => {
+      btn.addEventListener('click', () => handlePayNow(btn.dataset.payJob, btn));
+    });
+  } catch (err) {
+    list.innerHTML = `<div class="empty-msg">Could not load jobs.</div>`;
+  }
+}
+
+// ── Auth forms ───────────────────────────────────────────────────────────────
+
+document.getElementById('loginForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const errEl = document.getElementById('loginErr');
+  errEl.textContent = '';
+  try {
+    const data = await api('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email: fd.get('email'), password: fd.get('password') }),
+    });
+    localStorage.setItem(TOKEN_KEY, data.token);
+    currentUser = data.user;
+    showDash();
+  } catch (err) {
+    errEl.textContent = err.message;
+  }
+});
+
+document.getElementById('registerForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const errEl = document.getElementById('registerErr');
+  errEl.textContent = '';
+  try {
+    const data = await api('/api/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({
+        fullName: fd.get('fullName'),
+        email: fd.get('email'),
+        phone: fd.get('phone'),
+        password: fd.get('password'),
+        role: 'customer',
+      }),
+    });
+    localStorage.setItem(TOKEN_KEY, data.token);
+    currentUser = data.user;
+    showDash();
+  } catch (err) {
+    errEl.textContent = err.message;
+  }
+});
+
+document.getElementById('signOutBtn').addEventListener('click', async () => {
+  try { await api('/api/auth/logout', { method: 'POST', body: '{}' }); } catch {}
+  localStorage.removeItem(TOKEN_KEY);
+  currentUser = null;
+  showAuthWall();
+});
+
+init();
+</script>
+</body>
+</html>

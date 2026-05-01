@@ -437,6 +437,77 @@ def grow_mask(mask: np.ndarray, iterations: int) -> np.ndarray:
     return grown
 
 
+def merge_nearby_components(
+    geoms: List[BaseGeometry],
+    *,
+    merge_distance_m: float,
+    source_crs: Any,
+) -> Tuple[List[BaseGeometry], int]:
+    """Merge polygons within merge_distance_m of each other using buffer+union in UTM."""
+    if len(geoms) <= 1:
+        return list(geoms), 0
+    sample = next((g for g in geoms if not g.is_empty), None)
+    if sample is None:
+        return list(geoms), 0
+    centroid_wgs84 = transform_geometry(sample.centroid, str(source_crs), "EPSG:4326")
+    utm_crs = estimate_utm_epsg(centroid_wgs84.x, centroid_wgs84.y)
+    half = merge_distance_m / 2.0
+    projected = [transform_geometry(g, str(source_crs), utm_crs) for g in geoms if not g.is_empty]
+    expanded = unary_union([g.buffer(half) for g in projected])
+    shrunk = expanded.buffer(-half)
+    parts = polygon_parts(shrunk)
+    result = [transform_geometry(p, utm_crs, str(source_crs)) for p in parts if not p.is_empty]
+    return result, max(0, len(geoms) - len(result))
+
+
+def fill_polygon_holes(
+    geoms: List[BaseGeometry],
+    *,
+    min_hole_sqft: float,
+    source_crs: Any,
+) -> Tuple[List[BaseGeometry], int]:
+    """Remove interior rings smaller than min_hole_sqft from all polygons."""
+    total_removed = 0
+    result: List[BaseGeometry] = []
+    for geom in geoms:
+        if isinstance(geom, Polygon) and list(geom.interiors):
+            kept = [ring for ring in geom.interiors if area_sqft(Polygon(ring), source_crs) >= min_hole_sqft]
+            removed = len(list(geom.interiors)) - len(kept)
+            total_removed += removed
+            result.append(Polygon(geom.exterior, kept) if removed > 0 else geom)
+        else:
+            result.append(geom)
+    return result, total_removed
+
+
+def smooth_geoms(
+    geoms: List[BaseGeometry],
+    *,
+    source_crs: Any,
+    buffer_m: float = 1.5,
+    simplify_m: float = 0.5,
+) -> List[BaseGeometry]:
+    """Morphological close (buffer+/−) and edge simplification to remove pixel artifacts."""
+    if not geoms:
+        return geoms
+    sample = next((g for g in geoms if not g.is_empty), None)
+    if sample is None:
+        return geoms
+    centroid_wgs84 = transform_geometry(sample.centroid, str(source_crs), "EPSG:4326")
+    utm_crs = estimate_utm_epsg(centroid_wgs84.x, centroid_wgs84.y)
+    result: List[BaseGeometry] = []
+    for geom in geoms:
+        if geom.is_empty:
+            continue
+        proj = transform_geometry(geom, str(source_crs), utm_crs)
+        closed = proj.buffer(buffer_m).buffer(-buffer_m)
+        smoothed = closed.simplify(simplify_m, preserve_topology=True)
+        back = transform_geometry(smoothed, utm_crs, str(source_crs))
+        if not back.is_empty:
+            result.extend(p for p in polygon_parts(back) if not p.is_empty)
+    return result
+
+
 def analysis_context_from_bands(
     data: np.ma.MaskedArray,
     band_lookup: Dict[int, int],
@@ -655,10 +726,10 @@ def score_component(
     area_factor = min(1.0, math.log(max(area_sqft_value / max(min_area_sqft, 1.0), 1.0), 7.0))
     access_factor = min(1.0, mask_metrics["accessProximityRatio"] * 10.0) if hard_surface_pixels > 0 else 0.35
     score = 0.10
-    score += area_factor * 0.26
-    score += min(1.0, compactness * 4.0) * 0.20
-    score += mask_metrics["smoothInteriorRatio"] * 0.18
-    score += access_factor * 0.14
+    score += area_factor * 0.35
+    score += min(1.0, compactness * 4.0) * 0.18
+    score += mask_metrics["smoothInteriorRatio"] * 0.16
+    score += access_factor * 0.12
     if 0.015 <= ratio <= 0.55:
         score += 0.10
     elif 0.55 < ratio <= 0.85:
@@ -667,9 +738,9 @@ def score_component(
         score -= 0.12
     score -= mask_metrics["denseWoodsRatio"] * 0.34
     score -= mask_metrics["woodsAdjacencyRatio"] * 0.12
-    score -= mask_metrics["noisyBoundaryRatio"] * 0.16
+    score -= mask_metrics["noisyBoundaryRatio"] * 0.14
     if area_sqft_value < min_area_sqft * 3.0:
-        score -= 0.08
+        score -= 0.04
     return round(max(-1.0, min(1.0, score)), 4)
 
 
@@ -725,18 +796,18 @@ def select_scored_components(
         woods_like = (
             component_area < min_area_sqft * 6.0
             and (
-                (mask_metrics["denseWoodsRatio"] > 0.48 and mask_metrics["noisyBoundaryRatio"] > 0.42)
-                or (compactness < 0.045 and mask_metrics["noisyBoundaryRatio"] > 0.52)
+                (mask_metrics["denseWoodsRatio"] > 0.55 and mask_metrics["noisyBoundaryRatio"] > 0.50)
+                or (compactness < 0.035 and mask_metrics["noisyBoundaryRatio"] > 0.62)
                 or (
-                    mask_metrics["woodsAdjacencyRatio"] > 0.70
-                    and mask_metrics["accessProximityRatio"] < 0.02
+                    mask_metrics["woodsAdjacencyRatio"] > 0.80
+                    and mask_metrics["accessProximityRatio"] < 0.01
                 )
             )
         )
         if woods_like:
             rejected.append({**details, "reason": "woods-like noisy component"})
             continue
-        if component_area < min_area_sqft * 2.0 and compactness < 0.045:
+        if component_area < min_area_sqft * 2.0 and compactness < 0.035:
             rejected.append({**details, "reason": "small irregular canopy-like component"})
             continue
 
@@ -914,16 +985,23 @@ def evaluate_mask_candidate(
     mask_before_filter: Optional[np.ndarray] = None,
     fallback_mode: bool = False,
     max_components: int = 3,
+    merge_distance_m: float = 5.0,
+    min_hole_sqft: float = 500.0,
 ) -> Dict[str, Any]:
     raw_geoms = vectorize_mask(
         mowable,
         transform=transform,
         crs=raster_crs,
         parcel_geom=parcel_raster,
-        min_area_sqft=max(20.0, min_component_area_sqft * 0.25),
+        min_area_sqft=max(5.0, min_component_area_sqft * 0.05),
+    )
+    pre_merge_sizes = [area_sqft(g, raster_crs) for g in raw_geoms]
+    avg_component_size_before = round(float(np.mean(pre_merge_sizes)), 1) if pre_merge_sizes else 0.0
+    merged_geoms, merged_component_count = merge_nearby_components(
+        raw_geoms, merge_distance_m=merge_distance_m, source_crs=raster_crs,
     )
     geoms, component_areas, rejected_components, component_scores = select_scored_components(
-        raw_geoms,
+        merged_geoms,
         parcel_geom=parcel_raster,
         crs=raster_crs,
         transform=transform,
@@ -933,6 +1011,12 @@ def evaluate_mask_candidate(
         min_area_sqft=min_component_area_sqft,
         max_components=max_components,
     )
+    geoms, hole_count_removed = fill_polygon_holes(geoms, min_hole_sqft=min_hole_sqft, source_crs=raster_crs)
+    geoms = smooth_geoms(geoms, source_crs=raster_crs)
+    geoms, more_holes = fill_polygon_holes(geoms, min_hole_sqft=min_hole_sqft, source_crs=raster_crs)
+    hole_count_removed += more_holes
+    post_hole_sizes = [area_sqft(g, raster_crs) for g in geoms]
+    avg_component_size_after = round(float(np.mean(post_hole_sizes)), 1) if post_hole_sizes else 0.0
     selected_mask = rasterize_geometries(geoms, out_shape=mowable.shape, transform=transform) & context["valid"]
     vegetation_pixels = int(np.count_nonzero(selected_mask))
     detected_area_sqft = sum(area_sqft(geom, raster_crs) for geom in geoms) if geoms else 0.0
@@ -974,7 +1058,7 @@ def evaluate_mask_candidate(
         reject_reason = "extremely small detection"
     elif fallback_mode and detected_area_sqft < min(float(min_component_area_sqft), 50.0):
         reject_reason = "fallback detection below mowable area floor"
-    elif len(raw_geoms) > 30 and largest_component_share < 0.35 and average_component_score < 0.34:
+    elif len(merged_geoms) > 30 and largest_component_share < 0.35 and average_component_score < 0.34:
         reject_reason = "high-fragmentation canopy-like detection"
     elif detected_ratio > 0.97 or parcel_similarity >= 0.99:
         reject_reason = "parcel-sized geometry"
@@ -992,9 +1076,14 @@ def evaluate_mask_candidate(
         "maskPixelCountAfterFiltering": int(np.count_nonzero(mowable)),
         "polygonCount": len(geoms),
         "rawPolygonCount": len(raw_geoms),
+        "mergedPolygonCount": len(merged_geoms),
         "polygonCountBeforeFiltering": len(raw_geoms),
         "polygonCountAfterFiltering": len(geoms),
         "keptComponentCount": len(geoms),
+        "mergedComponentCount": merged_component_count,
+        "holeCountRemoved": hole_count_removed,
+        "avgComponentSizeBefore": avg_component_size_before,
+        "avgComponentSizeAfter": avg_component_size_after,
         "componentAreas": component_areas,
         "componentScores": component_scores,
         "rejectedComponents": rejected_components,
@@ -1270,7 +1359,17 @@ def detect_mowable(args: argparse.Namespace) -> Dict[str, Any]:
             min(500.0 if is_large_parcel else 250.0, parcel_area_sqft * 0.001),
         )
         effective_max_components = 12 if is_large_parcel else MAX_COMPONENTS_TO_KEEP
-        print(f"[Vision] parcel_area_sqft={round(parcel_area_sqft, 1)} is_large_parcel={is_large_parcel} min_component_area_sqft={round(min_component_area_sqft, 1)} max_components={effective_max_components}", flush=True)
+        # Adaptive morphological closing based on ground sample distance (GSD).
+        # For 1m NAIP: ~6 px filling (~6m gaps); caps at 10 px to avoid over-merging.
+        try:
+            pixel_size_units = abs(transform[0])
+            is_geo_crs = getattr(raster_crs, "is_geographic", False)
+            pixel_size_m = pixel_size_units * 111320.0 if is_geo_crs else pixel_size_units
+        except Exception:
+            pixel_size_m = 1.0
+        gsd_close_iters = max(6, min(15, int(round(8.0 / max(pixel_size_m, 0.3)))))
+        merge_distance_m = max(5.0, min(10.0, pixel_size_m * 10.0))
+        print(f"[Vision] parcel_area_sqft={round(parcel_area_sqft, 1)} is_large_parcel={is_large_parcel} min_component_area_sqft={round(min_component_area_sqft, 1)} max_components={effective_max_components} pixel_size_m={round(pixel_size_m, 3)} gsd_close_iters={gsd_close_iters} merge_distance_m={round(merge_distance_m, 1)}", flush=True)
 
         for ndvi_threshold in ndvi_values:
             for visible_threshold in visible_values:
@@ -1296,15 +1395,15 @@ def detect_mowable(args: argparse.Namespace) -> Dict[str, Any]:
                     raw_mask_pixel_count = int(np.count_nonzero(mowable))
                     if opening_iterations:
                         mowable = binary_open(mowable, opening_iterations) & valid_pixels
-                    mowable = binary_close(mowable, 2) & valid_pixels
+                    mowable = binary_close(mowable, gsd_close_iters) & valid_pixels
 
                     if args.sieve_size > 0:
                         mowable = sieve(mowable.astype(np.uint8), size=args.sieve_size).astype(bool)
-                        mowable = binary_close(mowable, 2) & valid_pixels
+                        mowable = binary_close(mowable, max(2, gsd_close_iters // 2)) & valid_pixels
                         background = (~mowable) & valid_pixels
                         cleaned_background = sieve(
                             background.astype(np.uint8),
-                            size=max(int(args.sieve_size) * 4, 128),
+                            size=max(int(args.sieve_size) * 6, 256),
                         ).astype(bool)
                         mowable = (~cleaned_background) & valid_pixels
 
@@ -1324,6 +1423,7 @@ def detect_mowable(args: argparse.Namespace) -> Dict[str, Any]:
                         mask_before_filter=pre_filter_mowable,
                         fallback_mode=False,
                         max_components=effective_max_components,
+                        merge_distance_m=merge_distance_m,
                     )
                     candidate["requestedNdviThreshold"] = round(float(ndvi_threshold), 3)
                     candidate["hardscapePixelsBeforeSubtract"] = _hs_px_before
@@ -1373,13 +1473,14 @@ def detect_mowable(args: argparse.Namespace) -> Dict[str, Any]:
                 soft_mowable = soft_mowable & sam_mask if args.combine == "intersect" else soft_mowable | sam_mask
             soft_pre_filter_mowable = soft_mowable.copy()
             soft_raw_mask_pixel_count = int(np.count_nonzero(soft_mowable))
-            soft_mowable = binary_close(soft_mowable, 4) & valid_pixels
+            soft_close_iters = max(gsd_close_iters, gsd_close_iters + 2)
+            soft_mowable = binary_close(soft_mowable, soft_close_iters) & valid_pixels
             if args.sieve_size > 0:
                 soft_mowable = sieve(
                     soft_mowable.astype(np.uint8),
                     size=max(16, int(args.sieve_size) // 2),
                 ).astype(bool)
-                soft_mowable = binary_close(soft_mowable, 3) & valid_pixels
+                soft_mowable = binary_close(soft_mowable, max(3, gsd_close_iters // 2)) & valid_pixels
 
             _hs_sf_before = int(np.count_nonzero(soft_mowable & hardscape_subtract_mask))
             soft_mowable = soft_mowable & ~hardscape_subtract_mask & valid_pixels
@@ -1397,6 +1498,7 @@ def detect_mowable(args: argparse.Namespace) -> Dict[str, Any]:
                 mask_before_filter=soft_pre_filter_mowable,
                 fallback_mode=True,
                 max_components=3,
+                merge_distance_m=merge_distance_m,
             )
             soft_candidate["requestedNdviThreshold"] = round(float(args.ndvi_threshold), 3)
             soft_candidate["hardscapePixelsBeforeSubtract"] = _hs_sf_before
@@ -1613,6 +1715,10 @@ def detect_mowable(args: argparse.Namespace) -> Dict[str, Any]:
         "maskPixelCountAfterFiltering": selected.get("maskPixelCountAfterFiltering") if selected else None,
         "polygonCountBeforeFiltering": selected.get("polygonCountBeforeFiltering") if selected else None,
         "polygonCountAfterFiltering": selected.get("polygonCountAfterFiltering") if selected else None,
+        "mergedComponentCount": selected.get("mergedComponentCount", 0) if selected else 0,
+        "holeCountRemoved": selected.get("holeCountRemoved", 0) if selected else 0,
+        "avgComponentSizeBefore": selected.get("avgComponentSizeBefore", 0.0) if selected else 0.0,
+        "avgComponentSizeAfter": selected.get("avgComponentSizeAfter", 0.0) if selected else 0.0,
         "strictDetectedRatio": round(strict_detected_ratio, 4),
         "softDetectedRatio": round(soft_detected_ratio, 4),
         "selectedCandidateScores": selected.get("componentScores", []) if selected else [],
