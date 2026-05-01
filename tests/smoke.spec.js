@@ -21,6 +21,39 @@ test('config endpoint works', async ({ request }) => {
   expect(body.siteBrand || body.appName).toBeTruthy();
 });
 
+test('ai mowable endpoint returns empty fallback when detection is unavailable', async ({ request }) => {
+  const parcelGeoJson = {
+    type: 'FeatureCollection',
+    features: [{
+      type: 'Feature',
+      properties: {},
+      geometry: {
+        type: 'Polygon',
+        coordinates: [[
+          [-94.21, 36.37],
+          [-94.20, 36.37],
+          [-94.20, 36.38],
+          [-94.21, 36.38],
+          [-94.21, 36.37]
+        ]]
+      }
+    }]
+  };
+
+  const res = await request.post('http://127.0.0.1:3000/api/ai/detect-mowable', {
+    data: { parcelGeoJson, source: 'maplibre' }
+  });
+  expect(res.ok()).toBeTruthy();
+
+  const body = await res.json();
+  expect(body.ok).toBe(true);
+  expect(body.featureCollection?.type).toBe('FeatureCollection');
+  expect(body.featureCollection?.features || []).toHaveLength(0);
+  expect(body.features || []).toHaveLength(0);
+  expect(Number(body.mowableAreaSqft || 0)).toBe(0);
+  expect(body.message).toContain('Use Lasso Yard');
+});
+
 test('logout endpoint clears session', async ({ request }) => {
   const res = await request.post('http://127.0.0.1:3000/api/auth/logout', { data: {} });
   expect(res.ok()).toBeTruthy();
@@ -74,6 +107,73 @@ test('logged-in drawer shows account links and sign out', async ({ page }) => {
   await expect(page.locator('#appDrawer').getByRole('button', { name: /Recent Jobs/i }).first()).toBeVisible();
   await expect(page.locator('#drawerLogoutBtn')).toBeVisible();
   await expect(page.locator('#drawerLogoutBtn')).toContainText(/Sign Out/i);
+});
+
+test('provider area is hidden when logged out', async ({ page }) => {
+  await page.goto('http://127.0.0.1:3000/');
+  await page.locator('#openAppDrawer').click();
+
+  await expect(page.locator('#appDrawer').getByRole('button', { name: /Provider Dashboard/i })).toBeHidden();
+});
+
+test('provider area renders for simulated provider session', async ({ page }) => {
+  await page.goto('http://127.0.0.1:3000/');
+  await page.waitForLoadState('networkidle');
+
+  await page.evaluate(() => {
+    window.updateSessionStatus?.({ id: 'provider-1', email: 'pro@example.com', fullName: 'Provider User', role: 'provider' });
+  });
+
+  await page.locator('#openAppDrawer').click();
+  await expect(page.locator('#appDrawer').getByRole('button', { name: /Provider Dashboard/i })).toBeVisible();
+});
+
+test('provider job card status controls render without crashing', async ({ page }) => {
+  await page.route('**/api/provider/overview', async (route) => {
+    await route.fulfill({
+      status: 200,
+      json: {
+        ok: true,
+        metrics: {},
+        recentJobs: []
+      }
+    });
+  });
+  await page.route('**/api/provider/jobs?filter=active', async (route) => {
+    await route.fulfill({
+      status: 200,
+      json: {
+        ok: true,
+        jobs: [{
+          id: 'job-1',
+          title: 'Mowing job',
+          customerName: 'Jane D.',
+          customerPhone: '555-555-1212',
+          address: '123 Test St',
+          city: 'Bentonville',
+          state: 'AR',
+          zip: '72712',
+          serviceType: 'mowing',
+          preferredDate: '2026-05-01',
+          status: 'assigned',
+          budget: 55,
+          details: 'Gate unlocked',
+          createdAt: '2026-04-29T00:00:00Z'
+        }]
+      }
+    });
+  });
+  await page.goto('http://127.0.0.1:3000/');
+  await page.waitForLoadState('networkidle');
+  await page.evaluate(async () => {
+    localStorage.setItem('turflynk.authToken', 'test-provider-token');
+    window.updateSessionStatus?.({ id: 'provider-1', email: 'pro@example.com', fullName: 'Provider User', role: 'provider' });
+    window.setActiveView?.('providers');
+    await window.renderProviderJobs?.('active');
+  });
+
+  await expect(page.locator('#providerWorkspaceContent')).toContainText('Mowing job');
+  await expect(page.locator('#providerWorkspaceContent').getByRole('button', { name: /Mark scheduled/i })).toBeVisible();
 });
 
 test('mobile homepage keeps hamburger menu visible', async ({ page }) => {
@@ -147,6 +247,84 @@ test('property step confirms parcel and returns from lawn area', async ({ page }
   await page.getByRole('button', { name: 'Back' }).click();
   await expect(page.locator('body')).toHaveAttribute('data-quote-flow-step', 'property');
   await expect(page.locator('#quoteStartScreen')).toBeVisible();
+});
+
+test('ai detect button rejects parcel-sized response without overwriting mowable area', async ({ page }) => {
+  const parcelFeature = {
+    type: 'Feature',
+    properties: { adrlabel: '123 TEST ST, BENTONVILLE, AR 72712' },
+    geometry: {
+      type: 'Polygon',
+      coordinates: [[
+        [-94.2092, 36.3726],
+        [-94.2084, 36.3726],
+        [-94.2084, 36.3732],
+        [-94.2092, 36.3732],
+        [-94.2092, 36.3726]
+      ]]
+    }
+  };
+  const existingMowableFeature = {
+    type: 'Feature',
+    properties: { id: 'manual-yard', role: 'mowable' },
+    geometry: {
+      type: 'Polygon',
+      coordinates: [[
+        [-94.2090, 36.37275],
+        [-94.2087, 36.37275],
+        [-94.2087, 36.3730],
+        [-94.2090, 36.3730],
+        [-94.2090, 36.37275]
+      ]]
+    }
+  };
+
+  await page.route('**/api/ai/detect-mowable', async (route) => {
+    await route.fulfill({
+      status: 200,
+      json: {
+        ok: true,
+        source: 'vision',
+        featureCollection: { type: 'FeatureCollection', features: [parcelFeature] },
+        mowableAreaSqft: 24000
+      }
+    });
+  });
+  await page.route('**/api/estimate', async (route) => {
+    await route.fulfill({ status: 200, json: { ok: true, estimate: 42 } });
+  });
+
+  await page.goto('http://127.0.0.1:3000/');
+  await page.evaluate(({ feature, existing }) => {
+    window.eval(`
+      state.map = {
+        getCenter: () => ({ lng: -94.2088, lat: 36.3729 }),
+        getZoom: () => 18,
+        getSource: () => ({ setData() {} }),
+        isStyleLoaded: () => false,
+        resize() {}
+      };
+      state.parcelFeature = ${JSON.stringify(feature)};
+      state.parcelLayer = state.parcelFeature;
+      state.parcelGeometry = { rings: ${JSON.stringify(feature.geometry.coordinates)} };
+      state.quoteFlowStep = 'draw';
+      state.quoteUiMode = 'idle';
+      window.setActiveView?.('quote');
+      window.showQuoteFlowStep?.('draw', { scroll: false });
+      window.setTurfLynkMowableFeatures?.(${JSON.stringify(existing)});
+      updateQuoteFlowState();
+      setMapToolPanelOpen(true);
+    `);
+  }, { feature: parcelFeature, existing: [existingMowableFeature] });
+
+  await expect(page.locator('#aiDetectMowableBtn')).toBeVisible();
+  await page.locator('#aiDetectMowableBtn').click();
+  await expect(page.locator('#parcelInfo')).toContainText('Use Lasso Yard');
+  await expect(page.locator('#parcelInfo')).toContainText('AI detection is not confident enough yet');
+  await expect(page.locator('#aiDetectMowableBtn')).toHaveText('Use Lasso Yard');
+
+  const mowableIds = await page.evaluate(() => (state.mowableFeatureCollection?.features || []).map((feature) => feature.properties?.id));
+  expect(mowableIds).toEqual(['manual-yard']);
 });
 
 test('address search shows parcel confirmation on property step', async ({ page }) => {
@@ -287,6 +465,181 @@ test('checkout auth buttons show Facebook and email while Google is hidden', asy
   await expect(page.locator('#leadRequestPanel').getByRole('button', { name: 'Continue with Google' })).toBeHidden();
   await expect(page.locator('#leadRequestPanel').getByRole('button', { name: 'Continue with Facebook' })).toBeVisible();
   await expect(page.locator('#leadRequestPanel').getByRole('button', { name: 'Continue with Email' })).toBeVisible();
+});
+
+test('mobile account Facebook login uses same-tab redirect with source and current step', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 800 });
+  await page.route('**/api/auth/facebook?**', async (route) => {
+    await route.fulfill({ status: 200, contentType: 'text/html', body: '<html><body>facebook auth</body></html>' });
+  });
+
+  await page.goto('http://127.0.0.1:3000/');
+  await page.waitForFunction(() => typeof window.showQuoteFlowStep === 'function');
+  await page.evaluate(() => {
+    window.setActiveView?.('quote');
+    window.showQuoteFlowStep?.('property', { scroll: false });
+  });
+
+  await page.locator('#mobileAuthBtn').click();
+  const facebookLink = page.locator('#authPanel .facebook-login-link');
+  await expect(facebookLink).toBeVisible();
+  await expect(facebookLink).toHaveCSS('pointer-events', 'auto');
+  await facebookLink.click();
+
+  await expect(page).toHaveURL(/\/api\/auth\/facebook\?source=account&step=property$/);
+});
+
+test('mobile checkout Facebook login saves auth context and redirects same-tab', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 800 });
+  await page.route('**/api/auth/facebook?**', async (route) => {
+    await route.fulfill({ status: 200, contentType: 'text/html', body: '<html><body>facebook auth</body></html>' });
+  });
+
+  await page.goto('http://127.0.0.1:3000/');
+  await page.waitForFunction(() => typeof window.showLeadRequestPanel === 'function');
+  await page.evaluate(() => {
+    window.setActiveView?.('quote');
+    window.showLeadRequestPanel?.({
+      estimate: 42,
+      mowAreaSqft: 5000,
+      lotAreaSqft: 7000,
+      serviceType: 'mowing',
+      regionId: 'nwa',
+      address: '123 Test St',
+      city: 'Fayetteville',
+      state: 'AR',
+      zip: '72701'
+    });
+  });
+
+  const facebookButton = page.locator('#leadRequestPanel').getByRole('button', { name: 'Continue with Facebook' });
+  await expect(facebookButton).toBeVisible();
+  await expect(facebookButton).toHaveCSS('pointer-events', 'auto');
+  await facebookButton.click();
+
+  await expect(page).toHaveURL(/\/api\/auth\/facebook\?source=checkout&step=request$/);
+  const savedContext = await page.evaluate(() => JSON.parse(localStorage.getItem('turflynk.authReturn.v1') || 'null'));
+  expect(savedContext?.source).toBe('checkout');
+  expect(savedContext?.step).toBe('request');
+  expect(savedContext?.quote?.serviceType).toBe('mowing');
+});
+
+test('desktop Facebook login starts auth without removing desktop support', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.route('**/api/auth/facebook?**', async (route) => {
+    await route.fulfill({ status: 200, contentType: 'text/html', body: '<html><body>facebook auth</body></html>' });
+  });
+
+  await page.goto('http://127.0.0.1:3000/');
+  await page.locator('#openAuth').click();
+  await expect(page.locator('#authPanel .facebook-login-link')).toBeVisible();
+  await page.locator('#authPanel .facebook-login-link').click();
+
+  await expect(page).toHaveURL(/\/api\/auth\/facebook\?source=account&step=property$/);
+});
+
+test('auth return restores saved quote request state and clears context', async ({ page }) => {
+  await page.route('**/api/auth/me', async (route) => {
+    await route.fulfill({
+      status: 200,
+      json: {
+        ok: true,
+        user: { id: 'fb-user-1', email: 'jane@example.com', fullName: 'Jane Doe', role: 'customer' }
+      }
+    });
+  });
+
+  const savedContext = {
+    step: 'request',
+    source: 'checkout',
+    quote: {
+      estimate: 42,
+      mowAreaSqft: 5000,
+      lotAreaSqft: 7000,
+      serviceType: 'mowing',
+      regionId: 'nwa',
+      address: '123 Test St',
+      city: 'Fayetteville',
+      state: 'AR',
+      zip: '72701'
+    },
+    quoteFormData: {
+      address: '123 Test St',
+      city: 'Fayetteville',
+      state: 'AR',
+      zip: '72701',
+      serviceType: 'mowing',
+      regionId: 'nwa'
+    },
+    customerFields: {
+      customerName: 'Jane Doe',
+      customerPhone: '479-555-1212',
+      customerEmail: 'jane@example.com',
+      notes: 'Gate code 1234',
+      preferredDate: '2026-05-05',
+      schedule_preference: 'next_week',
+      available_days_json: ['monday']
+    },
+    drawnGeoJSON: {
+      type: 'FeatureCollection',
+      features: [{
+        type: 'Feature',
+        properties: { role: 'mowable' },
+        geometry: {
+          type: 'Polygon',
+          coordinates: [[
+            [-94.21, 36.37],
+            [-94.20, 36.37],
+            [-94.20, 36.38],
+            [-94.21, 36.38],
+            [-94.21, 36.37]
+          ]]
+        }
+      }]
+    },
+    parcelGeoJSON: {
+      type: 'Feature',
+      properties: {},
+      geometry: {
+        type: 'Polygon',
+        coordinates: [[
+          [-94.211, 36.369],
+          [-94.199, 36.369],
+          [-94.199, 36.381],
+          [-94.211, 36.381],
+          [-94.211, 36.369]
+        ]]
+      }
+    },
+    savedAt: Date.now()
+  };
+
+  await page.addInitScript((context) => {
+    localStorage.setItem('turflynk.authReturn.v1', JSON.stringify(context));
+  }, savedContext);
+
+  await page.goto('http://127.0.0.1:3000/?auth=success&view=quote&step=request');
+
+  await expect(page.locator('#leadRequestPanel')).toBeVisible();
+  await expect(page.locator('body')).toHaveAttribute('data-quote-flow-step', 'request');
+  await expect(page.locator('#leadRequestForm input[name="customerName"]')).toHaveValue('Jane Doe');
+  await expect(page.locator('#leadRequestForm input[name="customerPhone"]')).toHaveValue('479-555-1212');
+  await expect(page.locator('#leadRequestForm textarea[name="notes"]')).toHaveValue('Gate code 1234');
+  await expect(page.locator('#quoteStartScreen')).toBeHidden();
+  await expect.poll(() => page.evaluate(() => localStorage.getItem('turflynk.authReturn.v1'))).toBeNull();
+});
+
+test('Facebook auth callback URL follows the active production host', async ({ request }) => {
+  for (const host of ['nwamow.com', 'mownwa.com', 'turflynk.com']) {
+    const res = await request.get('http://127.0.0.1:3000/api/auth/facebook?source=checkout&step=request', {
+      headers: {
+        Host: host,
+        'X-Forwarded-Proto': 'https'
+      },
+      maxRedirects: 0
+    });
+    expect(res.headers()['x-facebook-callback-url']).toBe(`https://${host}/api/auth/facebook/callback`);
+  }
 });
 
 test('booking/payment without phone is blocked before checkout', async ({ page }) => {

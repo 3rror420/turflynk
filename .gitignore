@@ -71,3 +71,6 @@ data/payments.json
 
 # Local source brand images
 /image/
+
+# Local vision service environment
+vision_service/.venv/

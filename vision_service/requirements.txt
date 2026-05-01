@@ -3,3 +3,7 @@ uvicorn
 shapely
 pyproj
 pydantic
+pillow
+numpy
+requests
+rasterio

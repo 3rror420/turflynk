@@ -11,6 +11,19 @@ import { createRequire } from "module";
 import { mkdirSync, readFileSync, writeFileSync, renameSync, existsSync } from "fs";
 
 // Load deployment config from the project root even when PM2 starts from another cwd.
+
+function normalizeParcelAreaSqft(attrs = {}) {
+  const raw =
+    Number(attrs.Shape__Area) ||
+    Number(attrs.shape__area) ||
+    Number(attrs.SHAPE__AREA) ||
+    Number(attrs.area) ||
+    0;
+
+  // Arkansas parcel service returns EPSG:26915 meters² here.
+  return raw > 0 ? Math.round(raw * 10.7639) : 0;
+}
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 dotenv.config({ path: path.join(__dirname, "..", ".env"), override: true });
@@ -52,12 +65,24 @@ const FACEBOOK_APP_ID = process.env.FACEBOOK_APP_ID || "";
 const FACEBOOK_APP_SECRET = process.env.FACEBOOK_APP_SECRET || "";
 const FACEBOOK_CALLBACK_URL =
   process.env.FACEBOOK_CALLBACK_URL ||
-  "https://mownwa.com/api/auth/facebook/callback";
-const EXPECTED_FACEBOOK_CALLBACK_URL = "https://mownwa.com/api/auth/facebook/callback";
+  `${APP_BASE_URL}/api/auth/facebook/callback`;
+const FACEBOOK_REQUIRED_CALLBACK_URLS = [
+  "https://nwamow.com/api/auth/facebook/callback",
+  "https://mownwa.com/api/auth/facebook/callback",
+  "https://turflynk.com/api/auth/facebook/callback"
+];
 const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || "https://mownwa.com").replace(/\/+$/, "");
 const FACEBOOK_DATA_DELETION_BASE_URL = "https://mownwa.com";
 const SESSION_COOKIE_NAME = "turflynk_session";
 const OAUTH_STATE_COOKIE_NAME = "turflynk_oauth_state";
+const DEFAULT_ALLOWED_APP_HOSTS = [
+  "nwamow.com",
+  "www.nwamow.com",
+  "mownwa.com",
+  "www.mownwa.com",
+  "turflynk.com",
+  "www.turflynk.com"
+];
 
 console.info("[Env] FACEBOOK_APP_ID loaded:", Boolean(FACEBOOK_APP_ID));
 console.info("[Env] FACEBOOK_APP_SECRET loaded:", Boolean(FACEBOOK_APP_SECRET));
@@ -118,6 +143,66 @@ function publicAppOrigin() {
     return `https://${domain}`;
   }
   return `http://localhost:${PORT}`;
+}
+
+function hostnameFromUrl(value) {
+  try {
+    return new URL(value).hostname.toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+function configuredAllowedAppHosts() {
+  const envHosts = String(process.env.ALLOWED_APP_HOSTS || process.env.APP_DOMAINS || "")
+    .split(",")
+    .map((host) => host.trim().toLowerCase())
+    .filter(Boolean);
+  const configuredHosts = [
+    PUBLIC_DOMAIN,
+    hostnameFromUrl(APP_BASE_URL),
+    hostnameFromUrl(PUBLIC_BASE_URL),
+    hostnameFromUrl(FACEBOOK_CALLBACK_URL),
+    ...FACEBOOK_REQUIRED_CALLBACK_URLS.map(hostnameFromUrl)
+  ]
+    .map((host) => String(host || "").replace(/^https?:\/\//, "").split("/")[0].split(":")[0].toLowerCase())
+    .filter(Boolean);
+  return new Set([...DEFAULT_ALLOWED_APP_HOSTS, ...configuredHosts, ...envHosts]);
+}
+
+function firstForwardedValue(value = "") {
+  return String(value || "").split(",")[0].trim();
+}
+
+function requestHost(req) {
+  return firstForwardedValue(req.headers["x-forwarded-host"] || req.headers.host || "")
+    .replace(/^https?:\/\//, "")
+    .replace(/\/+$/, "");
+}
+
+function isLocalAppHost(host = "") {
+  const hostname = String(host).split(":")[0].toLowerCase();
+  return ["localhost", "127.0.0.1", "::1"].includes(hostname);
+}
+
+function isAllowedAppHost(host = "") {
+  const hostname = String(host).split(":")[0].toLowerCase();
+  return isLocalAppHost(hostname) || configuredAllowedAppHosts().has(hostname);
+}
+
+function appOriginForRequest(req) {
+  const host = requestHost(req);
+  if (!host || !isAllowedAppHost(host)) return APP_BASE_URL;
+  const protoHeader = firstForwardedValue(req.headers["x-forwarded-proto"]);
+  const hostname = host.split(":")[0].toLowerCase();
+  const protocol = isLocalAppHost(hostname)
+    ? (protoHeader || req.protocol || "http")
+    : "https";
+  return `${protocol}://${host}`;
+}
+
+function facebookCallbackUrlForRequest(req) {
+  return `${appOriginForRequest(req)}/api/auth/facebook/callback`;
 }
 
 function stripeSecretKey() {
@@ -283,7 +368,7 @@ if (FACEBOOK_APP_ID && FACEBOOK_APP_SECRET) {
       clientID: FACEBOOK_APP_ID,
       clientSecret: FACEBOOK_APP_SECRET,
       callbackURL: FACEBOOK_CALLBACK_URL,
-      profileFields: ["id", "name", "email", "picture.type(large)"],
+      profileFields: ["id", "displayName", "emails", "photos"],
       passReqToCallback: true
     },
     (req, _accessToken, _refreshToken, profile, done) => {
@@ -297,7 +382,7 @@ if (FACEBOOK_APP_ID && FACEBOOK_APP_SECRET) {
       const avatarUrl = profile.photos?.[0]?.value || profile._json?.picture?.data?.url || "";
 
       console.info("[Facebook OAuth][Passport] verify callback ran", {
-        callbackURL: FACEBOOK_CALLBACK_URL,
+        callbackURL: req.session?.facebookCallbackURL || FACEBOOK_CALLBACK_URL,
         profilePresent: Boolean(profile),
         profileIdPresent: Boolean(profile?.id),
         emailPresent: Boolean(email),
@@ -372,13 +457,423 @@ function emptyFeatureCollection() {
   };
 }
 
-function mowableFallback(mode = "placeholder") {
+const SQFT_PER_SQM = 10.76391041671;
+const EARTH_RADIUS_M = 6378137;
+const AI_MOWABLE_FALLBACK_MESSAGE = "AI detection is not confident enough yet. Use Lasso Yard to quickly outline the mowable grass area.";
+const DEFAULT_SATELLITE_TILE_URL = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
+
+function toRadians(degrees) {
+  return Number(degrees) * Math.PI / 180;
+}
+
+function isFiniteLngLatPair(pair) {
+  return (
+    Array.isArray(pair) &&
+    pair.length >= 2 &&
+    Number.isFinite(Number(pair[0])) &&
+    Number.isFinite(Number(pair[1]))
+  );
+}
+
+function closeRingIfNeeded(ring) {
+  if (!Array.isArray(ring) || ring.length < 3 || !ring.every(isFiniteLngLatPair)) return null;
+  const normalized = ring.map((pair) => [Number(pair[0]), Number(pair[1])]);
+  const first = normalized[0];
+  const last = normalized[normalized.length - 1];
+  if (first[0] !== last[0] || first[1] !== last[1]) {
+    normalized.push([first[0], first[1]]);
+  }
+  return normalized.length >= 4 ? normalized : null;
+}
+
+function normalizePolygonCoordinates(coordinates) {
+  if (!Array.isArray(coordinates)) return null;
+  const rings = coordinates.map(closeRingIfNeeded).filter(Boolean);
+  return rings.length ? rings : null;
+}
+
+function normalizeMowableGeometry(geometry) {
+  if (!geometry || typeof geometry !== "object") return null;
+
+  if (geometry.type === "Polygon") {
+    const coordinates = normalizePolygonCoordinates(geometry.coordinates);
+    return coordinates ? { type: "Polygon", coordinates } : null;
+  }
+
+  if (geometry.type === "MultiPolygon" && Array.isArray(geometry.coordinates)) {
+    const coordinates = geometry.coordinates
+      .map(normalizePolygonCoordinates)
+      .filter(Boolean);
+    return coordinates.length ? { type: "MultiPolygon", coordinates } : null;
+  }
+
+  return null;
+}
+
+function normalizeMowableFeature(value, properties = {}) {
+  if (!value || typeof value !== "object") return null;
+  const feature = value.type === "Feature"
+    ? value
+    : { type: "Feature", properties: {}, geometry: value };
+  const geometry = normalizeMowableGeometry(feature.geometry);
+  if (!geometry) return null;
   return {
+    type: "Feature",
+    properties: {
+      ...(feature.properties || {}),
+      ...properties
+    },
+    geometry
+  };
+}
+
+function featuresFromGeoJson(value, properties = {}) {
+  if (!value || typeof value !== "object") return [];
+  if (value.type === "FeatureCollection" && Array.isArray(value.features)) {
+    return value.features
+      .map((feature) => normalizeMowableFeature(feature, properties))
+      .filter(Boolean);
+  }
+  const feature = normalizeMowableFeature(value, properties);
+  return feature ? [feature] : [];
+}
+
+function ringAreaSqm(ring) {
+  if (!Array.isArray(ring) || ring.length < 4) return 0;
+  let area = 0;
+  for (let i = 0; i < ring.length - 1; i += 1) {
+    const [lng1, lat1] = ring[i];
+    const [lng2, lat2] = ring[i + 1];
+    area += (toRadians(lng2) - toRadians(lng1)) * (2 + Math.sin(toRadians(lat1)) + Math.sin(toRadians(lat2)));
+  }
+  return (area * EARTH_RADIUS_M * EARTH_RADIUS_M) / 2;
+}
+
+function polygonAreaSqm(coordinates) {
+  if (!Array.isArray(coordinates) || !coordinates.length) return 0;
+  const outer = Math.abs(ringAreaSqm(coordinates[0]));
+  const holes = coordinates.slice(1).reduce((sum, ring) => sum + Math.abs(ringAreaSqm(ring)), 0);
+  return Math.max(0, outer - holes);
+}
+
+function geometryAreaSqft(geometry) {
+  if (!geometry) return 0;
+  if (geometry.type === "Polygon") return polygonAreaSqm(geometry.coordinates) * SQFT_PER_SQM;
+  if (geometry.type === "MultiPolygon") {
+    return geometry.coordinates.reduce((sum, polygon) => sum + polygonAreaSqm(polygon), 0) * SQFT_PER_SQM;
+  }
+  return 0;
+}
+
+function featureCollectionAreaSqft(collection) {
+  return Math.round((collection?.features || []).reduce((sum, feature) => {
+    return sum + geometryAreaSqft(feature.geometry);
+  }, 0));
+}
+
+function coordinatePairsFromGeometry(geometry) {
+  const pairs = [];
+  const visit = (value) => {
+    if (!Array.isArray(value)) return;
+    if (isFiniteLngLatPair(value)) {
+      pairs.push([Number(value[0]), Number(value[1])]);
+      return;
+    }
+    value.forEach(visit);
+  };
+  visit(geometry?.coordinates);
+  return pairs;
+}
+
+function geometryBbox(geometry) {
+  const pairs = coordinatePairsFromGeometry(geometry);
+  if (!pairs.length) return null;
+  return pairs.reduce((bbox, [lng, lat]) => {
+    bbox[0] = Math.min(bbox[0], lng);
+    bbox[1] = Math.min(bbox[1], lat);
+    bbox[2] = Math.max(bbox[2], lng);
+    bbox[3] = Math.max(bbox[3], lat);
+    return bbox;
+  }, [Infinity, Infinity, -Infinity, -Infinity]);
+}
+
+function featureCollectionBbox(collection) {
+  const boxes = (collection?.features || [])
+    .map((feature) => geometryBbox(feature.geometry))
+    .filter(Boolean);
+  if (!boxes.length) return null;
+  return boxes.reduce((bbox, box) => {
+    bbox[0] = Math.min(bbox[0], box[0]);
+    bbox[1] = Math.min(bbox[1], box[1]);
+    bbox[2] = Math.max(bbox[2], box[2]);
+    bbox[3] = Math.max(bbox[3], box[3]);
+    return bbox;
+  }, [Infinity, Infinity, -Infinity, -Infinity]);
+}
+
+function bboxesApproximatelyEqual(a, b) {
+  if (!a || !b) return false;
+  const span = Math.max(Math.abs(a[2] - a[0]), Math.abs(a[3] - a[1]), Math.abs(b[2] - b[0]), Math.abs(b[3] - b[1]), 0.000001);
+  const tolerance = Math.max(span * 0.02, 0.000001);
+  return a.every((value, index) => Math.abs(value - b[index]) <= tolerance);
+}
+
+function featureCollectionsApproximatelyEqual(a, b, aAreaSqft, bAreaSqft) {
+  if (!aAreaSqft || !bAreaSqft) return false;
+  const ratio = aAreaSqft / bAreaSqft;
+  return ratio >= 0.95 && ratio <= 1.05 && bboxesApproximatelyEqual(featureCollectionBbox(a), featureCollectionBbox(b));
+}
+
+function bboxSimilarity(a, b) {
+  if (!a || !b) return 0;
+  const span = Math.max(Math.abs(b[2] - b[0]), Math.abs(b[3] - b[1]), 0.000001);
+  const edgeError = a.reduce((sum, value, index) => sum + Math.abs(value - b[index]), 0) / (span * 4);
+  return Math.max(0, Math.min(1, 1 - edgeError));
+}
+
+function parcelBoundarySimilarity(collection, parcelCollection, detectedAreaSqft, parcelAreaSqft) {
+  if (!collection || !parcelCollection || !detectedAreaSqft || !parcelAreaSqft) return 0;
+  const ratio = detectedAreaSqft / parcelAreaSqft;
+  const areaSimilarity = Math.max(0, Math.min(1, 1 - Math.abs(1 - ratio)));
+  const boxSimilarity = bboxSimilarity(featureCollectionBbox(collection), featureCollectionBbox(parcelCollection));
+  return Math.max(0, Math.min(1, (areaSimilarity * 0.65) + (boxSimilarity * 0.35)));
+}
+
+function geometryHasInteriorRings(geometry) {
+  if (!geometry) return false;
+  if (geometry.type === "Polygon") return Array.isArray(geometry.coordinates) && geometry.coordinates.length > 1;
+  if (geometry.type === "MultiPolygon") {
+    return (geometry.coordinates || []).some((polygon) => Array.isArray(polygon) && polygon.length > 1);
+  }
+  return false;
+}
+
+function detectionExclusionEvidence(normalized, visionDiagnostics = {}, detectedRatio = 0, boundarySimilarity = 0) {
+  const rejectedComponents = Array.isArray(visionDiagnostics.rejectedComponents) ? visionDiagnostics.rejectedComponents : [];
+  const removedComponents = rejectedComponents.length > 0;
+  const holes = (normalized?.features || []).some((feature) => geometryHasInteriorRings(feature.geometry));
+  const reducedArea = detectedRatio > 0 && detectedRatio <= 0.92 && boundarySimilarity < 0.95;
+  const hardscapeExcluded = Number(visionDiagnostics.hardscapePixels || 0) > 0
+    || Number(visionDiagnostics.hardscapeExcludedAreaSqft || 0) > 0;
+  return {
+    present: Boolean(removedComponents || holes || reducedArea || hardscapeExcluded),
+    holes,
+    removedComponents,
+    reducedArea,
+    hardscapeExcluded
+  };
+}
+
+function fallbackishSource(value) {
+  const source = String(value || "").toLowerCase();
+  return ["fallback", "parcel", "copy", "placeholder", "draft"].some((token) => source.includes(token));
+}
+
+function detectionUsesFallbackSource(result) {
+  if (!result) return false;
+  if (fallbackishSource(result.source) || fallbackishSource(result.mode)) return true;
+  return (result.features || []).some((feature) => {
+    const props = feature.properties || {};
+    return props.draft === true || fallbackishSource(props.source) || fallbackishSource(props.mode);
+  });
+}
+
+function numericConfidence(payload = {}) {
+  const value = Number(payload.confidenceScore ?? payload.score ?? payload.modelConfidence ?? payload.mowableConfidence ?? payload.diagnostics?.confidenceScore ?? payload.diagnostic?.confidenceScore ?? payload.confidence);
+  return Number.isFinite(value) ? value : null;
+}
+
+function compactAiDetectDiagnostics(value = {}) {
+  const detectedRatio = Number(value.detectedRatio);
+  const confidence = Number(value.confidenceScore ?? value.confidence);
+  const hardscapePixels = Number(value.hardscapePixels);
+  const vegetationCandidatePixels = Number(value.vegetationCandidatePixels);
+  const hardscapeExcludedAreaSqft = Number(value.hardscapeExcludedAreaSqft);
+  const vegetationCandidateAreaSqft = Number(value.vegetationCandidateAreaSqft);
+  const finalSelectedAreaSqft = Number(value.finalSelectedAreaSqft);
+  const vegetationPixels = Number(value.vegetationPixels);
+  const polygonCount = Number(value.polygonCount);
+  const ndviThreshold = Number(value.ndviThreshold);
+  const visibleThreshold = Number(value.visibleThreshold);
+  const excessGreenMin = Number(value.excessGreenMin);
+  const saturationMin = Number(value.saturationMin);
+  const brightnessMin = Number(value.brightnessMin);
+  const dynamicBrightnessMin = Number(value.dynamicBrightnessMin);
+  const textureScore = Number(value.textureScore);
+  const textureThreshold = Number(value.textureThreshold);
+  const canopyRejectedPixels = Number(value.canopyRejectedPixels);
+  const keptComponentCount = Number(value.keptComponentCount);
+  const rejectedSmallComponents = Number(value.rejectedSmallComponents);
+  const rejectedWoodsLikeComponents = Number(value.rejectedWoodsLikeComponents);
+  const parcelSimilarity = Number(value.parcelBoundarySimilarity ?? value.parcelSimilarity);
+  const strictDetectedRatio = Number(value.strictDetectedRatio);
+  const softDetectedRatio = Number(value.softDetectedRatio);
+  return {
+    reason: value.reason || "",
+    guardrailReason: value.guardrailReason || value.reason || "",
+    highRatioAllowed: value.highRatioAllowed === true,
+    parcelBoundarySimilarity: Number.isFinite(parcelSimilarity) ? parcelSimilarity : null,
+    exclusionEvidence: value.exclusionEvidence || null,
+    detectedRatio: Number.isFinite(detectedRatio) ? detectedRatio : 0,
+    confidence: Number.isFinite(confidence) ? confidence : null,
+    confidenceLabel: typeof value.confidence === "string" ? value.confidence : (value.confidenceLabel || null),
+    detection_mode: value.detection_mode || value.detectionMode || "",
+    mode: value.mode || "",
+    usedNir: value.usedNir,
+    vegetationPixels: Number.isFinite(vegetationPixels) ? vegetationPixels : 0,
+    polygonCount: Number.isFinite(polygonCount) ? polygonCount : 0,
+    ndviThreshold: Number.isFinite(ndviThreshold) ? ndviThreshold : null,
+    rgbFilterUsed: value.rgbFilterUsed,
+    visibleThreshold: Number.isFinite(visibleThreshold) ? visibleThreshold : null,
+    excessGreenMin: Number.isFinite(excessGreenMin) ? excessGreenMin : null,
+    saturationMin: Number.isFinite(saturationMin) ? saturationMin : null,
+    brightnessMin: Number.isFinite(brightnessMin) ? brightnessMin : null,
+    dynamicBrightnessMin: Number.isFinite(dynamicBrightnessMin) ? dynamicBrightnessMin : null,
+    brightnessRange: Array.isArray(value.brightnessRange) ? value.brightnessRange : null,
+    textureScore: Number.isFinite(textureScore) ? textureScore : null,
+    textureThreshold: Number.isFinite(textureThreshold) ? textureThreshold : null,
+    canopyRejectedPixels: Number.isFinite(canopyRejectedPixels) ? canopyRejectedPixels : 0,
+    hardscapePixels: Number.isFinite(hardscapePixels) ? hardscapePixels : 0,
+    hardscapeSeedPixels: Number.isFinite(Number(value.hardscapeSeedPixels)) ? Number(value.hardscapeSeedPixels) : 0,
+    waterOrPoolPixels: Number.isFinite(Number(value.waterOrPoolPixels)) ? Number(value.waterOrPoolPixels) : 0,
+    vegetationCandidatePixels: Number.isFinite(vegetationCandidatePixels) ? vegetationCandidatePixels : 0,
+    validPixels: Number.isFinite(Number(value.validPixels)) ? Number(value.validPixels) : 0,
+    hardscapeExcludedAreaSqft: Number.isFinite(hardscapeExcludedAreaSqft) ? hardscapeExcludedAreaSqft : 0,
+    vegetationCandidateAreaSqft: Number.isFinite(vegetationCandidateAreaSqft) ? vegetationCandidateAreaSqft : 0,
+    finalSelectedAreaSqft: Number.isFinite(finalSelectedAreaSqft) ? finalSelectedAreaSqft : null,
+    hardscapeRules: value.hardscapeRules || null,
+    lowConfidenceCandidateReturned: value.lowConfidenceCandidateReturned === true,
+    keptComponentCount: Number.isFinite(keptComponentCount) ? keptComponentCount : null,
+    rejectedSmallComponents: Number.isFinite(rejectedSmallComponents) ? rejectedSmallComponents : 0,
+    rejectedWoodsLikeComponents: Number.isFinite(rejectedWoodsLikeComponents) ? rejectedWoodsLikeComponents : 0,
+    strictDetectedRatio: Number.isFinite(strictDetectedRatio) ? strictDetectedRatio : null,
+    softDetectedRatio: Number.isFinite(softDetectedRatio) ? softDetectedRatio : null,
+    fallbackSoftMaskUsed: value.fallbackSoftMaskUsed === true,
+    componentAreas: Array.isArray(value.componentAreas) ? value.componentAreas : [],
+    rejectedComponents: Array.isArray(value.rejectedComponents) ? value.rejectedComponents : [],
+    candidateScores: Array.isArray(value.candidateScores) ? value.candidateScores : [],
+    selectedCandidateScores: Array.isArray(value.selectedCandidateScores) ? value.selectedCandidateScores : [],
+    debugRunDir: value.debugRunDir || null,
+    debugArtifacts: value.debugArtifacts || null,
+    rasterWidth: value.rasterWidth ?? null,
+    rasterHeight: value.rasterHeight ?? null,
+    rasterCrs: value.rasterCrs || null,
+    rasterTransform: value.rasterTransform || null,
+    rasterBandCount: value.rasterBandCount ?? value.rasterBands ?? null,
+    bandStats: value.bandStats || [],
+    bandOrderAssumption: value.bandOrderAssumption || null,
+    ndviStats: value.ndviStats || null,
+    maskPixelCountBeforeFiltering: value.maskPixelCountBeforeFiltering ?? null,
+    maskPixelCountAfterFiltering: value.maskPixelCountAfterFiltering ?? null,
+    polygonCountBeforeFiltering: value.polygonCountBeforeFiltering ?? null,
+    polygonCountAfterFiltering: value.polygonCountAfterFiltering ?? null,
+    naipNirWarning: value.naipNirWarning || ""
+  };
+}
+
+function diagnosticsFromVisionPayload(payload = {}) {
+  return compactAiDetectDiagnostics(payload?.diagnostics || payload?.diagnostic || payload || {});
+}
+
+function shouldReturnAiDetectDiagnostics(req, body = {}, forceDiagnostics = false) {
+  if (req.path === "/api/ai/detect-mowable" || req.originalUrl?.includes("/api/ai/detect-mowable")) return true;
+  if (forceDiagnostics) return true;
+  const debugFlag = String(body.debug ?? req.query?.debug ?? process.env.AI_DETECT_DEBUG ?? "").toLowerCase();
+  return process.env.NODE_ENV !== "production" || ["1", "true", "yes", "on"].includes(debugFlag);
+}
+
+function logVisionDiagnostics(diagnostics = {}) {
+  console.log(`[AI Detect] vision diagnostics=${JSON.stringify(compactAiDetectDiagnostics(diagnostics))}`);
+}
+
+function emptyMowableDetection(reason, metrics = {}) {
+  const parcelAreaSqft = Number(metrics.parcelAreaSqft || 0);
+  const detectedAreaSqft = Number(metrics.detectedAreaSqft || 0);
+  const detectedRatio = parcelAreaSqft > 0 ? detectedAreaSqft / parcelAreaSqft : 0;
+  const diagnostics = compactAiDetectDiagnostics({
+    ...(metrics.visionDiagnostics || metrics.diagnostics || {}),
+    reason,
+    detectedRatio,
+    confidence: metrics.confidence ?? metrics.visionDiagnostics?.confidence ?? metrics.diagnostics?.confidence,
+    mode: metrics.mode ?? metrics.visionDiagnostics?.mode ?? metrics.diagnostics?.mode,
+    usedNir: metrics.usedNir ?? metrics.visionDiagnostics?.usedNir ?? metrics.diagnostics?.usedNir,
+    vegetationPixels: metrics.vegetationPixels ?? metrics.visionDiagnostics?.vegetationPixels ?? metrics.diagnostics?.vegetationPixels,
+    polygonCount: metrics.polygonCount ?? metrics.visionDiagnostics?.polygonCount ?? metrics.diagnostics?.polygonCount,
+    ndviThreshold: metrics.ndviThreshold ?? metrics.visionDiagnostics?.ndviThreshold ?? metrics.diagnostics?.ndviThreshold,
+    rgbFilterUsed: metrics.rgbFilterUsed ?? metrics.visionDiagnostics?.rgbFilterUsed ?? metrics.diagnostics?.rgbFilterUsed,
+    visibleThreshold: metrics.visibleThreshold ?? metrics.visionDiagnostics?.visibleThreshold ?? metrics.diagnostics?.visibleThreshold,
+    excessGreenMin: metrics.excessGreenMin ?? metrics.visionDiagnostics?.excessGreenMin ?? metrics.diagnostics?.excessGreenMin,
+    saturationMin: metrics.saturationMin ?? metrics.visionDiagnostics?.saturationMin ?? metrics.diagnostics?.saturationMin,
+    brightnessMin: metrics.brightnessMin ?? metrics.visionDiagnostics?.brightnessMin ?? metrics.diagnostics?.brightnessMin,
+    componentAreas: metrics.componentAreas ?? metrics.visionDiagnostics?.componentAreas ?? metrics.diagnostics?.componentAreas,
+    rejectedComponents: metrics.rejectedComponents ?? metrics.visionDiagnostics?.rejectedComponents ?? metrics.diagnostics?.rejectedComponents,
+    candidateScores: metrics.candidateScores ?? metrics.visionDiagnostics?.candidateScores ?? metrics.diagnostics?.candidateScores,
+    highRatioAllowed: metrics.highRatioAllowed ?? metrics.visionDiagnostics?.highRatioAllowed ?? metrics.diagnostics?.highRatioAllowed,
+    parcelBoundarySimilarity: metrics.parcelBoundarySimilarity ?? metrics.visionDiagnostics?.parcelBoundarySimilarity ?? metrics.diagnostics?.parcelBoundarySimilarity,
+    exclusionEvidence: metrics.exclusionEvidence ?? metrics.visionDiagnostics?.exclusionEvidence ?? metrics.diagnostics?.exclusionEvidence,
+    guardrailReason: metrics.guardrailReason ?? reason
+  });
+  if (metrics.featuresReturned !== undefined) {
+    console.log(`[AI Detect] features returned=${Number(metrics.featuresReturned || 0)}`);
+  }
+  console.log(`[AI Detect] parcelAreaSqft=${Math.round(parcelAreaSqft)}`);
+  console.log(`[AI Detect] detectedAreaSqft=${Math.round(detectedAreaSqft)}`);
+  console.log(`[AI Detect] detectedRatio=${detectedRatio.toFixed(4)}`);
+  console.log(`[AI Detect] final reject reason=${reason}`);
+  console.log(`[AI Detect] accepted/rejected reason=${reason}`);
+  const response = {
     ok: true,
     featureCollection: emptyFeatureCollection(),
-    areaSqft: 0,
-    mode
+    features: [],
+    mowableAreaSqft: 0,
+    parcelAreaSqft: Math.round(parcelAreaSqft),
+    detectedAreaSqft: Math.round(detectedAreaSqft),
+    detectedRatio,
+    source: metrics.source || "none",
+    message: AI_MOWABLE_FALLBACK_MESSAGE,
+    warning: AI_MOWABLE_FALLBACK_MESSAGE,
+    reason
   };
+  if (metrics.includeDiagnostics) {
+    response.diagnostics = diagnostics;
+  }
+  return response;
+}
+
+function featureCountFromPayload(payload = {}) {
+  if (!payload || typeof payload !== "object") return 0;
+  if (isFeatureCollection(payload.featureCollection)) return payload.featureCollection.features.length;
+  if (Array.isArray(payload.features)) return payload.features.length;
+  if (Array.isArray(payload.polygons)) return payload.polygons.length;
+  return 0;
+}
+
+async function checkVisionServiceStatus(visionServiceUrl) {
+  try {
+    const response = await fetchWithTimeout(`${visionServiceUrl}/health`, {
+      method: "GET",
+      headers: { Accept: "application/json" }
+    }, 2500);
+    const payload = await response.json().catch(() => ({}));
+    const status = response.ok && payload?.ok !== false ? "available" : `unavailable_http_${response.status}`;
+    console.log(`[AI Detect] vision service status=${status}`);
+    if (status !== "available") {
+      console.log("[AI Detect] vision service unavailable");
+    }
+    return {
+      available: response.ok && payload?.ok !== false,
+      status,
+      payload
+    };
+  } catch (err) {
+    console.log(`[AI Detect] vision service status=unavailable error=${err.message}`);
+    console.log("[AI Detect] vision service unavailable");
+    return {
+      available: false,
+      status: "unavailable",
+      error: err
+    };
+  }
 }
 
 function isFeatureCollection(value) {
@@ -390,81 +885,299 @@ function isFeatureCollection(value) {
   );
 }
 
-function normalizeMowableResponse(payload = {}) {
-  if (payload.ok !== true) return null;
-
+function normalizedMowableCollectionFromPayload(payload = {}) {
   if (isFeatureCollection(payload.featureCollection)) {
     return {
-      ok: true,
-      featureCollection: payload.featureCollection,
-      areaSqft: Number(payload.areaSqft || payload.mowableAreaSqFt || 0),
-      mode: payload.mode || payload.diagnostics?.mode || "ai"
+      type: "FeatureCollection",
+      features: featuresFromGeoJson(payload.featureCollection, { source: payload.source || "vision" })
+    };
+  }
+
+  if (Array.isArray(payload.features)) {
+    return {
+      type: "FeatureCollection",
+      features: payload.features
+        .map((feature) => normalizeMowableFeature(feature, { source: payload.source || "vision" }))
+        .filter(Boolean)
     };
   }
 
   if (Array.isArray(payload.polygons)) {
     return {
-      ok: true,
-      featureCollection: {
-        type: "FeatureCollection",
-        features: payload.polygons
-          .filter((geometry) => geometry && typeof geometry === "object")
-          .map((geometry) => ({
-            type: "Feature",
-            properties: { source: "vision_service" },
-            geometry
-          }))
-      },
-      areaSqft: Number(payload.areaSqft || payload.mowableAreaSqFt || 0),
-      mode: payload.mode || payload.diagnostics?.mode || "ai"
+      type: "FeatureCollection",
+      features: payload.polygons
+        .map((geometry) => normalizeMowableFeature(geometry, { source: payload.source || "vision_service" }))
+        .filter(Boolean)
     };
   }
 
   return null;
 }
 
-app.post("/api/ai/detect-mowable", async (req, res) => {
-  const body = req.body || {};
-  const visionServiceUrl = (process.env.VISION_SERVICE_URL || "").replace(/\/+$/, "");
+function normalizeMowableResponse(payload = {}) {
+  if (!payload || typeof payload !== "object" || payload.ok === false) return null;
 
-  if (!visionServiceUrl) {
-    return res.json(mowableFallback("placeholder"));
+  const featureCollection = normalizedMowableCollectionFromPayload(payload);
+  if (!featureCollection || !featureCollection.features.length) return null;
+
+  const source = payload.source || (payload.mode === "vision-placeholder" ? "fallback" : "vision");
+  featureCollection.features = featureCollection.features.map((feature) => ({
+    ...feature,
+    properties: {
+      ...(feature.properties || {}),
+      source
+    }
+  }));
+  const mowableAreaSqft = Number(
+    payload.mowableAreaSqft ||
+    payload.mowableAreaSqFt ||
+    payload.areaSqft ||
+    payload.areaSqFt ||
+    0
+  ) || featureCollectionAreaSqft(featureCollection);
+  const confidenceScore = numericConfidence(payload);
+  const confidenceLabel = typeof payload.confidence === "string"
+    ? payload.confidence
+    : confidenceScore >= 0.68
+      ? "beta_high"
+      : confidenceScore >= 0.42
+        ? "beta_medium"
+        : "beta_low";
+  return {
+    ok: true,
+    featureCollection,
+    features: featureCollection.features,
+    mowableAreaSqft,
+    source,
+    mode: payload.mode,
+    detection_mode: payload.detection_mode || payload.detectionMode || payload.mode,
+    confidence: confidenceLabel,
+    confidenceScore,
+    warning: payload.warning || (source === "fallback" ? "Vision service unavailable; using parcel-based draft." : undefined)
+  };
+}
+
+function guardrailForMowableDetection(normalized, parcelCollection, parcelAreaSqft, detectedAreaSqft, payload = {}, visionDiagnostics = {}) {
+  const detectedRatio = parcelAreaSqft > 0 ? detectedAreaSqft / parcelAreaSqft : 0;
+  const confidence = normalized?.confidenceScore ?? numericConfidence(payload);
+  const boundarySimilarity = normalized
+    ? parcelBoundarySimilarity(normalized.featureCollection, parcelCollection, detectedAreaSqft, parcelAreaSqft)
+    : 0;
+  const exclusionEvidence = detectionExclusionEvidence(normalized, visionDiagnostics, detectedRatio, boundarySimilarity);
+  const isLargeParcel = parcelAreaSqft > 43560;
+  const roughCandidateAllowed = Boolean(visionDiagnostics?.lowConfidenceCandidateReturned)
+    && (exclusionEvidence.present || isLargeParcel)
+    && detectedRatio > 0.01
+    && detectedRatio <= 0.97
+    && boundarySimilarity < 0.99;
+  if (roughCandidateAllowed) {
+    console.log(`[AI Detect] roughCandidateAllowed=true isLargeParcel=${isLargeParcel} detectedRatio=${detectedRatio.toFixed(4)} boundarySimilarity=${Number(boundarySimilarity).toFixed(4)}`);
+  }
+  let reason = "";
+  let highRatioAllowed = false;
+  const allowMostlyFailedManualReview =
+    String(normalized?.confidence || payload?.confidence || visionDiagnostics?.confidenceLabel || "").toLowerCase() === "beta_low" ||
+    Boolean(visionDiagnostics?.lowConfidenceCandidateReturned) ||
+    Number(normalized?.confidenceScore ?? payload?.confidenceScore ?? visionDiagnostics?.confidenceScore ?? confidence ?? 0) <= 0.42;
+
+  if (!normalized || !Array.isArray(normalized.features) || !normalized.features.length) {
+    reason = "no features";
+  } else if (detectedAreaSqft <= 0) {
+    reason = "non-positive area";
+  } else if (detectedRatio > 0 && detectedRatio < 0.02) {
+    reason = "extremely small detection";
+  } else if (detectionUsesFallbackSource(normalized)) {
+    reason = "parcel-sized fallback";
+  } else if (detectedRatio > 0.95 && !roughCandidateAllowed) {
+    reason = "detected ratio above hard limit";
+  } else if (
+    (boundarySimilarity >= 0.97 ||
+    featureCollectionsApproximatelyEqual(normalized.featureCollection, parcelCollection, detectedAreaSqft, parcelAreaSqft))
+    && !allowMostlyFailedManualReview
+  ) {
+    reason = "detected geometry matched the full parcel";
+  } else if (
+    (boundarySimilarity >= 0.97 ||
+    featureCollectionsApproximatelyEqual(normalized.featureCollection, parcelCollection, detectedAreaSqft, parcelAreaSqft))
+    && allowMostlyFailedManualReview
+  ) {
+    reason = "";
+  } else if (detectedRatio >= 0.70 && detectedRatio <= 0.92) {
+    highRatioAllowed = roughCandidateAllowed || (confidence !== null && confidence >= 0.45 && boundarySimilarity < 0.95 && exclusionEvidence.present);
+    if (!highRatioAllowed) {
+      reason = "high detected ratio without enough exclusion evidence";
+    }
+  } else if (detectedRatio > 0.92 && !roughCandidateAllowed) {
+    reason = "high detected ratio";
+  } else if (confidence !== null && confidence < 0.35 && !roughCandidateAllowed) {
+    reason = "low confidence";
   }
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 8000);
+  return {
+    reason,
+    highRatioAllowed,
+    parcelBoundarySimilarity: Number(boundarySimilarity.toFixed(4)),
+    exclusionEvidence,
+    guardrailReason: reason
+  };
+}
+
+function rejectionReasonForMowableDetection(normalized, parcelCollection, parcelAreaSqft, detectedAreaSqft, payload = {}) {
+  return guardrailForMowableDetection(normalized, parcelCollection, parcelAreaSqft, detectedAreaSqft, payload).reason;
+}
+
+async function handleAiDetectMowable(req, res, options = {}) {
+  console.log("[AI Detect] request received");
+  const body = req.body || {};
+  const includeDiagnostics = shouldReturnAiDetectDiagnostics(req, body, Boolean(options.forceDiagnostics));
+  const parcelGeoJson = body.parcelGeoJson || body.parcelGeoJSON || body.parcelFeature || body.feature;
+  const parcelFeatures = featuresFromGeoJson(parcelGeoJson);
+
+  if (!parcelFeatures.length) {
+    console.log("[AI Detect] rejected reason=missing parcel geometry");
+    console.log("[AI Detect] final reject reason=missing parcel geometry");
+    console.log("[AI Detect] accepted/rejected reason=missing parcel geometry");
+    return res.status(400).json({ ok: false, error: "parcelGeoJson with Polygon or MultiPolygon geometry is required." });
+  }
+
+  const validatedParcelGeoJson = {
+    type: "FeatureCollection",
+    features: parcelFeatures
+  };
+  const parcelAreaSqft = featureCollectionAreaSqft(validatedParcelGeoJson);
+  const visionServiceUrl = (process.env.VISION_SERVICE_URL || "http://127.0.0.1:8017").replace(/\/+$/, "");
+  const visionStatus = await checkVisionServiceStatus(visionServiceUrl);
+
+  if (!visionStatus.available) {
+    return res.json(emptyMowableDetection("vision service unavailable", {
+      parcelAreaSqft,
+      source: "vision_unavailable",
+      featuresReturned: 0,
+      includeDiagnostics,
+      diagnostics: { reason: "vision service unavailable" }
+    }));
+  }
 
   try {
-    const upstream = await fetch(`${visionServiceUrl}/detect-mowable`, {
+    const isLargeParcelRequest = parcelAreaSqft > 43560;
+    const visionTimeoutMs = isLargeParcelRequest ? 120000 : 60000;
+    console.log(`[AI Detect] parcelAreaSqft=${Math.round(parcelAreaSqft)} isLargeParcel=${isLargeParcelRequest} timeoutMs=${visionTimeoutMs}`);
+    const upstream = await fetchWithTimeout(`${visionServiceUrl}/detect-mowable`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        parcelGeoJson: body.parcelGeoJson,
+        parcelGeoJson: validatedParcelGeoJson,
+        parcelFeature: body.parcelFeature || parcelFeatures[0],
+        address: body.address || body.parcelAddress || body.serviceAddress || "",
         center: body.center,
+        lat: body.lat,
+        lng: body.lng,
         zoom: body.zoom,
-        source: body.source
-      }),
-      signal: controller.signal
-    });
+        source: body.source || "maplibre",
+        debugArtifacts: Boolean(options.debugArtifacts || body.debugArtifacts),
+        imageSource: body.imageSource || {
+          type: "tile",
+          provider: "esri-world-imagery",
+          tileUrl: DEFAULT_SATELLITE_TILE_URL
+        }
+      })
+    }, visionTimeoutMs);
+    console.log(`[AI Detect] vision service status=post_${upstream.status}`);
+    console.log(`[AI Detect] vision response ok=${upstream.ok}`);
 
     if (!upstream.ok) {
-      return res.json(mowableFallback("ai-unavailable"));
+      console.log(`[AI Detect] vision service status=upstream_http_${upstream.status}`);
+      console.log("[AI Detect] vision service unavailable");
+      console.log("[AI Detect] features returned=0");
+      return res.json(emptyMowableDetection("vision service unavailable", {
+        parcelAreaSqft,
+        source: "upstream_unavailable",
+        featuresReturned: 0,
+        includeDiagnostics,
+        diagnostics: { reason: "vision service unavailable" }
+      }));
     }
 
     const payload = await upstream.json().catch(() => null);
+    console.log(`[AI Detect] vision response ok=${payload?.ok !== false}`);
+    const visionDiagnostics = diagnosticsFromVisionPayload(payload || {});
+    logVisionDiagnostics(visionDiagnostics);
+    const featuresReturned = featureCountFromPayload(payload);
+    console.log(`[AI Detect] features returned=${featuresReturned}`);
     const normalized = normalizeMowableResponse(payload);
+    const detectedAreaSqft = normalized ? featureCollectionAreaSqft(normalized.featureCollection) : 0;
+    const guardrail = guardrailForMowableDetection(
+      normalized,
+      validatedParcelGeoJson,
+      parcelAreaSqft,
+      detectedAreaSqft,
+      payload || {},
+      visionDiagnostics
+    );
+    const rejectionReason = guardrail.reason;
+    console.log(`[AI Detect] guardrail reason=${rejectionReason || "none"} boundarySimilarity=${guardrail.parcelBoundarySimilarity} highRatioAllowed=${guardrail.highRatioAllowed} lowConfCandidateReturned=${visionDiagnostics?.lowConfidenceCandidateReturned}`);
+    console.log(`[AI Detect] selectedCandidate=${JSON.stringify(visionDiagnostics?.selectedCandidate || {})}`);
 
-    if (!normalized) {
-      return res.json(mowableFallback("ai-unavailable"));
+    if (rejectionReason) {
+      console.log(`[AI Detect] REJECTED: reason=${rejectionReason} detectedRatio=${(parcelAreaSqft > 0 ? detectedAreaSqft / parcelAreaSqft : 0).toFixed(4)} parcelAreaSqft=${Math.round(parcelAreaSqft)}`);
+      return res.json(emptyMowableDetection(rejectionReason, {
+        parcelAreaSqft,
+        detectedAreaSqft,
+        source: normalized?.source || payload?.source || "vision",
+        featuresReturned,
+        includeDiagnostics,
+        visionDiagnostics: {
+          ...visionDiagnostics,
+          highRatioAllowed: guardrail.highRatioAllowed,
+          parcelBoundarySimilarity: guardrail.parcelBoundarySimilarity,
+          exclusionEvidence: guardrail.exclusionEvidence,
+          guardrailReason: guardrail.guardrailReason
+        }
+      }));
     }
 
+    console.log(`[AI Detect] parcelAreaSqft=${Math.round(parcelAreaSqft)}`);
+    console.log(`[AI Detect] detectedAreaSqft=${Math.round(detectedAreaSqft)}`);
+    console.log(`[AI Detect] detectedRatio=${parcelAreaSqft > 0 ? (detectedAreaSqft / parcelAreaSqft).toFixed(4) : "0.0000"}`);
+    console.log("[AI Detect] final reject reason=none");
+    console.log("[AI Detect] accepted reason=vision polygons accepted");
+    console.log("[AI Detect] accepted/rejected reason=accepted");
+    if (includeDiagnostics) {
+      normalized.diagnostics = compactAiDetectDiagnostics({
+        ...visionDiagnostics,
+        reason: "",
+        guardrailReason: "",
+        highRatioAllowed: guardrail.highRatioAllowed,
+        parcelBoundarySimilarity: guardrail.parcelBoundarySimilarity,
+        exclusionEvidence: guardrail.exclusionEvidence,
+        detectedRatio: parcelAreaSqft > 0 ? detectedAreaSqft / parcelAreaSqft : 0,
+        confidence: normalized.confidence,
+        confidenceScore: normalized.confidenceScore,
+        detection_mode: normalized.detection_mode,
+        mode: normalized.mode ?? visionDiagnostics.mode
+      });
+    }
     return res.json(normalized);
   } catch (err) {
-    console.warn("AI mowable detection unavailable:", err.message);
-    return res.json(mowableFallback("ai-unavailable"));
-  } finally {
-    clearTimeout(timeout);
+    console.log("[AI Detect] vision service status=unavailable");
+    console.log("[AI Detect] vision service unavailable");
+    console.warn("[AI Detect] vision service error", err.message);
+    return res.json(emptyMowableDetection("vision service unavailable", {
+      parcelAreaSqft,
+      source: "vision_unavailable",
+      featuresReturned: 0,
+      includeDiagnostics,
+      diagnostics: { reason: "vision service unavailable" }
+    }));
   }
+}
+
+app.post("/api/ai/detect-mowable", (req, res) => {
+  return handleAiDetectMowable(req, res);
+});
+
+app.post("/api/ai/detect-mowable/debug", (req, res) => {
+  return handleAiDetectMowable(req, res, { forceDiagnostics: true, debugArtifacts: true });
 });
 
 app.post('/api/ai/refine-mowable', async (req, res) => {
@@ -756,27 +1469,27 @@ async function createSessionForUser(userId) {
   return token;
 }
 
-function safeQuoteReturnPath(returnTo = "") {
+function safeQuoteReturnPath(returnTo = "", appBaseUrl = APP_BASE_URL) {
   const fallback = "/?auth=success&view=quote";
   const raw = String(returnTo || "").trim();
   if (!raw) return fallback;
   try {
     const parsed = raw.startsWith("http")
       ? new URL(raw)
-      : new URL(raw, APP_BASE_URL);
-    if (parsed.origin !== new URL(APP_BASE_URL).origin) return fallback;
+      : new URL(raw, appBaseUrl);
+    if (parsed.origin !== new URL(appBaseUrl).origin) return fallback;
     return `${parsed.pathname}${parsed.search}${parsed.hash}` || fallback;
   } catch {
     return fallback;
   }
 }
 
-function appRedirectUrl(returnTo = "") {
-  return new URL(safeQuoteReturnPath(returnTo), APP_BASE_URL).toString();
+function appRedirectUrl(returnTo = "", appBaseUrl = APP_BASE_URL) {
+  return new URL(safeQuoteReturnPath(returnTo, appBaseUrl), appBaseUrl).toString();
 }
 
-function authErrorRedirect(provider, reason = "auth_failed") {
-  const url = new URL("/?auth=error&view=quote", APP_BASE_URL);
+function authErrorRedirect(provider, reason = "auth_failed", appBaseUrl = APP_BASE_URL) {
+  const url = new URL("/?auth=error&view=quote", appBaseUrl);
   url.searchParams.set("provider", provider);
   url.searchParams.set("reason", reason);
   return url.toString();
@@ -817,7 +1530,7 @@ function safeFacebookLoginSource(value) {
 
 function safeFacebookLoginStep(value) {
   const step = String(value || "").trim().toLowerCase();
-  return ["manual", "request", "estimate", "start"].includes(step) ? step : "request";
+  return ["manual", "request", "estimate", "property", "draw", "start"].includes(step) ? step : "request";
 }
 
 function encodeStatePayload(payload) {
@@ -859,8 +1572,8 @@ console.info("[Facebook OAuth] config", {
   appIdLoaded: Boolean(FACEBOOK_APP_ID),
   appSecretLoaded: Boolean(FACEBOOK_APP_SECRET),
   passportCallbackURL: FACEBOOK_CALLBACK_URL,
-  expectedPassportCallbackURL: EXPECTED_FACEBOOK_CALLBACK_URL,
-  passportCallbackMatchesExpected: FACEBOOK_CALLBACK_URL === EXPECTED_FACEBOOK_CALLBACK_URL,
+  requiredCallbackURLs: FACEBOOK_REQUIRED_CALLBACK_URLS,
+  allowedHosts: Array.from(configuredAllowedAppHosts()).sort(),
   facebookLoginRoute: "/api/auth/facebook"
 });
 
@@ -1274,13 +1987,19 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 5000) {
   }
 }
 
+
+function roundToNearestFive(value) {
+  const num = Number(value || 0);
+  return Math.round(num / 5) * 5;
+}
+
 function estimateQuote(payload, settings) {
   const service = findService(settings, payload.serviceType) || settings.services[0];
   const region = findRegion(settings, payload.regionId);
   const rules = settings.complexityRules || {};
   const mowAreaSqft = Number(payload.mowAreaSqft || 0);
   console.log('[TurfLynk Area Trace] F. estimateQuote | mowAreaSqft=' + mowAreaSqft + ' lotAreaSqft=' + Number(payload.lotAreaSqft || 0) + ' serviceType=' + (payload.serviceType || '') + ' regionId=' + (payload.regionId || '') + ' source=payload');
-  if (mowAreaSqft <= 0) return 0;
+  if (mowAreaSqft <= 0) return roundToNearestFive(0);
 
   const areaUnits = mowAreaSqft > 0 ? mowAreaSqft / 1000 : 0;
 
@@ -1312,7 +2031,7 @@ function estimateQuote(payload, settings) {
   if (payload.slopedTerrain) estimate *= Number(rules.slopedTerrainMultiplier || 1);
   if (payload.denseVegetation) estimate *= Number(rules.denseVegetationMultiplier || 1);
 
-  return Math.round(estimate * 100) / 100;
+  return roundToNearestFive(Math.round(estimate * 100) / 100);
 }
 
 function numberField(body, name) {
@@ -1599,7 +2318,10 @@ function normalizeParcelFeature(feature) {
     attrs.SHAPE_Area ? Number(attrs.SHAPE_Area) / 4046.8564224 : 0
   );
 
-  const areaSqft = acres > 0 ? Math.round(acres * 43560) : 0;
+  let areaSqft = acres > 0 ? Math.round(acres * 43560) : 0;
+  if (!areaSqft && attrs) {
+    areaSqft = normalizeParcelAreaSqft(attrs);
+  }
   const parcelId =
     attrs.parcelid ||
     attrs.parcel_id ||
@@ -1981,7 +2703,7 @@ app.post("/api/checkout/instant-mow", optionalAuth, async (req, res) => {
 
     const params = new URLSearchParams();
     params.set("mode", "payment");
-    params.set("success_url", checkoutReturnUrl("success", { session_id: "{CHECKOUT_SESSION_ID}" }));
+    params.set("success_url", `${APP_BASE_URL || PUBLIC_BASE_URL || "https://mownwa.com"}/success.html?session_id={CHECKOUT_SESSION_ID}`);
     params.set("cancel_url", checkoutReturnUrl("cancel", { job_id: job.id }));
     params.set("line_items[0][quantity]", "1");
     params.set("line_items[0][price_data][currency]", "usd");
@@ -2073,7 +2795,7 @@ app.post("/api/payments/create-checkout-session", requireAuth, async (req, res) 
 
     const params = new URLSearchParams();
     params.set("mode", "payment");
-    params.set("success_url", checkoutReturnUrl("success", { session_id: "{CHECKOUT_SESSION_ID}" }));
+    params.set("success_url", `${APP_BASE_URL || PUBLIC_BASE_URL || "https://mownwa.com"}/success.html?session_id={CHECKOUT_SESSION_ID}`);
     params.set("cancel_url", checkoutReturnUrl("cancel"));
     params.set("line_items[0][quantity]", "1");
     params.set("line_items[0][price_data][currency]", "usd");
@@ -2444,18 +3166,24 @@ app.post("/api/auth/logout", async (req, res) => {
 app.get("/api/auth/facebook", (req, res, next) => {
   const source = safeFacebookLoginSource(req.query.source);
   const step = safeFacebookLoginStep(req.query.step);
+  const callbackURL = facebookCallbackUrlForRequest(req);
+  const appOrigin = appOriginForRequest(req);
   if (req.session) {
     req.session.facebookLoginSource = source;
     req.session.facebookLoginStep = step;
+    req.session.facebookCallbackURL = callbackURL;
   }
+  res.set("X-Facebook-Callback-URL", callbackURL);
   console.info(`[Facebook Login] source=${source} route=/api/auth/facebook`);
   console.info("[Facebook OAuth][Passport] start", {
     source,
     step,
+    host: requestHost(req),
+    appOrigin,
     appIdLoaded: Boolean(FACEBOOK_APP_ID),
     appSecretLoaded: Boolean(FACEBOOK_APP_SECRET),
-    callbackURL: FACEBOOK_CALLBACK_URL,
-    callbackMatchesExpected: FACEBOOK_CALLBACK_URL === EXPECTED_FACEBOOK_CALLBACK_URL
+    callbackURL,
+    requiredCallbackURLs: FACEBOOK_REQUIRED_CALLBACK_URLS
   });
   if (!FACEBOOK_APP_ID || !FACEBOOK_APP_SECRET) {
     console.warn("[Facebook OAuth][Passport] start failed: provider_unconfigured", {
@@ -2463,21 +3191,29 @@ app.get("/api/auth/facebook", (req, res, next) => {
       step,
       appIdLoaded: Boolean(FACEBOOK_APP_ID),
       appSecretLoaded: Boolean(FACEBOOK_APP_SECRET),
-      callbackURL: FACEBOOK_CALLBACK_URL
+      callbackURL
     });
     return res.redirect("/auth-failed.html");
   }
-  return passport.authenticate("facebook", { scope: ["email"] })(req, res, next);
+  return passport.authenticate("facebook", {
+    scope: ["email"],
+    callbackURL,
+    state: encodeStatePayload({ provider: "facebook", source, step })
+  })(req, res, next);
 });
 
 app.get("/api/auth/facebook/callback", (req, res, next) => {
-  const source = safeFacebookLoginSource(req.session?.facebookLoginSource);
-  const step = safeFacebookLoginStep(req.session?.facebookLoginStep);
+  const statePayload = decodeStatePayload(req.query.state);
+  const source = safeFacebookLoginSource(req.session?.facebookLoginSource || statePayload?.source);
+  const step = safeFacebookLoginStep(req.session?.facebookLoginStep || statePayload?.step);
+  const callbackURL = facebookCallbackUrlForRequest(req);
+  const appOrigin = appOriginForRequest(req);
   console.info("[Facebook OAuth][Passport] callback received", {
     source,
     step,
-    callbackURL: FACEBOOK_CALLBACK_URL,
-    callbackMatchesExpected: FACEBOOK_CALLBACK_URL === EXPECTED_FACEBOOK_CALLBACK_URL,
+    host: requestHost(req),
+    appOrigin,
+    callbackURL,
     query: safeOAuthQuery(req.query)
   });
   if (!FACEBOOK_APP_ID || !FACEBOOK_APP_SECRET) {
@@ -2486,13 +3222,13 @@ app.get("/api/auth/facebook/callback", (req, res, next) => {
       step,
       appIdLoaded: Boolean(FACEBOOK_APP_ID),
       appSecretLoaded: Boolean(FACEBOOK_APP_SECRET),
-      callbackURL: FACEBOOK_CALLBACK_URL,
+      callbackURL,
       query: safeOAuthQuery(req.query)
     });
     return res.redirect("/auth-failed.html");
   }
 
-  return passport.authenticate("facebook", { session: true }, (error, user, info) => {
+  return passport.authenticate("facebook", { session: true, callbackURL }, (error, user, info) => {
     if (error || !user) {
       console.warn("[Facebook OAuth][Passport] callback failed", {
         errorMessage: error?.message || null,
@@ -2503,9 +3239,9 @@ app.get("/api/auth/facebook/callback", (req, res, next) => {
         profilePresent: Boolean(req.facebookProfilePresent),
         source,
         step,
-        callbackURL: FACEBOOK_CALLBACK_URL
+        callbackURL
       });
-      return res.redirect("/auth-failed.html");
+      return res.redirect(authErrorRedirect("facebook", "auth_failed", appOrigin));
     }
 
     return req.logIn(user, (loginError) => {
@@ -2518,9 +3254,9 @@ app.get("/api/auth/facebook/callback", (req, res, next) => {
           profilePresent: Boolean(req.facebookProfilePresent),
           source,
           step,
-          callbackURL: FACEBOOK_CALLBACK_URL
+          callbackURL
         });
-        return res.redirect("/auth-failed.html");
+        return res.redirect(authErrorRedirect("facebook", "session_failed", appOrigin));
       }
 
       console.info("[Facebook OAuth][Passport] callback succeeded", {
@@ -2531,12 +3267,13 @@ app.get("/api/auth/facebook/callback", (req, res, next) => {
         provider: user.provider || "facebook",
         source,
         step,
-        callbackURL: FACEBOOK_CALLBACK_URL
+        callbackURL
       });
-      const returnStep = source === "checkout" ? step : "request";
+      const returnStep = step;
       delete req.session.facebookLoginSource;
       delete req.session.facebookLoginStep;
-      return res.redirect(appRedirectUrl(`/?auth=success&view=quote&step=${encodeURIComponent(returnStep)}`));
+      delete req.session.facebookCallbackURL;
+      return res.redirect(appRedirectUrl(`/?auth=success&view=quote&step=${encodeURIComponent(returnStep)}`, appOrigin));
     });
   })(req, res, next);
 });
@@ -2854,10 +3591,187 @@ function saveProviderArea(area) {
   return area;
 }
 
-app.get("/api/provider/profile", requireAuth, requireRole("provider"), async (req, res) => {
+const PROVIDER_SERVICE_DEFAULTS = [
+  { id: "mowing", label: "Mowing" },
+  { id: "mowing_edging", label: "Mowing + Edging" },
+  { id: "full_service", label: "Full Service" },
+  { id: "cleanup", label: "Cleanup" },
+  { id: "leaf_cleanup", label: "Leaf Cleanup" },
+  { id: "mulch_refresh", label: "Mulch Refresh" }
+];
+
+function providerAccessMiddleware(req, res, next) {
+  return requireRole("provider", "admin")(req, res, next);
+}
+
+function providerAreaForRequest(req) {
+  return currentProviderArea(req.user.id);
+}
+
+function providerProfileRowToApi(row = {}, area = {}, user = {}) {
+  const profileSettings = area.profile_settings || {};
+  return {
+    id: row.id || area.provider_profile_id || null,
+    userId: row.user_id || area.provider_user_id || user.id || null,
+    businessName: row.business_name || profileSettings.business_name || "",
+    contactName: profileSettings.contact_name || user.full_name || user.fullName || "",
+    phone: row.phone || profileSettings.phone || user.phone || "",
+    email: user.email || profileSettings.email || "",
+    businessAddress: profileSettings.business_address || "",
+    baseCity: profileSettings.base_city || "",
+    deckSize: area.equipment?.mower_deck_size_inches || profileSettings.deck_size || "",
+    mowerDeckSizeInches: area.equipment?.mower_deck_size_inches || null,
+    hasSmallGateMower: Boolean(area.equipment?.has_small_gate_mower),
+    bio: row.bio || profileSettings.bio || "",
+    equipment: row.equipment || profileSettings.equipment || "",
+    logoUrl: profileSettings.logo_url || "",
+    notificationPreferences: area.notification_preferences || {},
+    createdAt: row.created_at || null,
+    updatedAt: area.updated_at || null
+  };
+}
+
+async function loadProviderProfileForUser(user) {
+  const area = currentProviderArea(user.id);
+  const result = await pgdb.query(
+    "SELECT * FROM provider_profiles WHERE user_id = $1 LIMIT 1",
+    [user.id]
+  );
+  return {
+    row: result.rows[0] || {},
+    area,
+    profile: providerProfileRowToApi(result.rows[0] || {}, area, user)
+  };
+}
+
+async function ensureProviderProfileForUser(user, body = {}) {
+  const existing = await pgdb.query(
+    "SELECT * FROM provider_profiles WHERE user_id = $1 LIMIT 1",
+    [user.id]
+  );
+  if (existing.rows.length) {
+    const updated = await pgdb.query(
+      `
+      UPDATE provider_profiles
+      SET business_name = $2,
+          bio = $3,
+          equipment = $4,
+          phone = $5
+      WHERE user_id = $1
+      RETURNING *
+      `,
+      [
+        user.id,
+        body.businessName || body.business_name || existing.rows[0].business_name || "",
+        body.bio || existing.rows[0].bio || "",
+        body.equipment || existing.rows[0].equipment || "",
+        body.phone || existing.rows[0].phone || user.phone || ""
+      ]
+    );
+    return updated.rows[0];
+  }
+
+  const created = await pgdb.query(
+    `
+    INSERT INTO provider_profiles (id, user_id, business_name, bio, equipment, phone)
+    VALUES ($1, $2, $3, $4, $5, $6)
+    RETURNING *
+    `,
+    [
+      nanoid(10),
+      user.id,
+      body.businessName || body.business_name || "",
+      body.bio || "",
+      body.equipment || "",
+      body.phone || user.phone || ""
+    ]
+  );
+  return created.rows[0];
+}
+
+function providerServicesFromArea(area = {}, pricing = {}) {
+  const saved = Array.isArray(area.provider_services) ? area.provider_services : [];
+  const enabledSet = new Set(listField(area.services_offered));
+  return PROVIDER_SERVICE_DEFAULTS.map((service) => {
+    const row = saved.find((item) => item.id === service.id) || {};
+    const enabled = row.enabled == null
+      ? enabledSet.has(service.id) || (service.id === "mowing" && !saved.length && !enabledSet.size)
+      : Boolean(row.enabled);
+    return {
+      id: service.id,
+      label: service.label,
+      enabled,
+      basePrice: Number(row.basePrice ?? row.base_price ?? pricing.baseFee ?? 0),
+      minimumPrice: Number(row.minimumPrice ?? row.minimum_price ?? pricing.minimumPrice ?? 0),
+      ratePerSqft: Number(row.ratePerSqft ?? row.rate_per_sqft ?? pricing.ratePerSqft ?? 0),
+      notes: row.notes || ""
+    };
+  });
+}
+
+async function loadProviderPricing(providerProfileId) {
+  if (!providerProfileId) return {};
+  const result = await pgdb.query(
+    `
+    SELECT base_fee, rate_per_1000_sqft, minimum_price
+    FROM provider_pricing
+    WHERE provider_id = $1
+    ORDER BY id ASC
+    LIMIT 1
+    `,
+    [providerProfileId]
+  );
+  const row = result.rows[0] || {};
+  return {
+    baseFee: Number(row.base_fee || 0),
+    ratePerSqft: Number(row.rate_per_1000_sqft || 0) / 1000,
+    minimumPrice: Number(row.minimum_price || 0)
+  };
+}
+
+app.get("/api/provider/profile", requireAuth, providerAccessMiddleware, async (req, res) => {
   try {
-    const area = currentProviderArea(req.user.id);
-    res.json({ ok: true, profile: { user: sanitizeUser(req.user), ...area } });
+    if (req.user.role === "admin") {
+      return res.json({ ok: true, profile: { user: sanitizeUser(req.user), admin: true } });
+    }
+    const { profile, area } = await loadProviderProfileForUser(req.user);
+    res.json({ ok: true, profile: { user: sanitizeUser(req.user), ...profile, serviceArea: area } });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.put("/api/provider/profile", requireAuth, requireRole("provider"), async (req, res) => {
+  try {
+    const body = req.body || {};
+    const row = await ensureProviderProfileForUser(req.user, body);
+    const area = providerAreaForRequest(req);
+    area.provider_profile_id = row.id;
+    area.profile_settings = {
+      ...(area.profile_settings || {}),
+      business_name: body.businessName || body.business_name || row.business_name || "",
+      contact_name: body.contactName || body.contact_name || "",
+      phone: body.phone || row.phone || "",
+      email: body.email || req.user.email || "",
+      business_address: body.businessAddress || body.business_address || "",
+      base_city: body.baseCity || body.base_city || "",
+      deck_size: body.deckSize || body.deck_size || body.mowerDeckSizeInches || "",
+      bio: body.bio || row.bio || "",
+      equipment: body.equipment || row.equipment || "",
+      logo_url: body.logoUrl || body.logo_url || ""
+    };
+    area.equipment = {
+      ...(area.equipment || {}),
+      mower_deck_size_inches: body.mowerDeckSizeInches == null && body.deckSize == null
+        ? (area.equipment?.mower_deck_size_inches || null)
+        : Number(body.mowerDeckSizeInches || body.deckSize || 0) || null,
+      has_small_gate_mower: body.hasSmallGateMower == null
+        ? Boolean(area.equipment?.has_small_gate_mower)
+        : Boolean(body.hasSmallGateMower)
+    };
+    area.notification_preferences = body.notificationPreferences || area.notification_preferences || {};
+    const savedArea = saveProviderArea(area);
+    res.json({ ok: true, profile: providerProfileRowToApi(row, savedArea, req.user) });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
@@ -2887,10 +3801,126 @@ app.put("/api/provider/services-offered", requireAuth, requireRole("provider"), 
   }
 });
 
-app.get("/api/provider/service-areas", requireAuth, requireRole("provider"), (req, res) => {
+app.get("/api/provider/services", requireAuth, providerAccessMiddleware, async (req, res) => {
   try {
+    if (req.user.role === "admin") {
+      return res.json({ ok: true, services: PROVIDER_SERVICE_DEFAULTS.map((service) => ({ ...service, enabled: false })) });
+    }
+    const { row, area } = await loadProviderProfileForUser(req.user);
+    const pricing = await loadProviderPricing(row.id);
+    res.json({ ok: true, services: providerServicesFromArea(area, pricing) });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.put("/api/provider/services", requireAuth, requireRole("provider"), async (req, res) => {
+  try {
+    const body = req.body || {};
+    const services = Array.isArray(body.services) ? body.services : [];
+    const normalized = PROVIDER_SERVICE_DEFAULTS.map((service) => {
+      const row = services.find((item) => item.id === service.id) || {};
+      return {
+        id: service.id,
+        enabled: Boolean(row.enabled),
+        basePrice: Number(row.basePrice || row.base_price || 0),
+        minimumPrice: Number(row.minimumPrice || row.minimum_price || 0),
+        ratePerSqft: Number(row.ratePerSqft || row.rate_per_sqft || 0),
+        notes: String(row.notes || "").slice(0, 1000)
+      };
+    });
+    const area = providerAreaForRequest(req);
+    area.provider_services = normalized;
+    area.services_offered = normalized.filter((service) => service.enabled).map((service) => service.id);
+    const saved = saveProviderArea(area);
+
+    const provider = await ensureProviderProfileForUser(req.user, {});
+    const firstEnabled = normalized.find((service) => service.enabled) || normalized[0];
+    if (firstEnabled) {
+      const existing = await pgdb.query("SELECT id FROM provider_pricing WHERE provider_id = $1 LIMIT 1", [provider.id]);
+      if (existing.rows.length) {
+        await pgdb.query(
+          `
+          UPDATE provider_pricing
+          SET base_fee = $2,
+              rate_per_1000_sqft = $3,
+              minimum_price = $4
+          WHERE id = $1
+          `,
+          [
+            existing.rows[0].id,
+            firstEnabled.basePrice,
+            firstEnabled.ratePerSqft * 1000,
+            firstEnabled.minimumPrice
+          ]
+        );
+      } else {
+        await pgdb.query(
+          `
+          INSERT INTO provider_pricing (id, provider_id, base_fee, rate_per_1000_sqft, minimum_price)
+          VALUES ($1, $2, $3, $4, $5)
+          `,
+          [
+            nanoid(10),
+            provider.id,
+            firstEnabled.basePrice,
+            firstEnabled.ratePerSqft * 1000,
+            firstEnabled.minimumPrice
+          ]
+        );
+      }
+    }
+
+    res.json({ ok: true, services: providerServicesFromArea(saved, {}) });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.get("/api/provider/service-areas", requireAuth, providerAccessMiddleware, (req, res) => {
+  try {
+    if (req.user.role === "admin") {
+      return res.json({ ok: true, provider_user_id: req.user.id, cities: [], counties: [], zones: [], preferences: {}, admin: true });
+    }
     const area = currentProviderArea(req.user.id);
     res.json({ ok: true, ...area });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.put("/api/provider/service-areas", requireAuth, requireRole("provider"), (req, res) => {
+  try {
+    const body = req.body || {};
+    const area = currentProviderArea(req.user.id);
+    const radius = body.radiusMiles ?? body.radius_miles ?? "";
+    area.cities = listField(body.cities).map((city) => ({
+      id: nanoid(10),
+      city,
+      state: DEFAULT_STATE,
+      region_id: PRIMARY_REGION,
+      radius_miles: radius === "" || radius == null ? null : Number(radius),
+      enabled: true,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    }));
+    area.counties = listField(body.counties);
+    area.service_area_settings = {
+      base_address: body.baseAddress || body.base_address || "",
+      base_city: body.baseCity || body.base_city || "",
+      base_zip: body.baseZip || body.base_zip || "",
+      radius_miles: radius === "" || radius == null ? null : Number(radius),
+      notes: String(body.notes || "").slice(0, 1000)
+    };
+    area.preferences = {
+      ...(area.preferences || {}),
+      accepts_nearby_jobs: Boolean(body.acceptsNearbyJobs ?? body.accepts_nearby_jobs),
+      max_extra_travel_miles: body.maxExtraTravelMiles == null && body.max_extra_travel_miles == null
+        ? (area.preferences?.max_extra_travel_miles || null)
+        : Number((body.maxExtraTravelMiles ?? body.max_extra_travel_miles) || 0),
+      service_areas_paused: Boolean(body.serviceAreasPaused ?? body.service_areas_paused)
+    };
+    res.json({ ok: true, ...saveProviderArea(area) });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
@@ -3046,6 +4076,9 @@ function mapJobRow(row) {
     photos: parseJsonArray(row.photos),
     scopeSnapshot: parseJsonObject(row.scope_snapshot),
     status: row.status || "open",
+    customerName: row.customer_name || row.customer_full_name || row.full_name || "",
+    customerEmail: row.customer_email || row.email || "",
+    customerPhone: row.customer_phone || row.phone || "",
     gate_size_category: detailValue("Gate size"),
     gate_width_inches: Number(detailValue("Gate width inches") || 0) || null,
     mower_access: detailValue("Mower access"),
@@ -3059,7 +4092,9 @@ function mapJobRow(row) {
     pets: detailValue("Pets"),
     pet_waste_level: detailValue("Pet waste"),
     obstacles_list: listField(detailValue("Obstacles")),
-    postedAt: row.created_at
+    postedAt: row.created_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at || null
   };
 }
 
@@ -3100,6 +4135,19 @@ function sanitizeJobForOwner(job = {}) {
     yard_access_notes: job.yard_access_notes || "",
     community_access_type: job.community_access_type || "",
     scopeSnapshot: parseJsonObject(job.scopeSnapshot || job.scope_snapshot)
+  };
+}
+
+function sanitizeJobForProvider(job = {}) {
+  return {
+    ...sanitizeJobForOwner(job),
+    providerUserId: job.providerUserId || job.provider_user_id || null,
+    customerName: job.customerName || "",
+    customerEmail: job.customerEmail || "",
+    customerPhone: job.customerPhone || "",
+    photos: Array.isArray(job.photos) ? job.photos : [],
+    createdAt: job.createdAt || job.postedAt || null,
+    updatedAt: job.updatedAt || null
   };
 }
 
@@ -4335,12 +5383,101 @@ app.get("/api/customer/receipts", requireAuth, async (req, res) => {
 
 /* -------------------- PROVIDER PAID JOBS -------------------- */
 
-app.get("/api/provider/paid-jobs", requireAuth, requireRole("provider"), async (req, res) => {
+const PROVIDER_ACTIVE_JOB_STATUSES = ["assigned", "claimed", "scheduled", "in_progress"];
+const PROVIDER_UPCOMING_JOB_STATUSES = ["assigned", "scheduled"];
+const PROVIDER_COMPLETED_JOB_STATUSES = ["completed"];
+const PROVIDER_CANCELED_JOB_STATUSES = ["canceled", "cancelled", "refunded"];
+
+function providerJobStatusFilter(filter) {
+  const value = String(filter || "active").toLowerCase();
+  if (value === "upcoming") return PROVIDER_UPCOMING_JOB_STATUSES;
+  if (value === "completed") return PROVIDER_COMPLETED_JOB_STATUSES;
+  if (value === "canceled" || value === "cancelled") return PROVIDER_CANCELED_JOB_STATUSES;
+  if (value === "all" || value === "history") return null;
+  return PROVIDER_ACTIVE_JOB_STATUSES;
+}
+
+async function providerJobsQuery(req, filter = "active") {
+  await ensureJobsScopeSnapshotColumn();
+  await ensureUsersPhoneColumn();
+  const statuses = providerJobStatusFilter(filter);
+  const params = [];
+  const where = [];
+
+  if (req.user.role !== "admin") {
+    params.push(req.user.id);
+    where.push(`j.provider_user_id = $${params.length}`);
+  }
+
+  if (statuses) {
+    params.push(statuses);
+    where.push(`j.status = ANY($${params.length})`);
+  }
+
+  const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+  const result = await pgdb.query(
+    `
+    SELECT
+      j.*,
+      u.full_name AS customer_full_name,
+      u.email AS customer_email,
+      u.phone AS customer_phone
+    FROM jobs j
+    LEFT JOIN users u ON u.id = j.customer_user_id
+    ${whereSql}
+    ORDER BY
+      CASE WHEN j.preferred_date IS NULL THEN 1 ELSE 0 END,
+      j.preferred_date ASC,
+      j.created_at DESC
+    `,
+    params
+  );
+  return result.rows.map(mapJobRow);
+}
+
+app.get("/api/provider/overview", requireAuth, providerAccessMiddleware, async (req, res) => {
   try {
-    const result = await pgdb.query(
-      `SELECT * FROM jobs WHERE status IN ('paid','open') AND (provider_user_id IS NULL OR provider_user_id = $1) ORDER BY created_at DESC`,
-      [req.user.id]
-    );
+    const jobs = await providerJobsQuery(req, "all");
+    const active = jobs.filter((job) => PROVIDER_ACTIVE_JOB_STATUSES.includes(job.status));
+    const upcoming = jobs.filter((job) => PROVIDER_UPCOMING_JOB_STATUSES.includes(job.status));
+    const completed = jobs.filter((job) => PROVIDER_COMPLETED_JOB_STATUSES.includes(job.status));
+    const canceled = jobs.filter((job) => PROVIDER_CANCELED_JOB_STATUSES.includes(job.status));
+    const pipeline = active.reduce((sum, job) => sum + Number(job.budget || 0), 0);
+    res.json({
+      ok: true,
+      metrics: {
+        openAssignedJobs: active.length,
+        upcomingJobs: upcoming.length,
+        completedJobs: completed.length,
+        canceledJobs: canceled.length,
+        estimatedRevenuePipeline: pipeline
+      },
+      recentJobs: jobs.slice(0, 6).map(sanitizeJobForProvider)
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.get("/api/provider/jobs", requireAuth, providerAccessMiddleware, async (req, res) => {
+  try {
+    const jobs = await providerJobsQuery(req, req.query.filter || "active");
+    res.json({ ok: true, jobs: jobs.map(sanitizeJobForProvider) });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.get("/api/provider/paid-jobs", requireAuth, providerAccessMiddleware, async (req, res) => {
+  try {
+    const result = req.user.role === "admin"
+      ? await pgdb.query(
+        `SELECT * FROM jobs WHERE status IN ('paid','open') ORDER BY created_at DESC`
+      )
+      : await pgdb.query(
+        `SELECT * FROM jobs WHERE status IN ('paid','open') AND (provider_user_id IS NULL OR provider_user_id = $1) ORDER BY created_at DESC`,
+        [req.user.id]
+      );
     const payments = readJsonArray(PAYMENTS_FILE);
     const jobs = result.rows.map((row) => {
       const j = mapJobRow(row);
@@ -4355,19 +5492,27 @@ app.get("/api/provider/paid-jobs", requireAuth, requireRole("provider"), async (
 
 app.patch("/api/provider/jobs/:id/status", requireAuth, requireRole("provider"), async (req, res) => {
   try {
-    const { status } = req.body || {};
-    const allowed = new Set(["in_progress", "completed", "issue_reported"]);
-    if (!status || !allowed.has(status)) {
+    const { status, reason } = req.body || {};
+    const normalizedStatus = status === "cancelled" ? "canceled" : status;
+    const allowed = new Set(["assigned", "scheduled", "in_progress", "completed", "canceled", "issue_reported"]);
+    if (!normalizedStatus || !allowed.has(normalizedStatus)) {
       return res.status(400).json({ ok: false, error: `Providers can set: ${[...allowed].join(", ")}` });
     }
+    const reasonText = String(reason || "").trim();
+    const detailsSql = reasonText
+      ? ", details = CONCAT(COALESCE(details, ''), CASE WHEN COALESCE(details, '') = '' THEN '' ELSE CHR(10) END, $4)"
+      : "";
+    const params = reasonText
+      ? [req.params.id, normalizedStatus, req.user.id, `Provider note: ${reasonText.slice(0, 500)}`]
+      : [req.params.id, normalizedStatus, req.user.id];
     const result = await pgdb.query(
-      "UPDATE jobs SET status = $2 WHERE id = $1 AND provider_user_id = $3 RETURNING *",
-      [req.params.id, status, req.user.id]
+      `UPDATE jobs SET status = $2${detailsSql} WHERE id = $1 AND provider_user_id = $3 RETURNING *`,
+      params
     );
     if (!result.rows.length) {
       return res.status(404).json({ ok: false, error: "Job not found or not assigned to you" });
     }
-    res.json({ ok: true, job: mapJobRow(result.rows[0]) });
+    res.json({ ok: true, job: sanitizeJobForProvider(mapJobRow(result.rows[0])) });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }

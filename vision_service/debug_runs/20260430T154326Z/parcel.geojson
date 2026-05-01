@@ -1,0 +1,1 @@
+{"type": "FeatureCollection", "features": [{"type": "Feature", "properties": {"name": "business_parking_lot"}, "geometry": {"type": "Polygon", "coordinates": [[[-94.21825, 36.36675], [-94.21665, 36.36675], [-94.21665, 36.36815], [-94.21825, 36.36815], [-94.21825, 36.36675]]]}}]}

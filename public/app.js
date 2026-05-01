@@ -1,3 +1,20 @@
+
+
+// FIX: hide confirm UI when parcel not found
+function handleParcelResult(result) {
+  const gpsBar = document.getElementById('gpsConfirmBar');
+  const parcelActions = document.querySelector('.parcel-actions-card');
+
+  if (!result || result.ok === false || result.reason === 'not_found') {
+    if (gpsBar) gpsBar.classList.add('hidden');
+    if (parcelActions) parcelActions.classList.add('hidden');
+    return;
+  }
+
+  if (gpsBar) gpsBar.classList.remove('hidden');
+  if (parcelActions) parcelActions.classList.remove('hidden');
+}
+
 // byId, $$, all constants (QUOTE_DRAFT_KEY, EPSG*, SERVICE_CATALOG, etc.)
 // are now defined in public/js/config.js and public/js/utils/dom.js — loaded before this file.
 
@@ -1607,12 +1624,13 @@ function saveQuoteDraft() {
 
 function saveAuthReturnContext(step = 'request', sourceOverride = '') {
   const form = byId('quoteForm');
+  const quoteFormData = form ? formToObject(form) : null;
   let quote = state.pendingQuote || state.lastQuote || null;
   if (!quote && form) {
     try {
       quote = buildQuotePayload(form);
     } catch {
-      quote = formToObject(form);
+      quote = quoteFormData;
     }
   }
 
@@ -1651,10 +1669,11 @@ function saveAuthReturnContext(step = 'request', sourceOverride = '') {
   // Capture parcel GeoJSON so scope snapshot includes parcel after auth redirect
   const parcelGeoJSON = currentParcelGeoJSON() || null;
 
+  const currentStep = step || state.quoteFlowStep || 'request';
   const source = sourceOverride || ((step === 'request' || step === 'manual') ? 'checkout' : 'account');
   console.info('[Auth Resume] saved', {
     source,
-    step,
+    step: currentStep,
     hasEstimate: Boolean(quote?.estimate),
     hasGeoJSON: Boolean(drawnGeoJSON?.features?.length),
     hasParcelGeoJSON: Boolean(parcelGeoJSON),
@@ -1662,12 +1681,15 @@ function saveAuthReturnContext(step = 'request', sourceOverride = '') {
   });
 
   localStorage.setItem(AUTH_RETURN_KEY, JSON.stringify({
-    step,
+    step: currentStep,
     source,
     quote,
+    quoteFormData,
     customerFields,
     drawnGeoJSON,
     parcelGeoJSON,
+    pendingCheckoutUrl: state.pendingCheckoutUrl || '',
+    selectedService: quote?.serviceType || quoteFormData?.serviceType || '',
     savedAt: Date.now(),
   }));
 }
@@ -1711,6 +1733,24 @@ function facebookAuthStartPath(source = 'account', step = 'request') {
   return `/api/auth/facebook?${params.toString()}`;
 }
 
+function authReturnStep(defaultStep = 'request') {
+  const rawStep = defaultStep || state.quoteFlowStep || 'request';
+  if (['manual', 'request', 'estimate', 'property', 'draw', 'start'].includes(rawStep)) return rawStep;
+  return state.quoteFlowStep || 'request';
+}
+
+function startFacebookLogin(step = 'request', source = '') {
+  const currentStep = authReturnStep(step);
+  const currentSource = source || ((currentStep === 'manual' || currentStep === 'request') ? 'checkout' : 'account');
+  const mobile = isMobileFacebookLoginFlow();
+  saveQuoteDraft();
+  saveAuthReturnContext(currentStep, currentSource);
+  const route = facebookAuthStartPath(currentSource, currentStep);
+  console.info(`[Facebook Login] mobile=${mobile}`);
+  console.info(`[Facebook Login] redirect=${route}`);
+  window.location.href = route;
+}
+
 function beginSocialAuth(provider, step = 'request') {
   if (provider === 'google' && !GOOGLE_LOGIN_ENABLED) {
     showWarning('Google sign-in is not available yet. Please use Facebook or email.');
@@ -1718,12 +1758,9 @@ function beginSocialAuth(provider, step = 'request') {
   }
   saveQuoteDraft();
   if (provider === 'facebook') {
-    const source = step === 'manual' || step === 'request' ? 'checkout' : 'account';
-    const mobile = isMobileFacebookLoginFlow();
-    saveAuthReturnContext(step, source);
-    const route = facebookAuthStartPath(source, step);
-    console.info('[Facebook Login] starting', { source, step, mobile, route });
-    window.location.assign(route);
+    const currentStep = authReturnStep(step);
+    const source = currentStep === 'manual' || currentStep === 'request' ? 'checkout' : 'account';
+    startFacebookLogin(currentStep, source);
     return;
   }
   saveAuthReturnContext(step);
@@ -3083,7 +3120,13 @@ function updateQuoteFlowState(options = {}) {
   if (aiDetectBtn) {
     aiDetectBtn.disabled = !aiDetectReady;
     aiDetectBtn.classList.toggle('disabled', !aiDetectReady);
-    aiDetectBtn.textContent = state.aiDetectMowableLoading ? 'Detecting...' : 'AI Detect Yard';
+    aiDetectBtn.textContent = state.aiDetectMowableLoading
+      ? 'Detecting yard...'
+      : state.aiDetectMowableStatus === 'success'
+        ? 'AI detected yard'
+        : state.aiDetectMowableStatus === 'fallback'
+          ? 'Use Lasso Yard'
+          : 'AI Detect Yard (Beta)';
   }
 
   setElementVisible('useParcelShapeBtn', parcelLoaded && !mowSelected && !editing && !drawing);
@@ -3130,6 +3173,24 @@ function showMissingMowableAreaPrompt(targetId = 'quoteResult') {
     '<strong>Draw your mowable area first.</strong><br>The parcel outline is only a property boundary and is not priced as mowing area.'
   );
   showWarning('Draw your mowable area first.');
+}
+
+function setAiDetectMowableStatus(status) {
+  if (state.aiDetectMowableStatusTimer) clearTimeout(state.aiDetectMowableStatusTimer);
+  state.aiDetectMowableStatus = status || '';
+  state.aiDetectMowableStatusTimer = null;
+  if (status) {
+    state.aiDetectMowableStatusTimer = setTimeout(() => {
+      state.aiDetectMowableStatus = '';
+      state.aiDetectMowableStatusTimer = null;
+      updateQuoteFlowState();
+    }, 2500);
+  }
+  updateQuoteFlowState();
+}
+
+function aiDetectFallbackMessage(data = {}) {
+  return data.message || data.warning || 'AI Detect completed. Please review and adjust the selected area.';
 }
 
 async function aiDetectGrassDraft() {
@@ -3204,15 +3265,91 @@ async function aiDetectGrassDraft() {
   }
 }
 
+function geoJsonFeaturesFromValue(value, properties = {}) {
+  if (!value || typeof value !== 'object') return [];
+  if (value.type === 'FeatureCollection' && Array.isArray(value.features)) {
+    return value.features.map((feature) => asFeature(feature, properties)).filter((feature) => feature?.geometry);
+  }
+  const feature = asFeature(value, properties);
+  return feature?.geometry ? [feature] : [];
+}
+
+function isPolygonalGeometry(geometry) {
+  return geometry?.type === 'Polygon' || geometry?.type === 'MultiPolygon';
+}
+
 function mowableFeaturesFromAiResponse(data = {}) {
-  const collection = data.featureCollection;
-  if (!collection || collection.type !== 'FeatureCollection' || !Array.isArray(collection.features)) {
+  if (data.featureCollection?.type === 'FeatureCollection') {
+    return geoJsonFeaturesFromValue(data.featureCollection);
+  }
+  if (Array.isArray(data.features)) {
+    return data.features.map((feature) => asFeature(feature)).filter((feature) => feature?.geometry);
+  }
+  return [];
+}
+
+function sanitizeAiMowableFeatures(data = {}, parcelGeoJson = null) {
+  const source = String(data.source || '').toLowerCase();
+  const parcelFeatures = geoJsonFeaturesFromValue(parcelGeoJson);
+  const parcelFeature = parcelFeatures.find((feature) => isPolygonalGeometry(feature.geometry)) || null;
+  const parcelAreaSqFt = parcelFeature ? layerAreaSqFt(parcelFeature) : 0;
+  const cleaned = [];
+  const isFallbackSource = source.includes('fallback') || source.includes('parcel') || source.includes('copy') || source.includes('placeholder');
+  const confidenceLabelRaw = String(data.confidence || data.diagnostics?.confidence || data.diagnostics?.confidenceLabel || '');
+  const confidence = confidenceLabelRaw === 'beta_low' ? 0.25 : confidenceLabelRaw === 'beta_medium' ? 0.6 : confidenceLabelRaw === 'beta_high' ? 0.9 : Number(data.confidenceScore ?? data.score ?? data.modelConfidence ?? data.mowableConfidence ?? data.confidence);
+
+  if (isFallbackSource) {
+    console.warn('[AI Detect] rejected fallback mowable response', { source: data.source });
+    return cleaned;
+  }
+
+  mowableFeaturesFromAiResponse(data).forEach((feature) => {
+    const featureSource = String(feature.properties?.source || '').toLowerCase();
+    if (feature.properties?.draft === true || featureSource.includes('fallback') || featureSource.includes('parcel') || featureSource.includes('copy') || featureSource.includes('placeholder')) {
+      console.warn('[AI Detect] rejected fallback mowable feature', { source: feature.properties?.source });
+      return;
+    }
+
+    const normalized = asFeature(feature, {
+      source: data.source || feature.properties?.source || 'vision',
+      draft: data.source === 'fallback' || feature.properties?.draft === true,
+    });
+    if (!normalized || !isPolygonalGeometry(normalized.geometry)) return;
+
+    let candidate = normalized;
+    if (parcelFeature && source !== 'fallback' && typeof turf !== 'undefined' && typeof turf.intersect === 'function') {
+      try {
+        const clipped = turf.intersect(normalized, parcelFeature);
+        if (clipped?.geometry && isPolygonalGeometry(clipped.geometry)) {
+          candidate = asFeature(clipped, normalized.properties);
+        }
+      } catch (error) {
+        console.warn('[AI Detect] could not clip detected feature to parcel', error);
+      }
+    }
+
+    const areaSqFt = layerAreaSqFt(candidate);
+    if (areaSqFt <= 0) return;
+    if (parcelAreaSqFt > 0 && areaSqFt > parcelAreaSqFt * 0.97) {
+      console.warn('[AI Detect] rejected parcel-sized mowable feature', { areaSqFt, parcelAreaSqFt });
+      return;
+    }
+
+    cleaned.push(candidate);
+  });
+
+  const totalAreaSqFt = cleaned.reduce((sum, feature) => sum + layerAreaSqFt(feature), 0);
+  if (parcelAreaSqFt > 0 && totalAreaSqFt > parcelAreaSqFt * 0.97) {
+    console.warn('[AI Detect] rejected parcel-sized mowable response', { totalAreaSqFt, parcelAreaSqFt });
     return [];
   }
-  return collection.features.filter((feature) => feature?.geometry);
+
+  return cleaned;
 }
 
 async function aiDetectMowableArea() {
+  console.log('[AI Detect] clicked');
+
   const parcelGeoJson = currentParcelGeoJSON();
   if (!parcelGeoJson || !state.map) {
     showResult('parcelInfo', '<strong>No parcel shape yet.</strong><br>Lookup the parcel first.');
@@ -3221,30 +3358,120 @@ async function aiDetectMowableArea() {
   }
 
   const center = state.map.getCenter?.();
+  const form = byId('quoteForm');
   const payload = {
     parcelGeoJson,
+    parcelFeature: state.parcelFeature || null,
     center: center ? {
       lng: Number(center.lng ?? center[0]),
       lat: Number(center.lat ?? center[1]),
     } : null,
+    lng: center ? Number(center.lng ?? center[0]) : null,
+    lat: center ? Number(center.lat ?? center[1]) : null,
     zoom: Number(state.map.getZoom?.() || 0) || null,
+    address: form ? [form.elements.address?.value, form.elements.city?.value, form.elements.state?.value, form.elements.zip?.value].filter(Boolean).join(', ') : '',
     source: 'maplibre',
+    imageSource: {
+      type: 'tile',
+      provider: 'esri-world-imagery',
+      tileUrl: SATELLITE_TILE_URL,
+      attribution: SATELLITE_TILE_ATTRIBUTION,
+    },
   };
 
+  console.log('[AI Detect] request body', payload);
+
   stopToolModes();
+  setAiDetectMowableStatus('');
   state.aiDetectMowableLoading = true;
+  const loadingStartedAt = Date.now();
   updateQuoteFlowState();
-  showResult('parcelInfo', 'Detecting mowable area...');
+  showResult('parcelInfo', '<strong>Detecting yard (Beta)...</strong><br>Building an editable mowable-area draft.');
 
   try {
-    const data = await api('/api/ai/detect-mowable', {
+    const token = localStorage.getItem('turflynk.authToken') || '';
+    const response = await fetch('/api/ai/detect-mowable', {
       method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
       body: JSON.stringify(payload),
     });
-    const features = mowableFeaturesFromAiResponse(data);
 
-    if (!data?.ok || !features.length) {
-      showResult('parcelInfo', 'AI could not detect this yard yet. Use Lasso Yard to draw it manually.');
+    console.log('[AI Detect] response status', response.status);
+
+    if (!response.ok) {
+      const errText = await response.text().catch(() => '');
+      console.warn('[AI Detect] error', errText || `HTTP ${response.status}`);
+      const msg = aiDetectFallbackMessage();
+      setAiDetectMowableStatus('fallback');
+      showResult('parcelInfo', `<strong>Use Lasso Yard</strong><br>${escapeHtml(msg)}`);
+      showToast(msg, 'warning', { duration: 6000 });
+      return;
+    }
+
+    const data = await response.json();
+    console.log('[AI Detect] response json', data);
+    const diag = data.diagnostics || data.diagnostic || {};
+    console.log('[AI Detect] diagnostics', JSON.stringify({
+      failureStage: diag.failureStage,
+      reason: data.reason || diag.reason || diag.guardrailReason || '',
+      parcelAreaSqft: diag.parcelAreaSqft,
+      parcelBounds: diag.parcelBounds,
+      imageBounds: diag.imageBounds,
+      requestedImageWidth: diag.requestedImageWidth,
+      requestedImageHeight: diag.requestedImageHeight,
+      actualImageWidth: diag.actualImageWidth,
+      actualImageHeight: diag.actualImageHeight,
+      pixelCount: diag.pixelCount,
+      metersPerPixel: diag.metersPerPixel,
+      vegetationPixels: diag.vegetationPixels,
+      vegetationCandidatePixels: diag.vegetationCandidatePixels,
+      hardscapePixels: diag.hardscapePixels,
+      polygonCountBeforeFiltering: diag.polygonCountBeforeFiltering,
+      polygonCountAfterFiltering: diag.polygonCountAfterFiltering,
+      keptComponentCount: diag.keptComponentCount,
+      detectedRatio: diag.detectedRatio,
+      strictDetectedRatio: diag.strictDetectedRatio,
+      softDetectedRatio: diag.softDetectedRatio,
+      confidence: diag.confidence,
+      lowConfidenceCandidateReturned: diag.lowConfidenceCandidateReturned,
+      fallbackSoftMaskUsed: diag.fallbackSoftMaskUsed,
+      selectedCandidate: diag.selectedCandidate,
+      debugRunDir: diag.debugRunDir,
+    }));
+
+    let features = sanitizeAiMowableFeatures(data, parcelGeoJson);
+    const serverFeaturesCount = Array.isArray(data.features) ? data.features.length : (Array.isArray(data.featureCollection?.features) ? data.featureCollection.features.length : 0);
+    console.log('[AI Detect] server features count', serverFeaturesCount, '| sanitized features count', features.length);
+if (serverFeaturesCount > 0 && features.length === 0) {
+  console.warn('[AI Detect] forcing fallback features through for manual review');
+  const rawFeatures = Array.isArray(data.features) && data.features.length
+    ? data.features
+    : (Array.isArray(data.featureCollection?.features) ? data.featureCollection.features : []);
+  features = rawFeatures
+    .filter(f => f && f.geometry)
+    .map(f => ({
+      type: 'Feature',
+      properties: { ...(f.properties || {}), source: 'ai-detect-beta-low-manual-review' },
+      geometry: f.geometry
+    }));
+}
+
+    if (!data?.ok) {
+      const rejectionReason = data.reason || diag.reason || diag.guardrailReason || '';
+      const failureStage = diag.failureStage || '';
+      console.warn('[AI Detect] no usable features - reason:', rejectionReason, 'failureStage:', failureStage);
+      let msg;
+      if (rejectionReason && rejectionReason !== 'vision service unavailable') {
+        msg = `AI detection completed but no confident vegetation area was found. Reason: ${rejectionReason}. Use Lasso Yard to outline the mowable area.`;
+      } else {
+        msg = aiDetectFallbackMessage(data);
+      }
+      setAiDetectMowableStatus('fallback');
+      showResult('parcelInfo', `<strong>AI Detect: no result</strong><br>${escapeHtml(msg)}`);
+      showToast(msg, 'warning', { duration: 8000 });
       return;
     }
 
@@ -3254,15 +3481,40 @@ async function aiDetectMowableArea() {
     clearCutoutFeatures();
     reorderMapOverlays();
     syncMowAreaFromLayers();
+
+    if (getMowableFeatureCount() === 0) {
+      const msg = 'AI returned a yard suggestion, but it could not be displayed. Use Lasso Yard to quickly outline the mowable grass area.';
+      setAiDetectMowableStatus('fallback');
+      showResult('parcelInfo', `<strong>Use Lasso Yard</strong><br>${escapeHtml(msg)}`);
+      showToast(msg, 'warning', { duration: 6000 });
+      return;
+    }
+
     await refreshEstimate({ force: true }).catch((error) => {
       showError(prettyApiError(error));
     });
 
-    showResult('parcelInfo', 'AI suggested a mowable area. You can edit it before booking.');
+    const isFallback = data.source === 'fallback' || features.some((feature) => feature.properties?.source === 'fallback');
+    const confidenceLabel = String(data.confidence || data.diagnostics?.confidence || data.diagnostics?.confidenceLabel || '').toLowerCase();
+    const isLowConfidence = confidenceLabel === 'beta_low' || Number(data.confidenceScore || 0) < 0.42;
+    const successMsg = isFallback
+      ? 'AI used a parcel-based draft. Please adjust before booking.'
+      : isLowConfidence
+        ? 'AI Detect found a low-confidence area. Please review and edit before booking.'
+        : 'Beta AI selected likely mowable vegetation by excluding buildings, pavement, roads, and other hard surfaces. Please review and edit before booking.';
+    console.log('[AI Detect] success confidenceLabel:', confidenceLabel, 'isLowConfidence:', isLowConfidence, 'features:', features.length);
+    setAiDetectMowableStatus('success');
+    showResult('parcelInfo', successMsg);
+    showToast(successMsg, isFallback || isLowConfidence ? 'info' : 'success', { duration: 6000 });
   } catch (error) {
-    console.error('AI mowable detection failed', error);
-    showResult('parcelInfo', 'AI could not detect this yard yet. Use Lasso Yard to draw it manually.');
+    console.error('[AI Detect] error', error);
+    const msg = aiDetectFallbackMessage();
+    setAiDetectMowableStatus('fallback');
+    showResult('parcelInfo', `<strong>Use Lasso Yard</strong><br>${escapeHtml(msg)}`);
+    showToast(msg, 'warning', { duration: 6000 });
   } finally {
+    const remainingLoadingMs = 700 - (Date.now() - loadingStartedAt);
+    if (remainingLoadingMs > 0) await new Promise((resolve) => setTimeout(resolve, remainingLoadingMs));
     state.aiDetectMowableLoading = false;
     updateQuoteFlowState();
   }
@@ -3615,6 +3867,7 @@ function revealSecondarySectionForTarget(targetId) {
 
 function navigateFromElement(el) {
   const view = el?.dataset?.jumpView || el?.dataset?.drawerView || el?.dataset?.view;
+  const providerSection = el?.dataset?.providerSection || '';
   let requestedFlow = null;
   let requestedService = null;
   if (el?.dataset?.serviceType) {
@@ -3627,7 +3880,9 @@ function navigateFromElement(el) {
       requestedService = meta.id;
     }
   }
+  if (providerSection) state.providerAreaSection = providerSection;
   if (view) setActiveView(view);
+  if (providerSection && view === 'providers') renderProviderArea(providerSection);
   if (requestedFlow === 'instant_mow') {
     setServiceFlow('instant_mow');
     setQuoteService(requestedService);
@@ -3716,6 +3971,9 @@ function setActiveView(view) {
   if (view === 'providers') {
     populateProviderSetupChoices();
     loadProviderServiceAreas().catch(() => {});
+    if (state.currentUser?.role === 'provider' || state.currentUser?.role === 'admin') {
+      renderProviderArea(state.providerAreaSection || 'dashboard');
+    }
   }
 }
 
@@ -4132,6 +4390,10 @@ document.querySelectorAll('[data-drawer-view], [data-drawer-contact], [data-mobi
   btn.addEventListener('click', () => navigateFromElement(btn));
 });
 
+$$('[data-provider-tab]').forEach((btn) => {
+  btn.addEventListener('click', () => renderProviderArea(btn.dataset.providerTab));
+});
+
 $$('[data-account-panel]').forEach((btn) => {
   btn.addEventListener('click', () => showAccountPanel());
 });
@@ -4147,25 +4409,20 @@ $$('[data-social-auth]').forEach((btn) => {
   btn.addEventListener('click', (e) => {
     const provider = btn.dataset.socialAuth;
     const isFacebook = provider === 'facebook';
-    const mobile = isMobileFacebookLoginFlow();
-    if (isFacebook) console.log('[Facebook Login] clicked', { mobile: isMobileFacebookLoginFlow() });
     e.preventDefault();
-    if (isFacebook) console.log('[Facebook Login] handler started', { mobile });
+    if (isFacebook) console.info('[Facebook Login] clicked');
     beginSocialAuth(provider, btn.dataset.authReturnStep || 'request');
   });
 });
 
 $$('.facebook-login-link').forEach((link) => {
   link.addEventListener('click', (e) => {
-    console.log('[Facebook Login] clicked', { mobile: isMobileFacebookLoginFlow() });
     e.preventDefault();
-    const mobile = isMobileFacebookLoginFlow();
-    console.log('[Facebook Login] handler started', { mobile });
-    // Always snapshot quote context so handleAuthReturn can resume if a quote was in progress
-    saveAuthReturnContext('request', 'account');
-    const route = facebookAuthStartPath('account', 'request');
-    console.info('[Facebook Login] starting', { source: 'account', step: 'request', mobile: isMobileFacebookLoginFlow(), route });
-    window.location.assign(route);
+    console.info('[Facebook Login] clicked');
+    const href = new URL(link.getAttribute('href') || '/api/auth/facebook?source=account', window.location.origin);
+    const source = href.searchParams.get('source') || 'account';
+    const step = href.searchParams.get('step') || state.quoteFlowStep || 'request';
+    startFacebookLogin(step, source);
   });
 });
 
@@ -4300,6 +4557,422 @@ async function loadProviderServiceAreas() {
   } catch (error) {
     summary.innerHTML = `<div style="color:var(--muted);padding:12px">Could not load service areas: ${escapeHtml(prettyApiError(error))}</div>`;
   }
+}
+
+const PROVIDER_AREA_SECTIONS = new Set(['dashboard', 'jobs', 'history', 'services', 'areas', 'profile', 'settings']);
+
+function isProviderUser() {
+  return state.currentUser?.role === 'provider' || state.currentUser?.role === 'admin';
+}
+
+function providerWorkspace() {
+  return byId('providerWorkspaceContent');
+}
+
+function setProviderActiveTab(section) {
+  $$('[data-provider-tab]').forEach((btn) => {
+    const active = btn.dataset.providerTab === section;
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-current', active ? 'page' : 'false');
+  });
+}
+
+function renderProviderArea(section = 'dashboard') {
+  const nextSection = PROVIDER_AREA_SECTIONS.has(section) ? section : 'dashboard';
+  state.providerAreaSection = nextSection;
+  setProviderActiveTab(nextSection);
+  const el = providerWorkspace();
+  if (!el) return;
+  if (!isProviderUser()) {
+    el.innerHTML = accountEmptyMessage('Sign in as a provider to use the Provider Area.');
+    return;
+  }
+
+  if (nextSection === 'dashboard') return renderProviderDashboard();
+  if (nextSection === 'jobs') return renderProviderJobs('active');
+  if (nextSection === 'history') return renderProviderJobHistory('history');
+  if (nextSection === 'services') return renderProviderServices();
+  if (nextSection === 'areas') return renderProviderServiceAreas();
+  if (nextSection === 'profile') return renderProviderProfile();
+  if (nextSection === 'settings') return renderProviderSettings();
+}
+
+function providerLoading(title) {
+  const el = providerWorkspace();
+  if (el) el.innerHTML = `<h3>${escapeHtml(title)}</h3><div class="account-card">${accountEmptyMessage('Loading...')}</div>`;
+}
+
+function providerError(title, error) {
+  const el = providerWorkspace();
+  if (el) el.innerHTML = `<h3>${escapeHtml(title)}</h3><div class="account-card">${accountEmptyMessage(prettyApiError(error))}</div>`;
+}
+
+function providerQuickButton(label, section) {
+  return `<button class="btn secondary small" type="button" data-provider-action="${escapeHtml(section)}">${escapeHtml(label)}</button>`;
+}
+
+async function renderProviderDashboard() {
+  providerLoading('Provider Dashboard');
+  try {
+    const data = await api('/api/provider/overview');
+    const metrics = data.metrics || {};
+    const el = providerWorkspace();
+    if (!el) return;
+    el.innerHTML = `
+      <h3>Provider Dashboard</h3>
+      <div class="metrics provider-metrics">
+        <div class="metric"><strong>${Number(metrics.openAssignedJobs || 0)}</strong><span>Open / assigned</span></div>
+        <div class="metric"><strong>${Number(metrics.upcomingJobs || 0)}</strong><span>Upcoming</span></div>
+        <div class="metric"><strong>${Number(metrics.completedJobs || 0)}</strong><span>Completed</span></div>
+        <div class="metric"><strong>${money(metrics.estimatedRevenuePipeline || 0)}</strong><span>Pipeline</span></div>
+      </div>
+      <div class="provider-quick-actions">
+        ${providerQuickButton('View My Jobs', 'jobs')}
+        ${providerQuickButton('Edit Services', 'services')}
+        ${providerQuickButton('Edit Service Areas', 'areas')}
+        ${providerQuickButton('Provider Profile', 'profile')}
+      </div>
+      <h3>Recent Jobs</h3>
+      <div id="providerRecentJobs" class="card-list"></div>
+    `;
+    wireProviderActionButtons(el);
+    const list = byId('providerRecentJobs');
+    if (!data.recentJobs?.length) {
+      list.innerHTML = accountEmptyMessage('No assigned jobs yet.');
+      return;
+    }
+    data.recentJobs.forEach((job) => list.append(providerJobCard(job, { compact: true })));
+  } catch (error) {
+    providerError('Provider Dashboard', error);
+  }
+}
+
+function wireProviderActionButtons(root = document) {
+  $$('[data-provider-action]', root).forEach((btn) => {
+    btn.addEventListener('click', () => renderProviderArea(btn.dataset.providerAction));
+  });
+}
+
+function providerJobAddress(job = {}) {
+  return [job.address, job.city, job.state, job.zip].filter(Boolean).join(', ');
+}
+
+function providerPhotosHtml(job = {}) {
+  const photos = Array.isArray(job.photos) ? job.photos : [];
+  if (!photos.length) return '';
+  const links = photos.map((photo, index) => {
+    const url = typeof photo === 'string' ? photo : (photo.url || photo.fileUrl || photo.file_url || '');
+    if (!url) return '';
+    return `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">Photo ${index + 1}</a>`;
+  }).filter(Boolean).join(' ');
+  return links ? `<div class="meta">Photos: ${links}</div>` : '';
+}
+
+function providerJobActions(job = {}) {
+  const id = escapeHtml(job.id || '');
+  const status = job.status || '';
+  const actions = [];
+  if (['assigned', 'claimed'].includes(status)) actions.push(['scheduled', 'Mark scheduled']);
+  if (['assigned', 'claimed', 'scheduled'].includes(status)) actions.push(['in_progress', 'Mark in progress']);
+  if (['assigned', 'claimed', 'scheduled', 'in_progress'].includes(status)) actions.push(['completed', 'Mark completed']);
+  if (!['completed', 'canceled', 'cancelled', 'refunded'].includes(status)) actions.push(['canceled', 'Cancel / decline']);
+  return actions.length ? `
+    <div class="provider-job-actions">
+      ${actions.map(([nextStatus, label]) => `<button class="btn secondary small" type="button" data-provider-job-status="${escapeHtml(nextStatus)}" data-provider-job-id="${id}">${escapeHtml(label)}</button>`).join('')}
+    </div>
+  ` : '';
+}
+
+function providerJobCard(job = {}, options = {}) {
+  const safe = sanitizeJobForPublic(job);
+  const address = providerJobAddress(job) || safe.location;
+  const created = job.createdAt || job.postedAt || safe.postedAt;
+  const details = String(job.details || '').trim();
+  const access = [job.yard_access_notes ? `Access: ${job.yard_access_notes}` : '', job.mower_access ? `Mower access: ${job.mower_access}` : ''].filter(Boolean).join(' - ');
+  const html = `
+    <div class="provider-job-card-head">
+      <div>
+        <h4>${escapeHtml(safe.title || 'Lawn Service')}</h4>
+        <div class="meta">${escapeHtml(serviceLabel(safe.serviceType))} &middot; ${statusBadge(safe.status)}</div>
+      </div>
+      <strong>${money(safe.amount)}</strong>
+    </div>
+    <div class="account-field"><span>Customer</span><strong>${escapeHtml(job.customerName || safe.customerName || 'Customer')}</strong></div>
+    ${job.customerPhone || job.customerEmail ? `<div class="meta">${escapeHtml([job.customerPhone, job.customerEmail].filter(Boolean).join(' - '))}</div>` : ''}
+    <div class="meta">${escapeHtml(address || 'Address pending')}</div>
+    <div class="meta">Preferred: ${escapeHtml(safe.preferredDate || 'Flexible')} &middot; Created: ${created ? escapeHtml(new Date(created).toLocaleDateString()) : 'n/a'}</div>
+    ${access ? `<div class="meta">${escapeHtml(access)}</div>` : ''}
+    ${providerPhotosHtml(job)}
+    ${options.compact ? '' : `<details class="provider-job-details"><summary>View details</summary><pre>${escapeHtml(details || 'No notes yet.')}</pre>${renderJobScopeSnapshot(job, safe)}</details>`}
+    ${options.readonly ? '' : providerJobActions(job)}
+  `;
+  const item = card(html);
+  item.classList.add('provider-job-card');
+  return item;
+}
+
+function wireProviderJobStatusButtons(root = document, reload = () => renderProviderJobs('active')) {
+  $$('[data-provider-job-status]', root).forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const status = btn.dataset.providerJobStatus;
+      const jobId = btn.dataset.providerJobId;
+      const reason = status === 'canceled' ? (window.prompt('Reason for canceling or declining this job?') || '') : '';
+      btn.disabled = true;
+      try {
+        await api(`/api/provider/jobs/${encodeURIComponent(jobId)}/status`, {
+          method: 'PATCH',
+          body: JSON.stringify({ status, reason })
+        });
+        showSuccess('Job updated');
+        await reload();
+      } catch (error) {
+        showError(prettyApiError(error));
+        btn.disabled = false;
+      }
+    });
+  });
+}
+
+async function renderProviderJobs(filter = 'active') {
+  providerLoading('My Jobs');
+  try {
+    const data = await api(`/api/provider/jobs?filter=${encodeURIComponent(filter)}`);
+    const el = providerWorkspace();
+    if (!el) return;
+    el.innerHTML = `
+      <div class="provider-section-head">
+        <h3>My Jobs</h3>
+        <button class="btn secondary small" type="button" id="refreshProviderJobsBtn">Refresh</button>
+      </div>
+      <div id="providerJobsList" class="card-list"></div>
+    `;
+    byId('refreshProviderJobsBtn')?.addEventListener('click', () => renderProviderJobs(filter));
+    const list = byId('providerJobsList');
+    if (!data.jobs?.length) {
+      list.innerHTML = accountEmptyMessage('No active assigned jobs right now.');
+      return;
+    }
+    data.jobs.forEach((job) => list.append(providerJobCard(job)));
+    wireProviderJobStatusButtons(list, () => renderProviderJobs(filter));
+  } catch (error) {
+    providerError('My Jobs', error);
+  }
+}
+
+async function renderProviderJobHistory(filter = 'history') {
+  providerLoading('Job History');
+  try {
+    const data = await api(`/api/provider/jobs?filter=${encodeURIComponent(filter)}`);
+    const el = providerWorkspace();
+    if (!el) return;
+    const filters = [
+      ['active', 'Active jobs'],
+      ['upcoming', 'Upcoming jobs'],
+      ['completed', 'Completed jobs'],
+      ['canceled', 'Canceled jobs'],
+      ['history', 'All history']
+    ];
+    el.innerHTML = `
+      <h3>Job History</h3>
+      <div class="provider-filter-row">
+        ${filters.map(([value, label]) => `<button class="account-menu-item ${value === filter ? 'active' : ''}" type="button" data-provider-history-filter="${escapeHtml(value)}">${escapeHtml(label)}</button>`).join('')}
+      </div>
+      <div id="providerHistoryList" class="card-list"></div>
+    `;
+    $$('[data-provider-history-filter]', el).forEach((btn) => {
+      btn.addEventListener('click', () => renderProviderJobHistory(btn.dataset.providerHistoryFilter));
+    });
+    const list = byId('providerHistoryList');
+    if (!data.jobs?.length) {
+      list.innerHTML = accountEmptyMessage('No jobs match this filter.');
+      return;
+    }
+    data.jobs.forEach((job) => list.append(providerJobCard(job, { readonly: ['completed', 'canceled', 'cancelled', 'refunded'].includes(job.status) })));
+    wireProviderJobStatusButtons(list, () => renderProviderJobHistory(filter));
+  } catch (error) {
+    providerError('Job History', error);
+  }
+}
+
+async function renderProviderServices() {
+  providerLoading('Services');
+  try {
+    const data = await api('/api/provider/services');
+    const services = data.services || [];
+    const el = providerWorkspace();
+    if (!el) return;
+    el.innerHTML = `
+      <h3>Services</h3>
+      <form id="providerServicesForm" class="stack provider-services-form">
+        ${services.map((service) => `
+          <section class="account-card provider-service-row" data-provider-service-id="${escapeHtml(service.id)}">
+            <label class="provider-service-toggle"><input type="checkbox" name="enabled" ${service.enabled ? 'checked' : ''} /> <strong>${escapeHtml(service.label || service.id)}</strong></label>
+            <div class="grid-3">
+              <label><span>Base / minimum price</span><input name="basePrice" type="number" min="0" step="1" value="${escapeHtml(service.basePrice || service.minimumPrice || '')}" /></label>
+              <label><span>Minimum price</span><input name="minimumPrice" type="number" min="0" step="1" value="${escapeHtml(service.minimumPrice || '')}" /></label>
+              <label><span>Rate per sq ft</span><input name="ratePerSqft" type="number" min="0" step="0.001" value="${escapeHtml(service.ratePerSqft || '')}" /></label>
+            </div>
+            <label><span>Notes</span><textarea name="notes" rows="2">${escapeHtml(service.notes || '')}</textarea></label>
+          </section>
+        `).join('')}
+        <button class="btn primary" type="submit">Save Services</button>
+      </form>
+      <div id="providerServicesResult" class="result hidden"></div>
+    `;
+    byId('providerServicesForm')?.addEventListener('submit', saveProviderServices);
+  } catch (error) {
+    providerError('Services', error);
+  }
+}
+
+async function saveProviderServices(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const services = $$('.provider-service-row', form).map((row) => ({
+    id: row.dataset.providerServiceId,
+    enabled: Boolean(row.querySelector('[name="enabled"]')?.checked),
+    basePrice: Number(row.querySelector('[name="basePrice"]')?.value || 0),
+    minimumPrice: Number(row.querySelector('[name="minimumPrice"]')?.value || 0),
+    ratePerSqft: Number(row.querySelector('[name="ratePerSqft"]')?.value || 0),
+    notes: row.querySelector('[name="notes"]')?.value || ''
+  }));
+  try {
+    await api('/api/provider/services', { method: 'PUT', body: JSON.stringify({ services }) });
+    showResult('providerServicesResult', '<strong>Saved.</strong> Services updated.');
+    showSuccess('Services saved');
+  } catch (error) {
+    showResult('providerServicesResult', `<strong>Failed:</strong> ${escapeHtml(prettyApiError(error))}`);
+  }
+}
+
+async function renderProviderServiceAreas() {
+  providerLoading('Service Areas');
+  try {
+    const data = await api('/api/provider/service-areas');
+    const cities = new Set((data.cities || []).map((item) => item.city || item));
+    const counties = (data.counties || []).join(', ');
+    const settings = data.service_area_settings || {};
+    const prefs = data.preferences || {};
+    const el = providerWorkspace();
+    if (!el) return;
+    el.innerHTML = `
+      <h3>Service Areas</h3>
+      <form id="providerAreasForm" class="stack">
+        <div class="checks compact-checks provider-city-checks">
+          ${SERVICE_AREA_OPTIONS.map((city) => `<label><input type="checkbox" name="cities" value="${escapeHtml(city)}" ${cities.has(city) ? 'checked' : ''} /> ${escapeHtml(city)}</label>`).join('')}
+        </div>
+        <div class="grid-2">
+          <label><span>Counties served</span><input name="counties" value="${escapeHtml(counties)}" placeholder="Benton, Washington" /></label>
+          <label><span>Radius from base</span><input name="radiusMiles" type="number" min="0" step="1" value="${escapeHtml(settings.radius_miles ?? '')}" /></label>
+        </div>
+        <div class="grid-2">
+          <label><span>Base address / ZIP</span><input name="baseAddress" value="${escapeHtml(settings.base_address || '')}" placeholder="Street or ZIP" /></label>
+          <label><span>Base city</span><input name="baseCity" value="${escapeHtml(settings.base_city || '')}" placeholder="Bentonville" /></label>
+        </div>
+        <div class="grid-2">
+          <label><span>Nearby jobs</span><select name="acceptsNearbyJobs"><option value="false">Only selected areas</option><option value="true" ${prefs.accepts_nearby_jobs ? 'selected' : ''}>Show nearby jobs too</option></select></label>
+          <label><span>Pause new jobs</span><select name="serviceAreasPaused"><option value="false">Active</option><option value="true" ${prefs.service_areas_paused ? 'selected' : ''}>Paused</option></select></label>
+        </div>
+        <label><span>Notes</span><textarea name="notes" rows="3">${escapeHtml(settings.notes || '')}</textarea></label>
+        <button class="btn primary" type="submit">Save Service Areas</button>
+      </form>
+      <div id="providerAreasResult" class="result hidden"></div>
+    `;
+    byId('providerAreasForm')?.addEventListener('submit', saveProviderServiceAreas);
+  } catch (error) {
+    providerError('Service Areas', error);
+  }
+}
+
+async function saveProviderServiceAreas(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const payload = {
+    cities: checkedValues('cities', form),
+    counties: String(form.elements.counties?.value || '').split(',').map((item) => item.trim()).filter(Boolean),
+    radiusMiles: form.elements.radiusMiles?.value || '',
+    baseAddress: form.elements.baseAddress?.value || '',
+    baseCity: form.elements.baseCity?.value || '',
+    acceptsNearbyJobs: form.elements.acceptsNearbyJobs?.value === 'true',
+    serviceAreasPaused: form.elements.serviceAreasPaused?.value === 'true',
+    notes: form.elements.notes?.value || ''
+  };
+  try {
+    await api('/api/provider/service-areas', { method: 'PUT', body: JSON.stringify(payload) });
+    showResult('providerAreasResult', '<strong>Saved.</strong> Service areas updated.');
+    showSuccess('Service areas saved');
+  } catch (error) {
+    showResult('providerAreasResult', `<strong>Failed:</strong> ${escapeHtml(prettyApiError(error))}`);
+  }
+}
+
+async function renderProviderProfile() {
+  providerLoading('Provider Profile');
+  try {
+    const data = await api('/api/provider/profile');
+    const profile = data.profile || {};
+    const el = providerWorkspace();
+    if (!el) return;
+    el.innerHTML = `
+      <h3>Provider Profile</h3>
+      <form id="providerProfileForm" class="stack">
+        <div class="grid-2">
+          <label><span>Business name</span><input name="businessName" value="${escapeHtml(profile.businessName || '')}" /></label>
+          <label><span>Contact name</span><input name="contactName" value="${escapeHtml(profile.contactName || profile.user?.fullName || '')}" /></label>
+        </div>
+        <div class="grid-2">
+          <label><span>Phone</span><input name="phone" type="tel" value="${escapeHtml(profile.phone || '')}" /></label>
+          <label><span>Email</span><input name="email" type="email" value="${escapeHtml(profile.email || profile.user?.email || '')}" /></label>
+        </div>
+        <div class="grid-2">
+          <label><span>Business address / base ZIP</span><input name="businessAddress" value="${escapeHtml(profile.businessAddress || '')}" /></label>
+          <label><span>Base city</span><input name="baseCity" value="${escapeHtml(profile.baseCity || '')}" /></label>
+        </div>
+        <div class="grid-2">
+          <label><span>Deck size / mower size</span><input name="mowerDeckSizeInches" type="number" min="0" step="1" value="${escapeHtml(profile.mowerDeckSizeInches || profile.deckSize || '')}" /></label>
+          <label><span>Photo / logo URL</span><input name="logoUrl" value="${escapeHtml(profile.logoUrl || '')}" /></label>
+        </div>
+        <label><span>Equipment</span><input name="equipment" value="${escapeHtml(profile.equipment || '')}" /></label>
+        <label><span>Bio / notes</span><textarea name="bio" rows="4">${escapeHtml(profile.bio || '')}</textarea></label>
+        <button class="btn primary" type="submit">Save Provider Profile</button>
+      </form>
+      <div id="providerProfileResult" class="result hidden"></div>
+    `;
+    byId('providerProfileForm')?.addEventListener('submit', saveProviderProfile);
+  } catch (error) {
+    providerError('Provider Profile', error);
+  }
+}
+
+async function saveProviderProfile(event) {
+  event.preventDefault();
+  const payload = formToObject(event.currentTarget);
+  try {
+    await api('/api/provider/profile', { method: 'PUT', body: JSON.stringify(payload) });
+    showResult('providerProfileResult', '<strong>Saved.</strong> Provider profile updated.');
+    showSuccess('Provider profile saved');
+  } catch (error) {
+    showResult('providerProfileResult', `<strong>Failed:</strong> ${escapeHtml(prettyApiError(error))}`);
+  }
+}
+
+function renderProviderSettings() {
+  const el = providerWorkspace();
+  if (!el) return;
+  el.innerHTML = `
+    <h3>Settings</h3>
+    <div class="account-card">
+      <div class="account-field"><span>Email notifications</span><strong>On</strong></div>
+      <div class="account-field"><span>SMS notifications</span><strong>Use profile phone</strong></div>
+      <div class="account-field"><span>Job matching</span><strong>Based on service areas and services</strong></div>
+    </div>
+    <div class="provider-quick-actions">
+      ${providerQuickButton('Edit Profile', 'profile')}
+      ${providerQuickButton('Edit Service Areas', 'areas')}
+      ${providerQuickButton('Edit Services', 'services')}
+    </div>
+  `;
+  wireProviderActionButtons(el);
 }
 
 async function updateEstimatePreview() {
@@ -4957,7 +5630,24 @@ async function loadProviderPaidJobs() {
         <div class="meta">${escapeHtml(serviceLabel(safe.serviceType))} &middot; ${escapeHtml(safe.location)}</div>
         <div class="meta">Estimate: <strong>${money(safe.amount)}</strong> &middot; Preferred ${escapeHtml(safe.preferredDate || 'Flexible')}</div>
         <div class="meta">${statusBadge(safe.status)}</div>
+        <button class="btn primary small" type="button" data-claim-paid-job="${escapeHtml(safe.id)}" style="margin-top:8px">Claim Job</button>
       `));
+    });
+    list.querySelectorAll('[data-claim-paid-job]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        btn.textContent = 'Claiming...';
+        try {
+          await api(`/api/jobs/${encodeURIComponent(btn.dataset.claimPaidJob)}/claim`, { method: 'POST', body: '{}' });
+          showSuccess('Job claimed');
+          await loadProviderPaidJobs();
+          if (state.providerAreaSection === 'jobs') await renderProviderJobs('active');
+        } catch (error) {
+          showError(prettyApiError(error));
+          btn.disabled = false;
+          btn.textContent = 'Claim Job';
+        }
+      });
     });
   } catch (err) {
     list.innerHTML = `<div style="color:var(--muted);padding:12px">Could not load paid jobs: ${escapeHtml(err.message)}</div>`;
@@ -6795,8 +7485,9 @@ async function handleAuthReturn() {
   }
 
   const context = loadAuthReturnContext();
-  const rawStep = params.get('step') || context?.step || 'request';
+  const rawStep = params.get('step') || context?.step || context?.currentStep || 'request';
   const step = rawStep === 'manual' ? 'manual' : normalizeQuoteStep(rawStep);
+  const source = context?.source || params.get('source') || 'none';
 
   if (context) {
     console.info('[Auth Resume] found context', {
@@ -6807,11 +7498,26 @@ async function handleAuthReturn() {
       hasCustomerName: Boolean(context.customerFields?.customerName),
     });
   }
-  console.info('[Auth Resume] restoring step=' + step + ' source=' + (context?.source || 'none'));
+  console.info(`[Auth Resume] restoring source=${source} step=${step}`);
 
   if (context?.quote) {
     state.pendingQuote = context.quote;
     state.lastQuote = context.quote;
+  }
+
+  if (context?.pendingCheckoutUrl) {
+    state.pendingCheckoutUrl = context.pendingCheckoutUrl;
+  }
+
+  if (context?.quoteFormData) {
+    const quoteForm = byId('quoteForm');
+    if (quoteForm) {
+      Object.entries(context.quoteFormData).forEach(([key, value]) => {
+        const field = quoteForm.elements[key];
+        if (!field || value == null) return;
+        field.value = value;
+      });
+    }
   }
 
   // Restore drawn polygon to the map source so the lasso area re-appears on the map
@@ -6881,6 +7587,15 @@ async function handleAuthReturn() {
         customerPhone: Boolean(cf.customerPhone),
       });
     }
+    const manualForm = byId('manualQuoteForm');
+    if (manualForm) {
+      const cf = context.customerFields;
+      if (cf.customerName && manualForm.elements.name) manualForm.elements.name.value = cf.customerName;
+      if (cf.customerPhone && manualForm.elements.phone) manualForm.elements.phone.value = cf.customerPhone;
+      if (cf.customerEmail && manualForm.elements.email) manualForm.elements.email.value = cf.customerEmail;
+      if (cf.notes && manualForm.elements.notes) manualForm.elements.notes.value = cf.notes;
+      if (cf.preferredDayTime && manualForm.elements.preferredDayTime) manualForm.elements.preferredDayTime.value = cf.preferredDayTime;
+    }
   }
 
   // Re-apply the single service address source after auth-return form restoration.
@@ -6889,9 +7604,10 @@ async function handleAuthReturn() {
   // Fill name/email blanks from the freshly-loaded user profile
   hydrateLeadFormFromUser(state.currentUser);
   console.info('[Auth UI] showing signed-in controls after auth return');
+  console.info(`[Auth Resume] restored step=${step}`);
 
   clearAuthReturnContext();
-  console.info('[Auth Resume] cleared context');
+  console.info('[Auth Resume] cleared');
 
   params.delete('auth');
   params.delete('provider');
@@ -7308,4 +8024,28 @@ async function submitSuccessSetPassword(event) {
     showQuoteFlowStep(state.quoteFlowStep || 'property', { scroll: false });
   }
   updateQuoteFlowState();
+})();
+
+
+
+
+// Guard: keep property/parcel confirmation UI hidden outside quote flow
+(function guardPropertyUiOutsideQuote() {
+  function sync() {
+    const isQuote = document.body?.dataset?.activeView === "quote";
+    if (isQuote) return;
+
+    for (const id of ["gpsConfirmBar", "parcelInfo"]) {
+      const el = document.getElementById(id);
+      if (el) el.classList.add("hidden");
+    }
+
+    document.querySelectorAll(".parcel-actions-card").forEach((el) => {
+      el.classList.add("hidden");
+    });
+  }
+
+  document.addEventListener("DOMContentLoaded", sync);
+  document.addEventListener("click", () => setTimeout(sync, 50));
+  setInterval(sync, 1000);
 })();

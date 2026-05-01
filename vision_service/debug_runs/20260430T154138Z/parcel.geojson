@@ -1,0 +1,1 @@
+{"type": "FeatureCollection", "features": [{"type": "Feature", "properties": {"debug": "subdivision-rectangle"}, "geometry": {"type": "Polygon", "coordinates": [[[-94.22329, 36.37175], [-94.22271, 36.37175], [-94.22271, 36.37225], [-94.22329, 36.37225], [-94.22329, 36.37175]]]}}]}

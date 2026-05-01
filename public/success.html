@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Payment Received | MowNWA</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <style>
+    body { min-height: 100vh; display: grid; place-items: center; padding: 24px; }
+    .success-card { max-width: 720px; width: 100%; background: #0b1528; border: 1px solid rgba(148,163,184,.25); border-radius: 22px; padding: 28px; box-shadow: 0 18px 50px rgba(0,0,0,.35); }
+    .success-badge { font-size: 3rem; margin-bottom: 12px; }
+    .success-card h1 { margin: 0 0 8px; }
+    .success-card p { color: #cbd5e1; }
+    .success-actions { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 22px; }
+    .success-actions a { text-decoration: none; padding: 12px 16px; border-radius: 12px; font-weight: 700; }
+    .primary-action { background: #22c55e; color: #052e16; }
+    .secondary-action { background: rgba(148,163,184,.12); color: #e2e8f0; border: 1px solid rgba(148,163,184,.25); }
+  </style>
+</head>
+<body>
+  <main class="success-card">
+    <div class="success-badge">✅</div>
+    <h1>Payment received</h1>
+    <p><strong>Your mow is booked.</strong></p>
+    <p>We’ll review your access details and scheduling information. Check My Bookings for status.</p>
+
+    <section>
+      <h2>Next steps</h2>
+      <p>We’ll confirm the job details, review access notes, and prepare the booking for service.</p>
+    </section>
+
+    <div class="success-actions">
+      <a class="primary-action" href="/?view=bookings">View My Bookings</a>
+      <a class="secondary-action" href="/">Back to MowNWA</a>
+    </div>
+  </main>
+</body>
+</html>

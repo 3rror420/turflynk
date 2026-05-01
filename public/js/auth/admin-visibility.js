@@ -54,10 +54,21 @@ function applyRoleVisibility() {
   if (isAdmin) loadAdminPaidJobs().catch(() => {});
 
   // Provider paid jobs panel: show to providers and admins
+  const providerWorkspacePanel = byId('providerWorkspacePanel');
+  if (providerWorkspacePanel) {
+    const showWorkspace = isProvider || isAdmin;
+    providerWorkspacePanel.classList.toggle('hidden', !showWorkspace);
+    providerWorkspacePanel.style.display = showWorkspace ? '' : 'none';
+    if (showWorkspace && typeof renderProviderArea === 'function' && state.activeView === 'providers') {
+      renderProviderArea(state.providerAreaSection || 'dashboard');
+    }
+  }
+
   const providerPaidPanel = byId('providerPaidJobsPanel');
   if (providerPaidPanel) {
     const showPanel = isProvider || isAdmin;
     providerPaidPanel.classList.toggle('hidden', !showPanel);
+    providerPaidPanel.style.display = showPanel ? '' : 'none';
     if (showPanel) loadProviderPaidJobs().catch(() => {});
   }
 }

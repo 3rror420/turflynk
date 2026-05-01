@@ -1,0 +1,9 @@
+# Optional stack for high-resolution GeoTIFF/NAIP parcel analysis.
+# Prefer conda-forge for GDAL/rasterio/geopandas on Ubuntu, then use pip only
+# for packages not available in the selected environment.
+rasterio
+geopandas
+segment-geospatial
+torch
+torchvision
+deepforest

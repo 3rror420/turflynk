@@ -200,6 +200,16 @@ border-top: 1px solid #ddd;
 }
 
 .account-logout button{width:100%;appearance:none;border:1px solid rgba(248,113,113,.45);border-radius:14px;background:rgba(127,29,29,.22);color:#fecaca;padding:12px 14px;font-weight:850;cursor:pointer}
+.provider-area-tabs,.provider-filter-row,.provider-quick-actions,.provider-job-actions{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}
+.provider-area-tabs .account-menu-item,.provider-filter-row .account-menu-item{width:auto}
+.provider-workspace-content{display:grid;gap:12px}
+.provider-section-head,.provider-job-card-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap}
+.provider-job-card h4{margin:0 0 4px}
+.provider-job-details{margin-top:10px;border-top:1px solid rgba(255,255,255,.06);padding-top:10px}
+.provider-job-details summary{cursor:pointer;font-weight:800;color:#e8fff0}
+.provider-job-details pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#08111f;border:1px solid var(--line);border-radius:10px;padding:10px;color:var(--muted)}
+.provider-service-toggle{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+.provider-city-checks{max-height:260px;overflow:auto;padding-right:4px}
 .workflow{display:grid;gap:10px;padding-left:18px;color:#dbe7f7}
 .notice{margin-top:18px}
 .mini-card{background:#0b1528;border:1px solid var(--line);border-radius:16px;padding:14px;color:#cfe1f4}
@@ -3926,4 +3936,32 @@ body[data-session-state="logged-in"] #mobileAuthBtn {
 
 body[data-session-state="logged-in"] .customer-logged-in-nav {
   display: grid !important;
+}
+
+.price-note {
+  margin-top: 6px;
+  font-size: 0.9rem;
+  color: #94a3b8;
+}
+
+
+
+/* Hide common duplicate confirmation UI if old markup still exists */
+.confirm-property,
+.property-confirm,
+#confirmProperty,
+#propertyConfirm,
+#confirmParcel,
+.parcel-confirm,
+#parcelConfirm {
+  display: none !important;
+}
+
+
+
+/* Keep GPS parcel confirmation from leaking onto landing/home page */
+body:not([data-active-view="quote"]) #gpsConfirmBar,
+body:not([data-active-view="quote"]) #parcelInfo,
+body:not([data-active-view="quote"]) .parcel-actions-card {
+  display: none !important;
 }

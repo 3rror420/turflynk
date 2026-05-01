@@ -122,11 +122,16 @@
   <!-- Provider — shown to provider or admin role -->
   <div class="drawer-section provider-only-nav" style="display:none">
     <h4 class="drawer-section-label">Provider</h4>
-    <button type="button" data-drawer-view="providers" class="drawer-btn">
+    <button type="button" data-drawer-view="providers" data-provider-section="dashboard" class="drawer-btn">
       <svg class="drawer-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
       Provider Dashboard
     </button>
-    <button type="button" data-drawer-view="jobs" class="drawer-btn">Recent Jobs</button>
+    <button type="button" data-drawer-view="providers" data-provider-section="jobs" class="drawer-btn">My Jobs</button>
+    <button type="button" data-drawer-view="providers" data-provider-section="history" class="drawer-btn">Job History</button>
+    <button type="button" data-drawer-view="providers" data-provider-section="services" class="drawer-btn">Services</button>
+    <button type="button" data-drawer-view="providers" data-provider-section="areas" class="drawer-btn">Service Areas</button>
+    <button type="button" data-drawer-view="providers" data-provider-section="profile" class="drawer-btn">Provider Profile</button>
+    <button type="button" data-drawer-view="providers" data-provider-section="settings" class="drawer-btn">Settings</button>
   </div>
 
   <!-- Admin — shown to admin role only -->
@@ -229,6 +234,7 @@
         <button class="nav-btn" data-view="quote">Get a Quote</button>
         <button class="nav-btn" data-view="jobs">Recent Jobs</button>
         <button class="nav-btn" data-view="providers">Providers</button>
+        <button class="nav-btn provider-only-nav" data-view="providers" data-provider-section="dashboard" style="display:none">Provider Area</button>
         <button class="nav-btn admin-only-nav" data-view="admin" style="display:none">Admin</button>
         <button class="nav-btn admin-only-nav" data-view="admin" data-scroll-target="adminRecentActivityPanel" style="display:none">Recent Activity</button>
         <button class="nav-btn admin-only-nav" data-view="admin" data-scroll-target="adminRecentJobsPanel" style="display:none">Recent Jobs</button>
@@ -455,14 +461,7 @@
                 </div>
                 <div id="gpsStatusMsg" class="gps-status hidden"></div>
               </div>
-
-              <div id="quoteParcelScreen" class="property-confirmation-panel hidden">
-              <div class="flow-screen-head">
-                <div>
-                  <h2>Parcel found</h2>
-                  <p>Confirm this is the property before drawing your lawn area.</p>
-                </div>
-              </div>
+</div>
               <div id="gpsConfirmBar" class="gps-confirm-bar hidden">
                 <p class="gps-confirm-msg">We found a parcel near your current location. Is this the property?</p>
                 <div class="gps-confirm-actions">
@@ -471,7 +470,6 @@
                 </div>
               </div>
               <div id="parcelInfo" class="parcel-found-card result hidden"></div>
-              <div id="suggestedMowablePanel" class="suggested-mowable-panel hidden"></div>
               <div class="flow-card parcel-actions-card">
                 <div class="parcel-stat-row">
                   <div><span>Lot size</span><strong id="lotAreaAcresDisplay">n/a</strong></div>
@@ -484,6 +482,11 @@
                   <button class="btn ghost" type="button" id="selectParcelBtn">Select Different Parcel</button>
                   <button class="btn ghost" type="button" id="propertyManualQuoteBtn">Request in-person quote</button>
                 </div>
+              </div>
+              </div>
+              <div id="suggestedMowablePanel" class="suggested-mowable-panel hidden"></div>
+
+               
               </div>
               </div>
             </section>
@@ -517,7 +520,7 @@
                   <button class="btn secondary" type="button" id="deleteMowableBtn">Delete Area</button>
                   <button class="btn ghost" type="button" id="clearMowAreaBtn">Clear</button>
                   <button class="btn ghost utility-only" type="button" id="undoCutBtn">Undo Cut</button>
-                  <button class="btn secondary hidden" type="button" id="aiDetectMowableBtn" disabled>AI Detect Yard</button>
+                  <button class="btn secondary hidden" type="button" id="aiDetectMowableBtn" disabled>AI Detect Yard (Beta)</button>
                   <button class="btn secondary" type="button" id="finishLassoBtn">Finish</button>
                   <button class="btn secondary" type="button" id="useParcelShapeBtn">Use Parcel</button>
                   <button class="btn primary" type="button" id="saveAreaBtn">Save</button>
@@ -1072,6 +1075,25 @@
       </section>
 
       <section class="view" data-view-panel="providers">
+        <section class="panel provider-only-panel hidden" id="providerWorkspacePanel" style="margin-bottom:20px">
+          <div class="panel-head">
+            <div>
+              <h2>Provider Area</h2>
+              <p class="section-copy" style="margin:0">Manage assigned jobs, services, service areas, and profile settings.</p>
+            </div>
+          </div>
+          <div class="provider-area-tabs" id="providerAreaTabs" aria-label="Provider area sections">
+            <button class="account-menu-item" type="button" data-provider-tab="dashboard">Provider Dashboard</button>
+            <button class="account-menu-item" type="button" data-provider-tab="jobs">My Jobs</button>
+            <button class="account-menu-item" type="button" data-provider-tab="history">Job History</button>
+            <button class="account-menu-item" type="button" data-provider-tab="services">Services</button>
+            <button class="account-menu-item" type="button" data-provider-tab="areas">Service Areas</button>
+            <button class="account-menu-item" type="button" data-provider-tab="profile">Provider Profile</button>
+            <button class="account-menu-item" type="button" data-provider-tab="settings">Settings</button>
+          </div>
+          <div id="providerWorkspaceContent" class="provider-workspace-content"></div>
+        </section>
+
         <!-- Provider paid jobs panel — visible to signed-in providers -->
         <section class="panel provider-only-panel hidden" id="providerPaidJobsPanel" style="margin-bottom:20px">
           <div class="panel-head">

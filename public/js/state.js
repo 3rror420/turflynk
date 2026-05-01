@@ -43,6 +43,7 @@ const state = {
   parcelDblClick: false,
   quoteFlowStep: 'property',
   pendingCheckoutUrl: null,
+  providerAreaSection: 'dashboard',
 };
 
 const QUOTE_STEP_ORDER = ['property', 'draw', 'estimate', 'request'];
