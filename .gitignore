@@ -76,3 +76,5 @@ data/payments.json
 vision_service/.venv/
 .claude/
 *.bak*
+.claude/
+*.bak*

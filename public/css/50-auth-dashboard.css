@@ -181,14 +181,13 @@
 }
 
 .mownwa-feature-strip {
-  width: min(1180px, calc(100% - 40px));
-  margin: -42px auto 0;
+  width: 100%;
+  margin: 0;
   position: relative;
   z-index: 2;
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  background: #ffffff;
-  border: 1px solid var(--mownwa-border);
+  background: var(--color-canopy, #2d4a1a);
   box-shadow: 0 18px 44px rgba(31, 39, 28, .12);
 }
 
@@ -200,7 +199,7 @@
   align-content: start;
   gap: 10px;
   text-align: center;
-  border-right: 1px solid var(--mownwa-border);
+  border-right: 1px solid rgba(255, 255, 255, .12);
 }
 
 .mownwa-feature:last-child {
@@ -210,12 +209,24 @@
 .mownwa-feature-icon {
   width: 36px;
   height: 36px;
-  color: var(--mownwa-green-dark);
+  color: rgba(255, 255, 255, .85);
+}
+
+/* Icon circle — matches the design's how-it-works row circles */
+.mownwa-feature-icon-wrap {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(255, 255, 255, .3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
 }
 
 .mownwa-feature h3 {
   margin: 0;
-  color: var(--mownwa-forest);
+  color: #ffffff;
   font-size: 1.02rem;
   font-weight: 900;
 }
@@ -223,7 +234,7 @@
 .mownwa-feature p {
   margin: 0;
   max-width: 220px;
-  color: var(--mownwa-muted);
+  color: rgba(255, 255, 255, .72);
   font-size: .92rem;
   line-height: 1.45;
 }
@@ -232,7 +243,7 @@
   display: block;
   min-height: 154px;
   padding: 0;
-  background: #0b3d2e;
+  background: var(--color-dark-bg, #1a1a1a);
   color: #ffffff;
 }
 
@@ -241,7 +252,7 @@
   padding: 18px;
   overflow: hidden;
   border-radius: 0;
-  background: #0b3d2e;
+  background: var(--color-dark-bg, #1a1a1a);
   color: #ffffff;
   display: grid;
   align-content: center;
@@ -252,18 +263,30 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 2rem;
+  gap: 1.5rem;
 }
 
+/* Inline SVG Arkansas outline */
 .service-area-arkansas {
-  width: clamp(130px, 10vw, 160px);
+  width: clamp(80px, 8vw, 106px);
   height: auto;
-  object-fit: contain;
-  display: block;
   flex: 0 0 auto;
-  background: transparent;
-  box-shadow: none;
-  filter: none;
+  display: block;
+  overflow: visible;
+}
+
+.service-area-arkansas .ar-state-shadow {
+  fill: rgba(255, 255, 255, .12);
+}
+
+.service-area-arkansas .ar-state-outline {
+  fill: none;
+  stroke: rgba(255, 255, 255, .9);
+  stroke-width: 18px;
+}
+
+.service-area-arkansas .ar-brand-star {
+  fill: #8fcc60;
 }
 
 .service-area-copy {
@@ -479,7 +502,7 @@
     width: 100%;
     margin: 0;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    background: var(--mownwa-forest);
+    background: var(--color-canopy, #2d4a1a);
     border: 0;
     box-shadow: none;
   }
@@ -521,7 +544,7 @@
   .mownwa-nwa-panel {
     min-height: 110px;
     padding: 0;
-    background: #0b3d2e;
+    background: var(--color-dark-bg, #1a1a1a);
     grid-column: 1 / -1;
     border-right: 0;
   }
@@ -532,6 +555,7 @@
 
   .service-area-card {
     padding: 16px 18px;
+    background: var(--color-dark-bg, #1a1a1a);
     gap: 10px;
   }
 
@@ -540,7 +564,7 @@
   }
 
   .service-area-arkansas {
-    width: clamp(96px, 30vw, 115px);
+    width: clamp(80px, 22vw, 106px);
   }
 
   .service-area-title {
