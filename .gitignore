@@ -74,3 +74,5 @@ data/payments.json
 
 # Local vision service environment
 vision_service/.venv/
+.claude/
+*.bak*
