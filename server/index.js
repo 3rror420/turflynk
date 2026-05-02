@@ -294,7 +294,7 @@ function safeFacebookDeletionPayload(payload = {}) {
 }
 
 function escapeHtml(value) {
-  return String(value ?? "")
+  return String(value === undefined || value === null ? "" : value)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
