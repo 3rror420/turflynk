@@ -1,0 +1,572 @@
+/* ── Session-state visibility ─────────────────────────────────────────────── */
+
+/* Signed-in notice in auth panel: hidden by default, shown when logged in */
+#authSignedInNotice {
+  display: none;
+}
+
+/* When logged in: hide quote checkout social-login block */
+body[data-session-state="logged-in"] .quote-auth-options {
+  display: none !important;
+}
+
+/* When logged in: hide auth-panel login/register UI, show signed-in notice */
+body[data-session-state="logged-in"] .auth-panel .tabs,
+body[data-session-state="logged-in"] .auth-panel .auth-tab,
+body[data-session-state="logged-in"] .auth-panel .facebook-login-link {
+  display: none !important;
+}
+body[data-session-state="logged-in"] #authSignedInNotice {
+  display: block;
+}
+
+/* When logged in: hide the floating Login/Signup bar and landing page login button */
+body[data-session-state="logged-in"] .auth-bar {
+  display: none !important;
+}
+body[data-session-state="logged-in"] #openAuth {
+  display: none !important;
+}
+
+/* Global header account/menu controls stay available across desktop and mobile. */
+.auth-bar {
+  display: none !important;
+}
+
+#openAppDrawer {
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+}
+
+#mobileAuthBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+}
+
+.account-avatar {
+  border-color: rgba(102, 166, 31, .5);
+  background: #123c2b;
+  color: #f0f7eb;
+}
+
+.account-avatar.has-image {
+  background: #2d2d2d;
+}
+
+body[data-session-state="logged-out"] #mobileAccountAvatar,
+body[data-session-state="logged-out"] .customer-logged-in-nav {
+  display: none !important;
+}
+
+body[data-session-state="logged-in"] #mobileAuthLabel {
+  display: none;
+}
+
+body[data-session-state="logged-in"] #mobileAuthBtn {
+  min-width: 44px;
+  padding: 5px;
+  border-radius: 999px;
+}
+
+body[data-session-state="logged-in"] .customer-logged-in-nav {
+  display: grid !important;
+}
+
+.price-note {
+  margin-top: 6px;
+  font-size: 0.9rem;
+  color: #94a3b8;
+}
+
+
+
+/* Hide common duplicate confirmation UI if old markup still exists */
+.confirm-property,
+.property-confirm,
+#confirmProperty,
+#propertyConfirm,
+#confirmParcel,
+.parcel-confirm,
+#parcelConfirm {
+  display: none !important;
+}
+
+
+
+/* Keep GPS parcel confirmation from leaking onto landing/home page */
+body:not([data-active-view="quote"]) #gpsConfirmBar,
+body:not([data-active-view="quote"]) #parcelInfo,
+body:not([data-active-view="quote"]) .parcel-actions-card {
+  display: none !important;
+}
+
+
+/* ══════════════════════════════════════════════════════════════
+   DESIGN SYSTEM v2 — MowNWA Polished Mobile UI
+   Source: Mownwa Prototype design handoff (2026-05-01)
+   Brand: forest green #4a7c2f  ·  Header: #1a1a1a (dark always)
+   ══════════════════════════════════════════════════════════════ */
+
+/* ── 1. Root design tokens ── */
+:root {
+  --mw-brand:        #4a7c2f;
+  --mw-brand-dark:   #3d6826;
+  --mw-brand-deep:   #2d5010;
+  --mw-brand-muted:  #a0c080;
+  --mw-brand-tint:   #f0f7eb;
+  --mw-brand-light:  #d0e8c0;
+  --mw-brand-xlight: #e8f5e0;
+  --mw-text:         #222222;
+  --mw-text-sec:     #555555;
+  --mw-text-muted:   #888888;
+  --mw-bg-page:      #f0f0f0;
+  --mw-bg-card:      #ffffff;
+  --mw-bg-subtle:    #f5f5f5;
+  --mw-border:       #dddddd;
+  --mw-border-lt:    #eeeeee;
+  --mw-radius-sm:    6px;
+  --mw-radius-md:    8px;
+  --mw-radius-lg:    10px;
+  --mw-radius-xl:    12px;
+  --mw-radius-2xl:   16px;
+  --mw-shadow-sm:    0 1px 3px rgba(0,0,0,.08);
+  --mw-shadow-md:    0 4px 12px rgba(0,0,0,.10);
+  --mw-shadow-lg:    0 8px 24px rgba(0,0,0,.12);
+  --mw-shadow-sheet: 0 -2px 16px rgba(0,0,0,.08);
+}
+
+/* ── 2. System-safe font stack ── */
+html, body {
+  font-family: "Helvetica Neue", Arial, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+}
+
+/* ── 3. Landing page brand colors → design palette ── */
+.mownwa-landing {
+  --mownwa-green: #4a7c2f;
+  --mownwa-green-dark: #3d6826;
+}
+.mownwa-start-btn {
+  background: #4a7c2f;
+  box-shadow: 0 16px 34px rgba(74,124,47,.26);
+}
+.mownwa-start-btn:hover,
+.mownwa-start-btn:focus-visible {
+  background: #3d6826;
+  filter: none;
+}
+.mownwa-step-number {
+  background:#4a7c2f;
+  box-shadow: 0 8px 18px rgba(74,124,47,.25);
+}
+.mownwa-step-card:not(:last-child)::after { border-color: #4a7c2f; }
+.mownwa-feature-icon { color: #3d6826; }
+.mownwa-step-icon    { color: #3d6826; }
+
+/* ── 4. Mobile nav — white, edge-to-edge, clean ── */
+@media (max-width: 920px) {
+  .mobile-nav {
+    left: 0 !important;
+    right: 0 !important;
+    bottom: 0 !important;
+    padding: 0 !important;
+    background: #ffffff !important;
+    border: 0 !important;
+    border-top: 1px solid var(--mw-border-lt) !important;
+    border-radius: 0 !important;
+    backdrop-filter: none !important;
+    box-shadow: var(--mw-shadow-sheet) !important;
+  }
+  .mobile-nav .nav-btn {
+    background: transparent !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    color: var(--mw-text-muted) !important;
+    padding: 8px 4px 10px !important;
+    font-size: .7rem !important;
+    font-weight: 600 !important;
+    transition: color .15s ease;
+  }
+  .mobile-nav .nav-btn.active { color: var(--mw-brand) !important; }
+  .mobile-nav .nav-btn svg,
+  .mobile-nav .nav-btn .nav-icon { color: inherit; }
+  .main-shell { padding-bottom: 80px !important; }
+}
+
+/* ── 5. Dark header — stays dark on all views/sizes ── */
+@media (max-width: 920px) {
+  .app-topbar,
+  body[data-active-view="quote"] .app-topbar {
+    background: rgba(26,26,26,.97) !important;
+    border-bottom: 1px solid #333 !important;
+    box-shadow: 0 2px 12px rgba(0,0,0,.3) !important;
+  }
+  .topbar-view-chip { color: #aaaaaa !important; }
+  .app-icon-btn {
+    background: rgba(255,255,255,.08) !important;
+    border-color: rgba(255,255,255,.15) !important;
+    color: #ffffff !important;
+  }
+}
+
+/* ── 6. Quote stepper — white bg, forest green active/done ── */
+.quote-stepper {
+  background: #ffffff !important;
+  border: 0 !important;
+  border-bottom: 1px solid var(--mw-border-lt) !important;
+  border-radius: 0 !important;
+  box-shadow: 0 2px 8px rgba(0,0,0,.05) !important;
+}
+.qs-dot {
+  background: #ffffff !important;
+  border-color: var(--mw-border) !important;
+  color: var(--mw-text-muted) !important;
+}
+.qs-line { background: var(--mw-border) !important; }
+.qs-label { color: var(--mw-text-muted) !important; }
+.qs-step.qs-active .qs-dot {
+  background: var(--mw-brand) !important;
+  border-color: var(--mw-brand) !important;
+  color: #ffffff !important;
+}
+.qs-step.qs-active .qs-label { color: var(--mw-brand) !important; font-weight: 600 !important; }
+.qs-step.qs-done .qs-dot {
+  background: var(--mw-brand) !important;
+  border-color: var(--mw-brand) !important;
+  color: #ffffff !important;
+}
+.qs-step.qs-done .qs-label { color: var(--mw-brand) !important; }
+.qs-step.qs-done + .qs-line { background: var(--mw-brand-light) !important; }
+
+/* ── 7. Quote view — buttons solid forest green ── */
+body[data-active-view="quote"] .btn.primary,
+body[data-active-view="quote"] .quote-app .btn.primary {
+  background: var(--mw-brand) !important;
+  color: #ffffff !important;
+  box-shadow: 0 8px 20px rgba(74,124,47,.20) !important;
+  border: 0 !important;
+}
+body[data-active-view="quote"] .btn.primary:hover,
+body[data-active-view="quote"] .quote-app .btn.primary:hover {
+  background: var(--mw-brand-dark) !important;
+}
+body[data-active-view="quote"] .btn.primary:disabled,
+body[data-active-view="quote"] .quote-app .btn.primary:disabled {
+  background: var(--mw-brand-muted) !important;
+  box-shadow: none !important;
+}
+body[data-active-view="quote"] .btn.secondary,
+body[data-active-view="quote"] .quote-app .btn.secondary {
+  background: #ffffff !important;
+  color: var(--mw-brand) !important;
+  border: 1.5px solid var(--mw-brand-light) !important;
+  box-shadow: none !important;
+}
+body[data-active-view="quote"] .btn.secondary:hover,
+body[data-active-view="quote"] .quote-app .btn.secondary:hover {
+  background: var(--mw-brand-tint) !important;
+}
+body[data-active-view="quote"] .btn.ghost,
+body[data-active-view="quote"] .quote-app .btn.ghost {
+  background: transparent !important;
+  color: var(--mw-text-sec) !important;
+  border: 1px solid var(--mw-border) !important;
+}
+body[data-active-view="quote"] .btn.ghost:hover,
+body[data-active-view="quote"] .quote-app .btn.ghost:hover {
+  background: var(--mw-bg-subtle) !important;
+}
+
+/* price hero: solid brand green */
+body[data-active-view="quote"] .price-hero {
+  background: var(--mw-brand) !important;
+  box-shadow: none !important;
+}
+/* estimate price color */
+body[data-active-view="quote"] .estimate-head h3,
+body[data-active-view="quote"] .quote-app .estimate-head h3 {
+  color: var(--mw-brand) !important;
+}
+/* hero badge */
+body[data-active-view="quote"] .quote-hero-badge,
+body[data-active-view="quote"] .pill {
+  background: var(--mw-brand-xlight) !important;
+  border-color: var(--mw-brand-light) !important;
+  color: var(--mw-brand) !important;
+}
+/* checkboxes */
+body[data-active-view="quote"] .checks input,
+body[data-active-view="quote"] .quote-app input[type="checkbox"],
+body[data-active-view="quote"] .quote-app input[type="radio"] {
+  accent-color: var(--mw-brand);
+}
+/* tab active */
+.tab-btn.active {
+  background: var(--mw-brand-xlight) !important;
+  border-color: var(--mw-brand-light) !important;
+  color: var(--mw-brand) !important;
+}
+/* session chip */
+.session-chip.ok {
+  background: var(--mw-brand-xlight) !important;
+  border-color: var(--mw-brand-light) !important;
+  color: var(--mw-brand) !important;
+}
+/* back button */
+body[data-active-view="quote"] .flow-back-btn {
+  background: #ffffff !important;
+  border-color: var(--mw-border) !important;
+  color: var(--mw-text-sec) !important;
+  box-shadow: none !important;
+}
+/* gps/confirm/panel tints */
+body[data-active-view="quote"] .gps-status,
+body[data-active-view="quote"] .gps-confirm-bar,
+body[data-active-view="quote"] .suggested-mowable-panel {
+  background: var(--mw-brand-tint) !important;
+  border-color: var(--mw-brand-light) !important;
+  color: var(--mw-text) !important;
+}
+/* stat/meta cards */
+body[data-active-view="quote"] .parcel-stat-row div,
+body[data-active-view="quote"] .suggested-mowable-metric,
+body[data-active-view="quote"] .preview-pill,
+body[data-active-view="quote"] .mini-card,
+body[data-active-view="quote"] .status-chip {
+  background: var(--mw-bg-subtle) !important;
+  border-color: var(--mw-border) !important;
+  color: var(--mw-text) !important;
+}
+body[data-active-view="quote"] .status-chip.ok {
+  background: var(--mw-brand-xlight) !important;
+  border-color: var(--mw-brand-light) !important;
+  color: var(--mw-brand) !important;
+}
+/* email auth mark */
+body[data-active-view="quote"] .social-auth-btn.email .provider-mark {
+  background: var(--mw-brand-xlight);
+  color: var(--mw-brand);
+}
+/* auth form submit */
+body[data-active-view="quote"] .auth-panel form button[type="submit"],
+.auth-panel form button[type="submit"] {
+  background: var(--mw-brand) !important;
+}
+/* result / found cards */
+body[data-active-view="quote"] .parcel-found-card.result,
+body[data-active-view="quote"] .result {
+  background: var(--mw-brand-tint) !important;
+  border-color: var(--mw-brand-light) !important;
+}
+/* footer link color */
+body[data-active-view="quote"] .quote-help-inline a,
+.site-footer-contact a { color: var(--mw-brand) !important; }
+
+/* ── 8. Quote mobile — radius + background cleanup ── */
+@media (max-width: 920px) {
+  body[data-active-view="quote"] {
+    background: var(--mw-bg-page) !important;
+  }
+  body[data-active-view="quote"] .main-shell {
+    background: var(--mw-bg-page) !important;
+    padding: 78px 14px 80px !important;
+  }
+  body[data-active-view="quote"] .quote-stepper {
+    background: #ffffff !important;
+    border-bottom: 1px solid var(--mw-border-lt) !important;
+    box-shadow: 0 2px 8px rgba(0,0,0,.05) !important;
+  }
+  body[data-active-view="quote"] input,
+  body[data-active-view="quote"] select,
+  body[data-active-view="quote"] textarea {
+    border-radius: var(--mw-radius-md) !important;
+  }
+  body[data-active-view="quote"] input:focus,
+  body[data-active-view="quote"] select:focus,
+  body[data-active-view="quote"] textarea:focus {
+    border-color: var(--mw-brand) !important;
+    box-shadow: 0 0 0 3px rgba(74,124,47,.10) !important;
+    outline: none;
+  }
+  body[data-active-view="quote"] .btn {
+    border-radius: var(--mw-radius-md) !important;
+  }
+  body[data-active-view="quote"] .btn.primary {
+    min-height: 50px !important;
+    font-size: .98rem !important;
+  }
+  body[data-active-view="quote"] .flow-card,
+  body[data-active-view="quote"] .lead-request-panel,
+  body[data-active-view="quote"] .quote-hero-card,
+  body[data-active-view="quote"] .request-form {
+    border-radius: var(--mw-radius-xl) !important;
+    box-shadow: var(--mw-shadow-sm) !important;
+  }
+  body[data-active-view="quote"] .parcel-found-card {
+    border-radius: var(--mw-radius-xl) !important;
+  }
+  body[data-active-view="quote"] .price-hero {
+    border-radius: var(--mw-radius-lg) !important;
+  }
+  body[data-active-view="quote"] .checks label,
+  body[data-active-view="quote"] .quote-app .checks label {
+    border-radius: var(--mw-radius-sm) !important;
+  }
+  body[data-active-view="quote"] .parcel-stat-row div {
+    border-radius: var(--mw-radius-md) !important;
+  }
+}
+
+/* ── 9. Map attribution — pill style ── */
+.draw-screen .map-credit {
+  background: rgba(255,255,255,.88) !important;
+  border: 1px solid rgba(0,0,0,.08) !important;
+  border-radius: 999px !important;
+  padding: 4px 10px !important;
+  font-size: 11px !important;
+  font-weight: 500 !important;
+  color: var(--mw-text-muted) !important;
+}
+
+/* ── 10. Draw controls — light bottom-sheet handle ── */
+body[data-active-view="quote"] .draw-screen .map-tools-panel::before {
+  background: var(--mw-border) !important;
+}
+body[data-active-view="quote"] .draw-screen .map-tools-status .status-chip {
+  background: var(--mw-bg-subtle) !important;
+  border-color: var(--mw-border) !important;
+  color: var(--mw-text-sec) !important;
+}
+body[data-active-view="quote"] .draw-screen .map-tools-status .app-icon-btn {
+  background: var(--mw-bg-subtle) !important;
+  border-color: var(--mw-border) !important;
+  color: var(--mw-text-sec) !important;
+}
+
+/* ── 11. Hamburger drawer — refined dark ── */
+.app-drawer { background: #1a1a1a !important; border-left-color: #333 !important; }
+.drawer-head { border-bottom-color: #333 !important; }
+.drawer-section-label {
+  color: rgba(255,255,255,.4) !important;
+  font-size: .7rem !important;
+  letter-spacing: .08em !important;
+}
+.drawer-section button,
+.drawer-btn {
+  background: #2a2a2a !important;
+  border-color: #3a3a3a !important;
+  color: #f0f0f0 !important;
+  border-radius: 10px !important;
+}
+.drawer-section button:hover,
+.drawer-btn:hover {
+  background: #363636 !important;
+  border-color: rgba(74,124,47,.4) !important;
+}
+.drawer-icon { opacity: .8; }
+
+/* ── 12. Auth / login modal — bottom sheet ── */
+.modal-overlay {
+  align-items: flex-end !important;
+  padding: 0 !important;
+}
+.modal-box,
+body[data-active-view="quote"] .modal-box {
+  background: #ffffff !important;
+  border-color: var(--mw-border) !important;
+  color: var(--mw-text) !important;
+  max-width: 480px !important;
+  width: 100% !important;
+  border-radius: var(--mw-radius-2xl) var(--mw-radius-2xl) 0 0 !important;
+  padding: 24px 20px 40px !important;
+  animation: mwSlideUp .3s ease;
+}
+@keyframes mwSlideUp {
+  from { transform: translateY(100%); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
+
+/* ── 13. Service area / NWA banner ── */
+.service-area-card,
+.mownwa-nwa-panel { background: #1a3d0a !important; }
+
+/* ── 14. Account avatar ── */
+.account-avatar {
+  border-color: rgba(74,124,47,.4) !important;
+  background: #2d5010 !important;
+  color: #e8f5e0 !important;
+}
+
+/* ── 15. Quote hero badge global ── */
+.quote-hero-badge {
+  background: var(--mw-brand-xlight) !important;
+  border-color: var(--mw-brand-light) !important;
+  color: var(--mw-brand) !important;
+}
+
+/* ── 16. GPS confirm bar ── */
+body[data-active-view="quote"] .gps-confirm-msg { color: var(--mw-text) !important; }
+
+/* FORCE PRIMARY BUTTONS (visible change) */
+.btn.primary, .mownwa-start-btn {
+  background: #4a7c2f !important;
+  border-color: #4a7c2f !important;
+  color: #ffffff !important;
+}
+
+/* LIGHT NAV (visible change) */
+.mobile-nav, header, .app-header {
+  background: #ffffff !important;
+  color: #111 !important;
+}
+
+/* PRICE HERO (visible change) */
+.price-hero {
+  background: #4a7c2f !important;
+  color: #fff !important;
+}
+
+
+/* === MowNWA visible skin safety layer === */
+.btn.primary,
+.quote-app .btn.primary,
+.mownwa-start-btn,
+.auth-panel form button {
+  background: #4a7c2f !important;
+  border-color: #4a7c2f !important;
+  color: #ffffff !important;
+  box-shadow: 0 12px 28px rgba(74,124,47,.22);
+}
+
+.price-hero,
+.brand-mark,
+.app-brand-icon-sq {
+  background: #4a7c2f !important;
+  color: #ffffff !important;
+}
+
+.nav-btn.active,
+.account-menu-item.active,
+.tab-btn.active {
+  background: rgba(74,124,47,.16) !important;
+  border-color: rgba(74,124,47,.38) !important;
+  color: #f0f7eb !important;
+}
+
+.qs-step.qs-active .qs-dot {
+  background: #4a7c2f !important;
+  border-color: #4a7c2f !important;
+  color: #ffffff !important;
+}
+
+.qs-step.qs-done .qs-dot {
+  background: rgba(74,124,47,.18) !important;
+  border-color: rgba(74,124,47,.5) !important;
+  color: #3d6826 !important;
+}
+
+.qs-step.qs-done + .qs-line {
+  background: rgba(74,124,47,.38) !important;
+}

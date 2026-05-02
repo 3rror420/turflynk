@@ -1,0 +1,558 @@
+/* Clean Android-style customer quote flow */
+.flow-hidden-field{display:none !important}
+.quote-app{
+  width:min(430px,100%);
+  margin:0 auto;
+}
+.quote-flow-form{display:block}
+.quote-flow-screen{
+  display:none;
+  min-height:calc(100svh - 96px);
+}
+.quote-flow-screen.is-active{display:grid;gap:16px;align-content:start}
+.quote-flow-screen.hidden,
+.quote-flow-screen.is-hidden,
+.quote-flow-screen[hidden]{display:none !important}
+.start-hero{
+  min-height:260px;
+  display:grid;
+  align-content:end;
+  gap:16px;
+  padding:26px 4px 10px;
+}
+.brand-lockup{display:flex;align-items:center;gap:12px}
+.brand-mark{
+  width:48px;
+  height:48px;
+  border-radius:16px;
+  display:grid;
+  place-items:center;
+  background:#4a7c2f;
+  color:#ffffff;
+  font-weight:950;
+  box-shadow:0 14px 30px rgba(74,124,47,.22);
+}
+.brand-name{font-size:1.28rem;font-weight:900}
+.brand-subtitle{color:#a3a3a3;font-weight:750;font-size:.86rem}
+.start-hero h2{
+  font-size:2.45rem;
+  line-height:1.05;
+  letter-spacing:0;
+  margin:0;
+}
+.start-hero p,.flow-screen-head p{
+  margin:0;
+  color:#a3a3a3;
+  line-height:1.45;
+}
+.flow-card,.parcel-found-card,.price-hero{
+  background:#2d2d2d;
+  border:1px solid #404040;
+  border-radius:24px;
+  padding:18px;
+  box-shadow:0 18px 40px rgba(0,0,0,.28);
+}
+.flow-card{display:grid;gap:14px}
+.flow-screen-head{
+  display:flex;
+  align-items:flex-start;
+  gap:12px;
+  padding-top:4px;
+}
+.flow-screen-head h2{font-size:1.8rem;line-height:1.15;margin:0 0 4px}
+.flow-back-btn{
+  min-width:64px;
+  min-height:42px;
+  border-radius:14px;
+  border:1px solid #404040;
+  background:#2d2d2d;
+  color:#fff;
+  font-weight:850;
+}
+.compact-location-grid{grid-template-columns:1.3fr .7fr}
+.address-tools{grid-template-columns:1fr auto}
+.address-tools .btn{min-height:56px}
+.parcel-found-card.result{
+  margin-top:0;
+  background:#2d2d2d;
+  border-color:#404040;
+}
+.parcel-stat-row{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:12px;
+}
+.parcel-stat-row div{
+  display:grid;
+  gap:4px;
+  padding:14px;
+  border-radius:18px;
+  background:#222;
+  border:1px solid #404040;
+}
+.parcel-stat-row span{color:#a3a3a3;font-size:.84rem;font-weight:800}
+.parcel-stat-row strong{font-size:1rem}
+.price-hero{
+  display:grid;
+  gap:4px;
+  background:#4a7c2f;
+  color:#ffffff;
+  border:0;
+}
+.price-hero span{font-weight:850;opacity:.8}
+.price-hero strong{font-size:3rem;line-height:1;font-weight:950}
+.price-hero small{font-weight:800;opacity:.75}
+.price-hero.compact strong{font-size:2rem}
+.request-service-cta{min-height:60px}
+.quote-app input,.quote-app select,.quote-app textarea{
+  background:#1a1a1a;
+  border-color:#404040;
+  color:#fff;
+}
+.quote-app label span{color:#e8e8e8;font-weight:800}
+.quote-app .btn{
+  border-radius:18px;
+  min-height:52px;
+}
+.quote-app .btn.primary{
+  background:#4a7c2f;
+  color:#ffffff;
+}
+.quote-app .btn.secondary{
+  background:#2d2d2d;
+  border:1px solid #404040;
+  color:#fff;
+}
+.quote-app .btn.ghost{
+  background:transparent;
+  border:1px solid #404040;
+  color:#a3a3a3;
+}
+.quote-app .checks label{
+  background:#222;
+  border-color:#404040;
+  border-radius:16px;
+}
+.quote-app .result.hidden{display:none}
+.quote-app .estimate-card,
+.quote-app .final-review,
+.quote-app .scope-grid{
+  background:#2d2d2d;
+  border-color:#404040;
+}
+.quote-app .estimate-head h3{font-size:2.35rem;color:#4a7c2f}
+.quote-app .preview-pill{background:#222}
+.quote-app .suggested-mowable-panel{margin-top:0}
+.draw-screen{
+  display:grid;
+  gap:10px;
+  min-height:auto;
+  padding-bottom:0;
+}
+.draw-helper-text{
+  color:#dbe7f7;
+  font-size:.94rem;
+  line-height:1.45;
+  margin:4px 2px 0;
+  padding:10px 12px;
+  border:1px solid rgba(148,163,184,.18);
+  border-radius:14px;
+  background:rgba(26,26,26,.82);
+}
+.draw-screen .map-stage{
+  position:relative;
+  height:clamp(360px,54svh,560px);
+  min-height:360px;
+  max-height:560px;
+  margin:6px 0 0;
+  overflow:hidden;
+  border-radius:24px;
+  border:1px solid #404040;
+  background:#111;
+  box-shadow:0 22px 60px rgba(0,0,0,.34);
+}
+.draw-screen .map-panel{
+  height:100%;
+  min-height:100%;
+  border:0;
+  border-radius:0;
+}
+body:not([data-quote-flow-step="draw"]) #quoteMap{
+  pointer-events:none;
+}
+body[data-quote-flow-step="draw"] #quoteMap{
+  pointer-events:auto;
+  touch-action:pan-y;
+}
+body[data-quote-flow-step="draw"][data-lasso-armed="true"] #quoteMap,
+body[data-quote-flow-step="draw"][data-lasso-drawing="true"] #quoteMap{
+  touch-action:none;
+}
+.draw-screen .map-credit{
+  position:absolute;
+  left:10px;
+  top:10px;
+  bottom:auto;
+  z-index:500;
+  padding:5px 8px;
+  border-radius:999px;
+  background:rgba(26,26,26,.72);
+}
+.draw-screen .map-tools-toggle{
+  position:static;
+  width:100%;
+  min-height:46px;
+  margin-top:0;
+  border-radius:14px;
+}
+.draw-screen .map-tools-panel{
+  position:relative;
+  left:auto;
+  right:auto;
+  bottom:auto;
+  display:grid;
+  gap:10px;
+  max-height:none;
+  overflow:visible;
+  margin-top:0;
+  padding:10px;
+  border-radius:20px;
+  background:#1a1a1a;
+  border:1px solid #404040;
+  box-shadow:0 14px 34px rgba(0,0,0,.24);
+  -webkit-overflow-scrolling:touch;
+}
+.draw-screen .map-tools-panel.hidden{display:none}
+.draw-screen .map-tools-status{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:8px;
+}
+.draw-screen .map-tools-status .status-chip{
+  min-height:0;
+  padding:7px 10px;
+  border-radius:999px;
+  font-size:.78rem;
+  line-height:1.15;
+  background:rgba(26,26,26,.92);
+}
+.draw-screen .map-tools-status .app-icon-btn{
+  min-height:36px;
+  padding:7px 10px;
+  border-radius:999px;
+  font-size:.78rem;
+}
+.draw-screen .map-tools-panel .tool-row.major-tools{
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+  overflow:visible;
+  padding-bottom:2px;
+}
+.draw-screen .map-tools-panel .tool-row.major-tools .btn{
+  width:auto;
+  flex:0 1 auto;
+  min-height:44px;
+  border-radius:14px;
+  padding:9px 12px;
+  font-size:.88rem;
+  white-space:normal;
+}
+.draw-action-bar{
+  position:static;
+  z-index:760;
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:10px;
+  margin:0;
+  padding:10px 0 0;
+  border:1px solid rgba(64,64,64,.78);
+  border-width:1px 0 0;
+  border-radius:0;
+  background:rgba(17,17,17,.95);
+  box-shadow:none;
+  backdrop-filter:none;
+}
+.draw-action-bar .btn{
+  min-height:50px;
+}
+.bottom-sheet-continue{width:100%}
+
+@media (min-width:921px){
+  .quote-app{width:min(430px,100%)}
+  .quote-stepper{max-width:430px;margin:0 auto 16px}
+}
+
+@media (max-width:920px){
+  body{background:#1a1a1a}
+  .app-topbar{
+    display:flex;
+    background:rgba(26,26,26,.96);
+    border-bottom-color:#404040;
+  }
+  .app-brand-icon-sq{
+    background:#4a7c2f;
+    color:#ffffff;
+  }
+  .app-icon-btn{background:#2d2d2d;border-color:#404040;color:#e8e8e8}
+  .main-shell{padding:78px 14px 104px}
+  .quote-stepper{
+    position:sticky;
+    top:64px;
+    z-index:70;
+    margin:-14px -14px 14px;
+    border-radius:0;
+    border-left:0;
+    border-right:0;
+    padding:10px 12px;
+  }
+  .quote-flow-screen{min-height:calc(100svh - 134px)}
+  body[data-quote-flow-step="draw"] .main-shell{
+    padding:78px 14px 112px;
+  }
+  body[data-quote-flow-step="draw"] .quote-stepper,
+  body[data-quote-flow-step="draw"] .mobile-nav{
+    display:none;
+  }
+  body[data-quote-flow-step="draw"] .quote-app{
+    width:100%;
+  }
+  body[data-quote-flow-step="draw"] .draw-screen{
+    position:relative;
+    display:grid;
+    min-height:auto;
+    padding-bottom:12px;
+  }
+  body[data-quote-flow-step="draw"] .draw-screen .map-stage{
+    position:relative;
+    height:55svh;
+    min-height:330px;
+    max-height:560px;
+    margin:8px 0 0;
+    border:1px solid #404040;
+    border-radius:22px;
+  }
+  body[data-quote-flow-step="draw"] .draw-screen .map-tools-panel{
+    position:relative;
+    max-height:none;
+    overflow:visible;
+    margin-top:0;
+    border-radius:20px;
+    border:1px solid #404040;
+    padding:12px;
+    box-shadow:0 14px 34px rgba(0,0,0,.28);
+  }
+  .draw-screen .map-tools-panel .tool-row.major-tools{
+    display:flex;
+    flex-wrap:wrap;
+  }
+  .draw-screen .map-tools-panel .tool-row.major-tools .btn{
+    width:auto;
+    flex:1 1 128px;
+    min-height:48px;
+  }
+  .draw-screen .utility-only{display:none !important}
+}
+
+@media (max-width:430px){
+  .start-hero h2{font-size:2.15rem}
+  .compact-location-grid,.grid-2{grid-template-columns:1fr}
+  .address-tools{grid-template-columns:1fr}
+  .parcel-stat-row{grid-template-columns:1fr}
+  .price-hero strong{font-size:2.5rem}
+  .draw-screen .major-tools .btn{min-height:48px;padding:10px 12px;font-size:.84rem}
+  .draw-helper-text{font-size:.9rem}
+}
+
+/* ── Role gating ── hidden by default; applyRoleVisibility() shows them after confirmed auth */
+.admin-only { display: none; }
+.provider-only { display: none; }
+.technical-parcel-fields { display: none; }
+
+/* ── Inline text-link button ── */
+.link-btn {
+  background: none;
+  border: none;
+  color: var(--accent, #4a7c2f);
+  cursor: pointer;
+  font-size: inherit;
+  padding: 0;
+  text-decoration: underline;
+}
+.link-btn:hover { opacity: .8; }
+
+/* Brand image polish */
+
+/* ── Topbar logo (landscape brand image) ── */
+.app-brand-logo {
+  height: 34px;
+  width: auto;
+  object-fit: contain;
+  border-radius: 0;
+  display: block;
+  flex-shrink: 0;
+}
+
+/* ── Quote hero card ── */
+.quote-hero-card {
+  display: grid;
+  gap: 16px;
+}
+
+.quote-hero-copy {
+  display: grid;
+  gap: 12px;
+  align-content: start;
+}
+
+.quote-hero-copy h2 {
+  font-size: 2.45rem;
+  line-height: 1.05;
+  letter-spacing: 0;
+  margin: 0;
+}
+
+.quote-hero-copy p {
+  margin: 0;
+  color: #a3a3a3;
+  line-height: 1.45;
+}
+
+.quote-hero-logo {
+  width: 48px;
+  height: 48px;
+  border-radius: 999px;
+  object-fit: cover;
+}
+
+.quote-hero-badge {
+  display: inline-flex;
+  align-items: center;
+  background: rgba(74,124,47,.14);
+  border: 1px solid rgba(74,124,47,.28);
+  color: #d0edba;
+  border-radius: 999px;
+  padding: 6px 14px;
+  font-size: .8rem;
+  font-weight: 700;
+  width: fit-content;
+  margin-top: 4px;
+}
+
+.quote-hero-photo {
+  width: 100%;
+  height: auto;
+  object-fit: contain;
+  border-radius: 16px;
+  display: block;
+}
+
+@media (min-width: 768px) {
+  .app-brand-logo { height: 40px; width: auto; }
+  .quote-hero-card {
+    grid-template-columns: minmax(0, 1fr) minmax(240px, 42%);
+    align-items: center;
+  }
+  .quote-hero-copy h2 { font-size: 2.15rem; }
+  .quote-hero-logo { width: 56px; height: 56px; }
+}
+
+/* ── GPS / Current Location ─────────────────────────────────────── */
+.gps-location-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+.gps-btn {
+  min-height: 48px;
+  width: 100%;
+  font-size: .95rem;
+}
+.gps-helper-text {
+  margin: 0;
+  font-size: .78rem;
+  color: rgba(219,231,247,.55);
+  padding: 0 4px;
+}
+.gps-status {
+  font-size: .85rem;
+  color: #b4d4ff;
+  background: rgba(30,60,100,.45);
+  border: 1px solid rgba(100,160,255,.2);
+  border-radius: 8px;
+  padding: 8px 12px;
+  line-height: 1.4;
+}
+.gps-location-tooltip {
+  background: rgba(26,26,26,.96);
+  color: #fff;
+  border: 1px solid rgba(74,124,47,.42);
+  border-radius: 999px;
+  padding: 5px 9px;
+  font-size: .78rem;
+  font-weight: 850;
+  box-shadow: 0 8px 18px rgba(0,0,0,.25);
+}
+.gps-confirm-bar {
+  background: rgba(20,45,80,.7);
+  border: 1px solid rgba(100,180,255,.25);
+  border-radius: 12px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.gps-confirm-msg {
+  margin: 0;
+  font-size: .9rem;
+  color: #dbe7f7;
+  line-height: 1.4;
+}
+.gps-confirm-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.gps-confirm-actions .btn {
+  flex: 1 1 120px;
+  min-height: 44px;
+}
+
+.property-confirmation-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.property-confirmation-panel.hidden {
+  display: none !important;
+}
+
+.property-confirmation-panel .hero-actions {
+  align-items: stretch;
+}
+
+.property-confirmation-panel .hero-actions .btn,
+.gps-location-row .btn {
+  min-height: 48px;
+}
+
+/* Isolated public landing page */
+body[data-active-view="dashboard"] .auth-bar,
+body[data-active-view="dashboard"] .sidebar,
+body[data-active-view="dashboard"] .topbar,
+body[data-active-view="dashboard"] .mobile-nav {
+  display: none;
+}
+
+body[data-active-view="dashboard"] .app-shell {
+  display: block;
+  min-height: 100vh;
+}
+
+body[data-active-view="dashboard"] .main-shell {
+  padding: 0;
+  min-height: 100vh;
+}
+

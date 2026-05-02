@@ -1,0 +1,325 @@
+/* Local landing content */
+.local-content-grid,
+.local-faq-panel{
+  margin-top:20px;
+}
+
+.local-landing-panel h2{
+  font-size:clamp(1.7rem,4vw,2.6rem);
+}
+
+.local-landing-actions{
+  display:flex;
+  gap:10px;
+  flex-wrap:wrap;
+  margin:18px 0;
+}
+
+.local-detail-grid{
+  margin:18px 0;
+}
+
+.local-detail-grid ul{
+  margin:0;
+  padding-left:20px;
+  color:#dbe7f7;
+  line-height:1.6;
+}
+
+.local-pill-row{
+  display:flex;
+  gap:8px;
+  flex-wrap:wrap;
+  margin-bottom:12px;
+}
+
+.local-landing-panel .pill{
+  margin-bottom:8px;
+}
+
+@media (max-width:640px){
+  .local-landing-actions{
+    display:grid;
+    grid-template-columns:1fr;
+  }
+
+  .local-content-grid,
+  .local-faq-panel{
+    margin-top:14px;
+  }
+}
+
+/* ── MowNWA Homepage Styles ── */
+.mownwa-hero{
+  background:linear-gradient(135deg,rgba(74,124,47,.12),rgba(26,26,26,.98));
+  border-color:rgba(74,124,47,.22);
+}
+.mownwa-hero .hero-cta{
+  font-size:1.05rem;
+  padding:16px 24px;
+  min-height:52px;
+}
+.service-tags{
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+  margin-top:16px;
+}
+.service-tags .pill{
+  margin-bottom:0;
+  font-size:.82rem;
+  padding:6px 10px;
+}
+
+/* NWA towns grid */
+.nwa-towns-grid{
+  display:grid;
+  grid-template-columns:repeat(4,minmax(0,1fr));
+  gap:8px 10px;
+}
+.nwa-towns-grid span{
+  background:#2d2d2d;
+  border:1px solid var(--line);
+  border-radius:12px;
+  padding:10px 12px;
+  font-size:.9rem;
+  color:#e8e8e8;
+  text-align:center;
+}
+
+/* Lead Request Panel */
+.lead-request-panel{
+  border-color:rgba(74,124,47,.28);
+  background:rgba(35,35,35,.98);
+}
+.lead-request-panel h3{
+  color:#f0f7eb;
+}
+
+.manual-quote-cta{
+  width:100%;
+  min-height:66px;
+  margin-top:10px;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  gap:4px;
+  text-align:center;
+  white-space:normal;
+}
+
+.manual-quote-cta small{
+  display:block;
+  max-width:32rem;
+  color:inherit;
+  font-size:.82rem;
+  font-weight:650;
+  line-height:1.3;
+  opacity:.78;
+}
+
+.manual-quote-panel em{
+  color:var(--muted);
+  font-style:normal;
+  font-weight:650;
+}
+
+/* Lead status badges */
+.status-badge.new{background:rgba(59,130,246,.16);color:#93c5fd}
+.status-badge.manual_requested{background:rgba(20,184,166,.14);color:#99f6e4}
+.status-badge.quoted{background:rgba(168,85,247,.14);color:#d8b4fe}
+.status-badge.bidding{background:rgba(245,158,11,.14);color:#fcd34d}
+.status-badge.scheduled{background:rgba(74,124,47,.14);color:#4a7c2f}
+.status-badge.canceled{background:rgba(239,68,68,.12);color:#fca5a5}
+
+@media (max-width:640px){
+  .nwa-towns-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .mownwa-hero .hero-cta{width:100%}
+  .lead-request-panel .grid-2{grid-template-columns:1fr}
+}
+
+/* ── Mobile header icon buttons ── */
+.app-brand-btn{
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  color:var(--primary);
+}
+.app-icon-btn{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+}
+
+/* ── Drawer enhancements ── */
+.drawer-section-label{
+  margin:8px 0 4px;
+  color:rgba(232,255,240,.7);
+  font-size:.75rem;
+  font-weight:900;
+  letter-spacing:.1em;
+  text-transform:uppercase;
+}
+.drawer-btn{
+  display:flex !important;
+  align-items:center;
+  gap:9px;
+  text-align:left;
+}
+.drawer-icon{
+  width:16px;
+  height:16px;
+  flex-shrink:0;
+  opacity:.7;
+}
+.drawer-contact-panel{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:8px;
+  margin:8px 0 2px;
+}
+.drawer-contact-panel a{
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap:6px;
+  min-height:42px;
+  border:1px solid rgba(74,124,47,.18);
+  border-radius:12px;
+  background:rgba(74,124,47,.08);
+  color:#f0f7eb;
+  font-size:.84rem;
+  font-weight:800;
+}
+
+/* ── Bottom nav icon layout ── */
+.nav-icon{
+  display:block;
+  width:20px;
+  height:20px;
+  margin:0 auto 2px;
+  flex-shrink:0;
+}
+.mobile-nav .nav-btn{
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  gap:2px;
+  font-size:.7rem;
+  line-height:1;
+}
+@media (max-width:380px){
+  .mobile-nav .nav-btn{font-size:.65rem}
+  .nav-icon{width:18px;height:18px}
+}
+
+/* ── Quote Progress Stepper (mobile only) ── */
+.quote-stepper{
+  display:none;
+  align-items:center;
+  gap:0;
+  margin-bottom:14px;
+  padding:14px 16px;
+  background:#2d2d2d;
+  border:1px solid var(--line);
+  border-radius:18px;
+}
+.qs-step{
+  display:grid;
+  gap:5px;
+  align-items:center;
+  justify-items:center;
+  flex-shrink:0;
+}
+.qs-dot{
+  width:28px;
+  height:28px;
+  border-radius:50%;
+  background:#222;
+  border:2px solid var(--line);
+  color:var(--muted);
+  font-size:.78rem;
+  font-weight:800;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  transition:background .2s,border-color .2s,color .2s;
+}
+.qs-label{
+  font-size:.66rem;
+  color:var(--muted);
+  font-weight:700;
+  white-space:nowrap;
+  transition:color .2s;
+}
+.qs-line{
+  flex:1;
+  height:2px;
+  background:var(--line);
+  margin:0 4px 14px;
+  transition:background .3s;
+  min-width:8px;
+}
+.qs-step.qs-active .qs-dot{
+  background:var(--primary);
+  border-color:var(--primary);
+  color:#ffffff;
+}
+.qs-step.qs-active .qs-label{
+  color:var(--primary);
+}
+.qs-step.qs-done .qs-dot{
+  background:rgba(74,124,47,.18);
+  border-color:rgba(74,124,47,.5);
+  color:#3d6826;
+}
+.qs-step.qs-done+.qs-line{
+  background:rgba(74,124,47,.38);
+}
+@media (max-width:920px){
+  .quote-stepper{display:flex}
+}
+
+/* ── Map bottom-sheet handle (visual affordance) ── */
+.map-tools-panel::before{
+  content:'';
+  display:block;
+  width:36px;
+  height:4px;
+  background:rgba(255,255,255,.14);
+  border-radius:2px;
+  margin:0 auto 10px;
+}
+@media (min-width:921px){
+  .map-tools-panel::before{display:none}
+}
+
+/* ── App header brand elements ── */
+.app-brand-btn{
+  appearance:none;border:none;background:transparent;padding:0 4px;
+  display:inline-flex;align-items:center;gap:10px;cursor:pointer;
+}
+.app-brand-icon-sq{
+  width:36px;height:36px;border-radius:11px;flex-shrink:0;
+  background:#4a7c2f;
+  display:flex;align-items:center;justify-content:center;
+  font-size:1.2rem;
+  box-shadow:0 3px 12px rgba(74,124,47,.22);
+}
+.app-brand-wordmark{
+  font-size:1.05rem;font-weight:900;color:#ffffff;letter-spacing:-.01em;
+}
+.topbar-view-chip{
+  flex:1;text-align:center;font-size:.76rem;font-weight:700;color:#a3a3a3;
+  pointer-events:none;white-space:nowrap;overflow:hidden;
+}
+#mobileAuthBtn{
+  display:inline-flex;
+  align-items:center;
+  gap:7px;
+  min-width:0;
+  padding:6px 9px;
+}
+

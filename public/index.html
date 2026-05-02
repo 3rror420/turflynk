@@ -7,7 +7,14 @@
   <meta name="description" content="Get fast lawn mowing quotes in Northwest Arkansas. Enter your address, estimate your yard, and request mowing or yard cleanup service in minutes." />
   <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" crossorigin="" />
   <link rel="icon" href="/assets/brand/mownwa_logo.png">
-  <link rel="stylesheet" href="/styles.css" />
+  <link rel="stylesheet" href="/css/00-base.css">
+  <link rel="stylesheet" href="/css/10-layout.css">
+  <link rel="stylesheet" href="/css/20-components.css">
+  <link rel="stylesheet" href="/css/30-quote-flow.css">
+  <link rel="stylesheet" href="/css/40-map.css">
+  <link rel="stylesheet" href="/css/50-auth-dashboard.css">
+  <link rel="stylesheet" href="/css/60-admin-provider.css">
+  <link rel="stylesheet" href="/css/90-mobile.css">
 </head>
 
 <body data-active-view="dashboard" data-session-state="logged-out">
@@ -281,7 +288,10 @@
           <header class="mownwa-landing-header">
             <div class="mownwa-landing-inner mownwa-landing-header-inner">
               <img src="/assets/brand/mownwa-logo-desktop.png" alt="MowNWA" class="mownwa-landing-logo">
-              <button id="openAuth" class="mownwa-login-btn" type="button">Login</button>
+              <div class="mownwa-header-actions">
+                <button id="openAuth" class="mownwa-login-btn" type="button">Login</button>
+                <button class="mownwa-header-quote-btn" type="button" data-jump-view="quote">Get Quote</button>
+              </div>
             </div>
           </header>
 
@@ -295,6 +305,7 @@
                 <div class="mownwa-hero-copy">
                   <h2 id="homeHeroTitle">FAST LAWN QUOTES.<br>EASY ONLINE BOOKING.</h2>
                   <p id="homeHeroSubtitle">No calls. No waiting.<br>Just simple, transparent pricing.</p>
+                  <button class="mownwa-hero-cta" type="button" data-jump-view="quote">Get Free Quote &rarr;</button>
                 </div>
               </div>
             </section>
@@ -503,7 +514,7 @@
                     <button class="btn ghost small" type="button" id="useThisParcelCancelBtn">Cancel</button>
                   </div>
                 </div>
-                <div class="map-credit">Map powered by MapLibre. Tiles Esri.</div>
+                <div class="map-credit">Map powered by MapLibre. Tiles &copy; Esri.</div>
               </div>
 
               <button class="btn secondary map-tools-toggle hidden" type="button" id="mapToolsToggle">Adjust Area</button>

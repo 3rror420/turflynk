@@ -1,0 +1,628 @@
+.mownwa-landing {
+  --mownwa-green: #4a7c2f;
+  --mownwa-green-dark: #3d6826;
+  --mownwa-forest: #123c2b;
+  --mownwa-black: #171717;
+  --mownwa-text: #1f271c;
+  --mownwa-muted: #64705e;
+  --mownwa-border: #dfe8dc;
+  --mownwa-bg: #f4f7f1;
+  background: var(--mownwa-bg);
+  color: var(--mownwa-text);
+  min-height: 100vh;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+}
+
+.mownwa-landing * {
+  box-sizing: border-box;
+}
+
+.mownwa-landing-inner {
+  width: min(1180px, calc(100% - 40px));
+  margin: 0 auto;
+}
+
+.mownwa-landing-header {
+  position: sticky;
+  top: 0;
+  z-index: 80;
+  background: rgba(255, 255, 255, .97);
+  border-bottom: 1px solid rgba(20, 53, 31, .12);
+  box-shadow: 0 8px 26px rgba(31, 39, 28, .08);
+  backdrop-filter: blur(12px);
+}
+
+.mownwa-landing-header-inner {
+  min-height: 92px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.mownwa-landing-logo {
+  width: min(340px, 54vw);
+  height: auto;
+  display: block;
+}
+
+.mownwa-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.mownwa-header-quote-btn {
+  appearance: none;
+  border: 0;
+  border-radius: 999px;
+  padding: 12px 22px;
+  min-height: 46px;
+  background: linear-gradient(135deg, var(--mownwa-green), var(--mownwa-green-dark));
+  color: #ffffff;
+  font-weight: 850;
+  font-size: .96rem;
+  cursor: pointer;
+  box-shadow: 0 8px 20px rgba(47, 111, 24, .22);
+  transition: filter .18s ease, transform .18s ease;
+}
+
+.mownwa-header-quote-btn:hover,
+.mownwa-header-quote-btn:focus-visible {
+  filter: brightness(1.06);
+  transform: translateY(-1px);
+  outline: none;
+}
+
+.mownwa-login-btn {
+  appearance: none;
+  border: 1px solid rgba(47, 111, 24, .25);
+  background: #ffffff;
+  color: var(--mownwa-forest);
+  border-radius: 999px;
+  padding: 12px 24px;
+  min-height: 46px;
+  font-weight: 850;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(31, 39, 28, .08);
+}
+
+.mownwa-login-btn:hover,
+.mownwa-login-btn:focus-visible {
+  border-color: rgba(47, 111, 24, .48);
+  outline: none;
+}
+
+.mownwa-landing-main {
+  padding-bottom: 52px;
+}
+
+.mownwa-hero {
+  position: relative;
+  min-height: 470px;
+  overflow: hidden;
+  background: #dce7d5;
+}
+
+.mownwa-hero-picture,
+.mownwa-hero-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.mownwa-hero-picture {
+  position: absolute;
+  inset: 0;
+}
+
+.mownwa-hero-img {
+  object-fit: cover;
+}
+
+.mownwa-hero-overlay {
+  position: relative;
+  min-height: 470px;
+  display: flex;
+  align-items: center;
+  padding: 44px 0;
+}
+
+.mownwa-hero-copy {
+  width: min(520px, 56vw);
+  border-radius: 4px;
+  padding: 34px 38px;
+  background: linear-gradient(105deg, rgba(255, 255, 255, .94), rgba(255, 255, 255, .76) 72%, rgba(255, 255, 255, .18));
+  box-shadow: 0 24px 60px rgba(18, 60, 43, .16);
+}
+
+.mownwa-hero-copy h2 {
+  color: var(--mownwa-black);
+  font-size: clamp(2.05rem, 4vw, 4.2rem);
+  line-height: .98;
+  font-weight: 950;
+  margin: 0;
+  letter-spacing: 0;
+}
+
+.mownwa-hero-copy p {
+  color: #263520;
+  font-size: clamp(1.02rem, 1.5vw, 1.35rem);
+  line-height: 1.35;
+  margin: 18px 0 0;
+  font-weight: 750;
+}
+
+.mownwa-hero-cta {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 22px;
+  padding: 14px 26px;
+  min-height: 52px;
+  border: 0;
+  border-radius: 8px;
+  background: linear-gradient(135deg, var(--mownwa-green), var(--mownwa-green-dark));
+  color: #ffffff;
+  font-weight: 950;
+  font-size: 1.02rem;
+  letter-spacing: .01em;
+  cursor: pointer;
+  box-shadow: 0 12px 28px rgba(47, 111, 24, .32);
+  transition: filter .18s ease, transform .18s ease;
+}
+
+.mownwa-hero-cta:hover,
+.mownwa-hero-cta:focus-visible {
+  filter: brightness(1.06);
+  transform: translateY(-1px);
+  outline: none;
+}
+
+.mownwa-feature-strip {
+  width: min(1180px, calc(100% - 40px));
+  margin: -42px auto 0;
+  position: relative;
+  z-index: 2;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  background: #ffffff;
+  border: 1px solid var(--mownwa-border);
+  box-shadow: 0 18px 44px rgba(31, 39, 28, .12);
+}
+
+.mownwa-feature {
+  min-height: 154px;
+  padding: 26px 24px;
+  display: grid;
+  justify-items: center;
+  align-content: start;
+  gap: 10px;
+  text-align: center;
+  border-right: 1px solid var(--mownwa-border);
+}
+
+.mownwa-feature:last-child {
+  border-right: 0;
+}
+
+.mownwa-feature-icon {
+  width: 36px;
+  height: 36px;
+  color: var(--mownwa-green-dark);
+}
+
+.mownwa-feature h3 {
+  margin: 0;
+  color: var(--mownwa-forest);
+  font-size: 1.02rem;
+  font-weight: 900;
+}
+
+.mownwa-feature p {
+  margin: 0;
+  max-width: 220px;
+  color: var(--mownwa-muted);
+  font-size: .92rem;
+  line-height: 1.45;
+}
+
+.mownwa-nwa-panel {
+  display: block;
+  min-height: 154px;
+  padding: 0;
+  background: #0b3d2e;
+  color: #ffffff;
+}
+
+.service-area-card {
+  min-height: 100%;
+  padding: 18px;
+  overflow: hidden;
+  border-radius: 0;
+  background: #0b3d2e;
+  color: #ffffff;
+  display: grid;
+  align-content: center;
+  gap: 12px;
+}
+
+.service-area-main {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2rem;
+}
+
+.service-area-arkansas {
+  width: clamp(130px, 10vw, 160px);
+  height: auto;
+  object-fit: contain;
+  display: block;
+  flex: 0 0 auto;
+  background: transparent;
+  box-shadow: none;
+  filter: none;
+}
+
+.service-area-copy {
+  min-width: 0;
+  text-align: left;
+}
+
+.service-area-kicker {
+  color: rgba(255, 255, 255, .84);
+  font-size: .72rem;
+  font-weight: 900;
+  letter-spacing: .08em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.service-area-title {
+  margin-top: 5px;
+  color: #ffffff;
+  font-size: clamp(1.35rem, 2.1vw, 2rem);
+  line-height: 1.05;
+  font-weight: 950;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.service-area-towns {
+  color: rgba(255, 255, 255, .9);
+  font-size: .86rem;
+  font-weight: 700;
+  line-height: 1.35;
+  text-align: center;
+}
+
+.mownwa-steps {
+  padding: 72px 0 24px;
+}
+
+.mownwa-steps h2 {
+  margin: 0 0 28px;
+  color: var(--mownwa-black);
+  text-align: center;
+  font-size: clamp(1.45rem, 2.6vw, 2.6rem);
+  line-height: 1.05;
+  font-weight: 950;
+  letter-spacing: 0;
+}
+
+.mownwa-step-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.mownwa-step-card {
+  position: relative;
+  min-height: 255px;
+  background: #ffffff;
+  border: 1px solid var(--mownwa-border);
+  border-radius: 8px;
+  padding: 42px 26px 28px;
+  display: grid;
+  justify-items: center;
+  align-content: start;
+  gap: 14px;
+  text-align: center;
+  box-shadow: 0 10px 28px rgba(31, 39, 28, .08);
+}
+
+.mownwa-step-card:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  right: -21px;
+  top: 50%;
+  width: 20px;
+  height: 20px;
+  border-top: 3px solid var(--mownwa-green);
+  border-right: 3px solid var(--mownwa-green);
+  transform: translateY(-50%) rotate(45deg);
+}
+
+.mownwa-step-number {
+  position: absolute;
+  top: -21px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(135deg, var(--mownwa-green), var(--mownwa-green-dark));
+  color: #ffffff;
+  font-size: 1.1rem;
+  font-weight: 950;
+  box-shadow: 0 8px 18px rgba(47, 111, 24, .25);
+}
+
+.mownwa-step-icon {
+  width: 54px;
+  height: 54px;
+  color: var(--mownwa-green-dark);
+}
+
+.mownwa-step-card h3 {
+  margin: 0;
+  color: var(--mownwa-black);
+  font-size: 1.15rem;
+  font-weight: 900;
+}
+
+.mownwa-step-card p {
+  margin: 0;
+  color: var(--mownwa-muted);
+  font-size: .95rem;
+  line-height: 1.5;
+}
+
+.mownwa-start-cta {
+  display: flex;
+  justify-content: center;
+  padding: 14px 20px 0;
+}
+
+.mownwa-start-btn {
+  appearance: none;
+  border: 0;
+  border-radius: 7px;
+  min-height: 56px;
+  min-width: min(360px, 100%);
+  padding: 16px 34px;
+  background: linear-gradient(135deg, var(--mownwa-green), var(--mownwa-green-dark));
+  color: #ffffff;
+  font-weight: 950;
+  font-size: 1.05rem;
+  letter-spacing: 0;
+  cursor: pointer;
+  box-shadow: 0 16px 34px rgba(47, 111, 24, .26);
+}
+
+.mownwa-start-btn:hover,
+.mownwa-start-btn:focus-visible {
+  filter: brightness(1.05);
+  outline: none;
+}
+
+.homepage-secondary-content[hidden] {
+  display: none;
+}
+
+@media (max-width: 767px) {
+  body[data-active-view="dashboard"] .main-shell {
+    padding: 0;
+  }
+
+  .mownwa-landing-inner {
+    width: min(100% - 24px, 520px);
+  }
+
+  .mownwa-landing-header-inner {
+    min-height: 68px;
+  }
+
+  .mownwa-landing-logo {
+    width: 150px;
+  }
+
+  .mownwa-login-btn {
+    min-height: 40px;
+    padding: 9px 14px;
+    font-size: .88rem;
+  }
+
+  .mownwa-header-quote-btn {
+    min-height: 40px;
+    padding: 9px 16px;
+    font-size: .88rem;
+  }
+
+  .mownwa-hero,
+  .mownwa-hero-overlay {
+    min-height: 420px;
+  }
+
+  .mownwa-hero-overlay {
+    align-items: flex-start;
+    padding: 28px 0;
+  }
+
+  .mownwa-hero-copy {
+    width: min(330px, 88vw);
+    padding: 22px 20px;
+    background: linear-gradient(105deg, rgba(255, 255, 255, .94), rgba(255, 255, 255, .78));
+  }
+
+  .mownwa-hero-copy h2 {
+    font-size: clamp(1.75rem, 9vw, 2.55rem);
+  }
+
+  .mownwa-hero-copy p {
+    font-size: 1rem;
+  }
+
+  .mownwa-hero-cta {
+    width: 100%;
+    justify-content: center;
+    min-height: 50px;
+    font-size: .96rem;
+    margin-top: 16px;
+  }
+
+  .mownwa-feature-strip {
+    width: 100%;
+    margin: 0;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    background: var(--mownwa-forest);
+    border: 0;
+    box-shadow: none;
+  }
+
+  .mownwa-feature {
+    min-height: 110px;
+    padding: 16px 12px;
+    border-right: 1px solid rgba(255, 255, 255, .1);
+    border-bottom: 1px solid rgba(255, 255, 255, .1);
+    gap: 7px;
+  }
+
+  .mownwa-feature:nth-child(2n) {
+    border-right: 0;
+  }
+
+  .mownwa-feature:nth-last-child(-n+2) {
+    border-bottom: 0;
+  }
+
+  .mownwa-feature-icon {
+    width: 26px;
+    height: 26px;
+    color: #b8dc84;
+  }
+
+  .mownwa-feature h3 {
+    color: #ffffff;
+    font-size: clamp(.78rem, 3vw, .92rem);
+  }
+
+  .mownwa-feature p {
+    color: rgba(255, 255, 255, .72);
+    font-size: .78rem;
+    max-width: none;
+    line-height: 1.35;
+  }
+
+  .mownwa-nwa-panel {
+    min-height: 110px;
+    padding: 0;
+    background: #0b3d2e;
+    grid-column: 1 / -1;
+    border-right: 0;
+  }
+
+  .mownwa-feature:nth-child(3) {
+    border-right: 0;
+  }
+
+  .service-area-card {
+    padding: 16px 18px;
+    gap: 10px;
+  }
+
+  .service-area-main {
+    gap: 1rem;
+  }
+
+  .service-area-arkansas {
+    width: clamp(96px, 30vw, 115px);
+  }
+
+  .service-area-title {
+    font-size: clamp(1rem, 5.2vw, 1.45rem);
+  }
+
+  .service-area-kicker {
+    font-size: .62rem;
+  }
+
+  .service-area-towns {
+    display: block;
+    margin-top: 2px;
+    font-size: .78rem;
+  }
+
+  .mownwa-steps {
+    padding: 44px 0 14px;
+  }
+
+  .mownwa-steps h2 {
+    margin-bottom: 24px;
+  }
+
+  .mownwa-step-grid {
+    grid-template-columns: 1fr;
+    gap: 14px;
+  }
+
+  .mownwa-step-card {
+    min-height: 0;
+    grid-template-columns: 42px 44px 1fr;
+    justify-items: start;
+    align-items: center;
+    text-align: left;
+    padding: 18px 18px 18px 14px;
+    gap: 12px;
+  }
+
+  .mownwa-step-card:not(:last-child)::after {
+    right: 24px;
+    top: auto;
+    bottom: -14px;
+    width: 14px;
+    height: 14px;
+    transform: rotate(135deg);
+  }
+
+  .mownwa-step-number {
+    position: static;
+    transform: none;
+    width: 34px;
+    height: 34px;
+    font-size: .95rem;
+  }
+
+  .mownwa-step-icon {
+    width: 38px;
+    height: 38px;
+  }
+
+  .mownwa-step-card h3,
+  .mownwa-step-card p {
+    grid-column: 3;
+  }
+
+  .mownwa-step-card h3 {
+    font-size: 1rem;
+    margin-bottom: -8px;
+  }
+
+  .mownwa-step-card p {
+    font-size: .86rem;
+    line-height: 1.4;
+  }
+
+  .mownwa-start-cta {
+    padding: 10px 12px 36px;
+  }
+
+  .mownwa-start-btn {
+    width: min(340px, 100%);
+  }
+}
+
