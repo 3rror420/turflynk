@@ -78,3 +78,5 @@ vision_service/.venv/
 *.bak*
 .claude/
 *.bak*
+.claude/
+*.bak*
