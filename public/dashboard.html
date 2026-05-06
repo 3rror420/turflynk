@@ -65,7 +65,7 @@
   <form id="registerForm" class="stack hidden" style="gap:12px">
     <label><span>Full Name</span><input name="fullName" autocomplete="name" required /></label>
     <label><span>Email</span><input name="email" type="email" autocomplete="email" required /></label>
-    <label><span>Phone</span><input name="phone" type="tel" autocomplete="tel" required /></label>
+    <label><span>Phone</span><input name="phone" type="tel" inputmode="tel" autocomplete="tel" required /></label>
     <label><span>Password</span><input name="password" type="password" autocomplete="new-password" required /></label>
     <button class="btn primary" type="submit">Create Account</button>
     <div id="registerErr" class="auth-err"></div>
@@ -118,7 +118,7 @@
   <div class="modal-box">
     <h3>Phone Number Required</h3>
     <p style="color:var(--muted);margin:0">Your phone number is needed to book service so a provider can contact you.</p>
-    <label><span>Phone</span><input id="phoneInput" type="tel" autocomplete="tel" placeholder="(555) 555-5555" /></label>
+    <label><span>Phone</span><input id="phoneInput" type="tel" inputmode="tel" autocomplete="tel" placeholder="(555) 555-5555" /></label>
     <div style="display:flex;gap:10px">
       <button class="btn primary" type="button" id="phoneConfirmBtn">Confirm &amp; Book</button>
       <button class="btn ghost" type="button" id="phoneCancelBtn">Cancel</button>
@@ -126,6 +126,7 @@
   </div>
 </div>
 
+<script src="/js/utils/phone.js"></script>
 <script>
 const TOKEN_KEY = 'turflynk.authToken';
 let currentUser = null;

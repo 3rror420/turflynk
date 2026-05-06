@@ -1,0 +1,143 @@
+      <section class="view" data-view-panel="providers">
+        <section class="panel provider-only-panel hidden" id="providerWorkspacePanel" style="margin-bottom:20px">
+          <div class="panel-head">
+            <div>
+              <h2>Provider Area</h2>
+              <p class="section-copy" style="margin:0">Manage assigned jobs, services, service areas, and profile settings.</p>
+            </div>
+          </div>
+          <div class="provider-area-tabs" id="providerAreaTabs" aria-label="Provider area sections">
+            <button class="account-menu-item" type="button" data-provider-tab="dashboard">Provider Dashboard</button>
+            <button class="account-menu-item" type="button" data-provider-tab="jobs">My Jobs</button>
+            <button class="account-menu-item" type="button" data-provider-tab="history">Job History</button>
+            <button class="account-menu-item" type="button" data-provider-tab="services">Services</button>
+            <button class="account-menu-item" type="button" data-provider-tab="areas">Service Areas</button>
+            <button class="account-menu-item" type="button" data-provider-tab="profile">Provider Profile</button>
+            <button class="account-menu-item" type="button" data-provider-tab="settings">Settings</button>
+          </div>
+          <div id="providerWorkspaceContent" class="provider-workspace-content"></div>
+        </section>
+
+        <!-- Provider paid jobs panel — visible to signed-in providers -->
+        <section class="panel provider-only-panel hidden" id="providerPaidJobsPanel" style="margin-bottom:20px">
+          <div class="panel-head">
+            <div>
+              <h2>Available Paid Jobs</h2>
+              <p class="section-copy" style="margin:0">Paid jobs needing a provider. Sign in as a provider to see and claim jobs.</p>
+            </div>
+            <button class="btn secondary small" id="refreshProviderPaidJobsBtn" type="button">Refresh</button>
+          </div>
+          <div id="providerPaidJobsList" class="card-list">
+            <div style="color:var(--muted);padding:12px">Sign in as a provider to see available paid jobs.</div>
+          </div>
+        </section>
+
+        <div class="section-grid two-up">
+          <section class="panel">
+            <div class="panel-head"><h2>Provider Signup</h2></div>
+            <form id="providerForm" class="stack">
+              <div class="grid-2">
+                <label><span>Business Name</span><input name="businessName" required /></label>
+                <label><span>Owner Name</span><input name="ownerName" required /></label>
+              </div>
+              <div class="grid-2">
+                <label><span>Email</span><input name="email" type="email" required /></label>
+                <label><span>Phone</span><input name="phone" type="tel" inputmode="tel" autocomplete="tel" required /></label>
+              </div>
+              <label><span>Regions Served</span><select name="regions" id="providerRegions" multiple size="6"></select></label>
+              <label><span>Cities Served</span><input name="cities" placeholder="Bentonville, Rogers, Springdale" /></label>
+              <section class="intake-section">
+                <div class="section-label">Where do you want to work?</div>
+                <label><span>Service Cities / Areas</span><select name="serviceAreaCities" id="providerServiceAreaCities" multiple size="8"></select></label>
+                <label><span>City Service Radius</span>
+                  <select name="radiusMiles">
+                    <option value="">City limits only</option>
+                    <option value="5">Within 5 miles</option>
+                    <option value="10">Within 10 miles</option>
+                    <option value="15">Within 15 miles</option>
+                    <option value="25">Within 25 miles</option>
+                    <option value="custom">Custom</option>
+                  </select>
+                </label>
+                <label><span>Custom Radius Miles</span><input name="customRadiusMiles" type="number" min="1" step="1" /></label>
+                <div class="grid-2">
+                  <label><span>Nearby Jobs</span>
+                    <select name="acceptsNearbyJobs">
+                      <option value="false">Only selected areas</option>
+                      <option value="true">Show nearby jobs too</option>
+                    </select>
+                  </label>
+                  <label><span>Max Extra Travel Miles</span><input name="maxExtraTravelMiles" type="number" min="0" step="1" /></label>
+                </div>
+              </section>
+              <section class="intake-section">
+                <div class="section-label">Services offered</div>
+                <div id="providerServicesOffered" class="checks compact-checks"></div>
+              </section>
+              <section class="intake-section">
+                <div class="section-label">Equipment matching</div>
+                <label><span>Mower Deck Size</span><input name="mowerDeckSizeInches" type="number" min="1" step="1" placeholder="52" /></label>
+                <div class="meta">Enter the deck width of your main mower. This helps us match you with jobs that fit your equipment. Yards with small gates may need a push mower or smaller deck.</div>
+                <label><span>Small-gate mower?</span>
+                  <select name="hasSmallGateMower">
+                    <option value="false">No</option>
+                    <option value="true">Yes</option>
+                  </select>
+                </label>
+              </section>
+              <label><span>Equipment</span><input name="equipment" placeholder="52in zero turn, push mower, trimmers, trailer" /></label>
+              <label><span>Short Bio</span><textarea name="bio" rows="4"></textarea></label>
+              <button class="btn primary" type="submit">Join as Provider</button>
+            </form>
+            <div id="providerResult" class="result hidden"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <h2>Provider Service Areas</h2>
+                <p class="section-copy" style="margin:0">Choose where you want to receive job requests. You can update this anytime.</p>
+              </div>
+              <button class="btn secondary small" id="refreshProviderServiceAreas" type="button">Refresh</button>
+            </div>
+            <form id="providerServiceAreaForm" class="stack">
+              <label><span>Selected Cities / Areas</span><select id="providerAreaCitySelect" name="cities" multiple size="8"></select></label>
+              <label><span>Radius</span>
+                <select name="radiusMiles">
+                  <option value="">City limits only</option>
+                  <option value="5">Within 5 miles</option>
+                  <option value="10">Within 10 miles</option>
+                  <option value="15">Within 15 miles</option>
+                  <option value="25">Within 25 miles</option>
+                </select>
+              </label>
+              <div class="grid-2">
+                <label><span>Nearby Jobs</span>
+                  <select name="acceptsNearbyJobs">
+                    <option value="false">Only selected areas</option>
+                    <option value="true">Show nearby jobs too</option>
+                  </select>
+                </label>
+                <label><span>Pause New Jobs</span>
+                  <select name="serviceAreasPaused">
+                    <option value="false">Active</option>
+                    <option value="true">Paused</option>
+                  </select>
+                </label>
+              </div>
+              <label><span>Custom Map Zone GeoJSON</span><textarea name="zoneGeojson" rows="4" placeholder='{"type":"Feature","geometry":{"type":"Polygon","coordinates":[...]}}'></textarea></label>
+              <button class="btn primary" type="submit">Save Service Areas</button>
+            </form>
+            <div id="providerServiceAreaResult" class="result hidden"></div>
+            <div id="providerServiceAreaSummary" class="card-list compact" style="margin-top:12px"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Featured Providers</h2>
+              <button class="btn secondary small" id="refreshProviders" type="button">Refresh</button>
+            </div>
+            <div id="providersList" class="card-list"></div>
+          </section>
+        </div>
+      </section>

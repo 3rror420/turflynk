@@ -1,127 +1,3 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-  <title>MowNWA | Fast Lawn Mowing Quotes in Northwest Arkansas</title>
-  <meta name="description" content="Get fast lawn mowing quotes in Northwest Arkansas. Enter your address, estimate your yard, and request mowing or yard cleanup service in minutes." />
-  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" crossorigin="" />
-  <link rel="icon" href="/assets/brand/mownwa_logo.png">
-  <link rel="stylesheet" href="/styles.css?v=20260502-redesign" />
-  <link rel="stylesheet" href="/css/weather-scheduler.css?v=weather1">
-<!-- Meta Pixel Code -->
-<script>
-  !function(f,b,e,v,n,t,s)
-  {if(f.fbq)return;n=f.fbq=function(){n.callMethod?
-  n.callMethod.apply(n,arguments):n.queue.push(arguments)};
-  if(!f._fbq)f._fbq=n;
-  n.push=n;
-  n.loaded=!0;
-  n.version='2.0';
-  n.queue=[];
-  t=b.createElement(e);
-  t.async=!0;
-  t.src=v;
-  s=b.getElementsByTagName(e)[0];
-  s.parentNode.insertBefore(t,s)}
-  (window, document,'script',
-  'https://connect.facebook.net/en_US/fbevents.js');
-
-  fbq('init', '1395701107478925');
-  fbq('track', 'PageView');
-</script>
-<noscript>
-  <img height="1" width="1" style="display:none"
-       src="https://www.facebook.com/tr?id=1395701107478925&ev=PageView&noscript=1"/>
-</noscript>
-<!-- End Meta Pixel Code -->
-</head>
-
-<body data-active-view="dashboard" data-session-state="logged-out">
-<div id="toastLayer" class="toast-layer" aria-live="polite" aria-atomic="true"></div>
-
-<!-- MOBILE HEADER -->
-<!-- PARTIAL:mobile-topbar -->
-
-<!-- DRAWER / OVERLAY -->
-<!-- PARTIAL:drawer -->
-
-<!-- AUTH BAR -->
-<!-- PARTIAL:auth-bar -->
-
-<!-- AUTH MODAL + PANEL -->
-<!-- PARTIAL:auth -->
-
-  <div class="app-shell">
-    <!-- NAV -->
-    <!-- PARTIAL:sidebar -->
-
-    <main class="main-shell">
-      <!-- DESKTOP HEADER -->
-      <!-- PARTIAL:main-topbar -->
-
-      <!-- ACCOUNT DASHBOARD -->
-      <!-- PARTIAL:account-panel -->
-
-      <section class="view active" data-view-panel="dashboard">
-        <!-- JS-filled local city panel -->
-        <section class="panel local-landing-panel hidden" id="localLandingPanel" style="margin-bottom:20px"></section>
-
-        <div class="mownwa-landing" aria-label="MowNWA landing page">
-          <header class="mownwa-landing-header">
-            <div class="mownwa-landing-inner mownwa-landing-header-inner">
-              <button type="button" class="mownwa-landing-logo-btn" data-logo-home id="landingLogoBtn" aria-label="MowNWA – go to homepage">
-                <img src="/assets/brand/mownwa-logo-desktop.png" alt="MowNWA" class="mownwa-landing-logo">
-              </button>
-              <div class="mownwa-header-actions">
-                <button id="openAuth" class="mownwa-login-btn" type="button">Login</button>
-                <button class="mownwa-header-quote-btn" type="button" data-jump-view="quote">Get My Lawn Quote</button>
-              </div>
-            </div>
-          </header>
-
-          <main class="mownwa-landing-main">
-            <!-- LANDING HERO -->
-            <!-- PARTIAL:dashboard-hero -->
-          </main>
-        </div>
-
-        <!-- Hidden secondary anchors preserved for existing JS-rendered local content. -->
-        <section class="homepage-secondary-content hidden" data-secondary-home-section hidden aria-label="Secondary homepage content">
-          <div id="homeServiceTags" hidden></div>
-          <div id="nwaTownsList" class="nwa-towns-grid" hidden></div>
-          <div id="coverageGrid" class="card-grid" hidden></div>
-        </section>
-
-        <!-- ── Secondary local content (mobile/services-linked, hidden on initial homepage) ── -->
-        <section class="homepage-secondary-content hidden" data-secondary-home-section hidden aria-label="Local lawn care service details">
-          <div class="section-grid two-up local-content-grid" style="margin-top:20px">
-            <section class="panel">
-              <div class="panel-head">
-                <h3>Popular Lawn Care Services</h3>
-                <span class="pill muted">Estimate first</span>
-              </div>
-              <div id="popularServicesGrid" class="card-grid"></div>
-            </section>
-            <section class="panel">
-              <div class="panel-head">
-                <h3>How TurfLynk Works</h3>
-                <span class="pill muted">No signup to estimate</span>
-              </div>
-              <div id="howItWorksGrid" class="card-list compact"></div>
-            </section>
-          </div>
-
-          <section class="panel local-faq-panel" style="margin-top:20px">
-            <div class="panel-head">
-              <h3>Lawn Care Estimate FAQ</h3>
-            </div>
-            <div id="homeFaqGrid" class="card-grid"></div>
-          </section>
-        </section>
-      </section>
-
-      <!-- MAIN VIEWS -->
       <section class="view" data-view-panel="quote">
         <div class="quote-stepper" id="quoteStepper" aria-label="Quote progress" role="progressbar">
           <div class="qs-step qs-active" data-qs-step="1"><div class="qs-dot">1</div><div class="qs-label">Property</div></div>
@@ -183,23 +59,12 @@
                   <p class="gps-confirm-msg">We found a parcel near your current location. Is this the property?</p>
                 </div>
                 <div id="parcelInfo" class="parcel-found-card result hidden"></div>
-                <div class="map-stage">
-                  <div id="quoteMap" class="map-panel"></div>
-                  <div id="useThisParcelBar" class="use-parcel-bar hidden">
-                    <span id="useThisParcelAddr" class="use-parcel-addr"></span>
-                    <div class="use-parcel-actions">
-                      <button class="btn primary small" type="button" id="useThisParcelConfirmBtn">Use This Parcel</button>
-                      <button class="btn ghost small" type="button" id="useThisParcelCancelBtn">Cancel</button>
-                    </div>
-                  </div>
-                  <div class="map-credit">Map powered by MapLibre. Tiles &copy; Esri.</div>
-                </div>
                 <div class="flow-card parcel-actions-card">
                   <div class="parcel-stat-row">
                     <div><span>Lot size</span><strong id="lotAreaAcresDisplay">n/a</strong></div>
                     <div><span>Mowable</span><strong id="mowAreaAcresDisplay">Draw next</strong></div>
                   </div>
-                  <div class="parcel-action-row">
+                  <div class="hero-actions">
                     <button class="btn primary" type="button" id="continueToDrawBtn">Yes, use this property</button>
                     <button class="btn secondary" type="button" id="lookupParcelBtn">Search again</button>
                     <button class="btn ghost" type="button" id="selectParcelBtn">Select Different Parcel</button>
@@ -212,18 +77,18 @@
             </section>
 
             <section class="quote-flow-screen draw-screen hidden" id="quoteDrawScreen" data-quote-step-panel="draw" hidden>
-              <div class="flow-screen-head">
-                <div>
-                  <h2>Select Lawn Area</h2>
-                  <p>Select the area of your yard that gets mowed.</p>
-                </div>
-              </div>
               <div id="mowAreaHelper" class="draw-helper-text">Drag around the grass area. Lift your finger to finish.</div>
 
-              <div id="drawAiHero" class="draw-ai-hero hidden">
-                <button class="btn primary draw-ai-primary-btn" type="button" id="aiDetectPrimaryBtn">Auto Detect My Yard</button>
-                <p class="draw-ai-helper-text">Recommended — we'll estimate your mowable area, then you can adjust it.</p>
-                <button class="btn ghost draw-ai-manual-btn" type="button" id="drawManuallyBtn">Draw Yard Manually</button>
+              <div class="map-stage">
+                <div id="quoteMap" class="map-panel"></div>
+                <div id="useThisParcelBar" class="use-parcel-bar hidden">
+                  <span id="useThisParcelAddr" class="use-parcel-addr"></span>
+                  <div class="use-parcel-actions">
+                    <button class="btn primary small" type="button" id="useThisParcelConfirmBtn">Use This Parcel</button>
+                    <button class="btn ghost small" type="button" id="useThisParcelCancelBtn">Cancel</button>
+                  </div>
+                </div>
+                <div class="map-credit">Map powered by MapLibre. Tiles &copy; Esri.</div>
               </div>
 
               <button class="btn secondary map-tools-toggle hidden" type="button" id="mapToolsToggle">Adjust Area</button>
@@ -263,7 +128,7 @@
                 <button class="flow-back-btn" type="button" data-quote-back="draw">Back</button>
                 <div>
                   <h2>Your Quote</h2>
-                  <p>Price updates as you adjust options below.</p>
+                  <p>Review your quote details and service options.</p>
                 </div>
               </div>
               <div class="price-hero">
@@ -274,8 +139,8 @@
               <div id="quoteResult" class="result hidden"></div>
 
               <section class="flow-card">
-                <div class="section-label">Quote Details</div>
-                <div class="checks compact-checks service-options" style="display:none">
+                <div class="section-label">Service Options</div>
+                <div class="checks compact-checks service-options">
                   <label><input type="checkbox" name="selected_yard_areas" value="front_yard" checked /> Front yard</label>
                   <label><input type="checkbox" name="selected_yard_areas" value="back_yard" checked /> Back yard</label>
                   <label><input type="checkbox" name="selected_yard_areas" value="side_yards" checked /> Side yards</label>
@@ -302,8 +167,7 @@
                 </div>
               </section>
 
-              <!-- Gate and Access — NOT shown on Step 3 (quote review). Fields collected on Step 4 (leadRequestForm). Kept for quoteForm payload compatibility; values default to first option. -->
-              <section class="flow-card" style="display:none" hidden aria-hidden="true">
+              <section class="flow-card" style="display:none" hidden>
                 <div class="section-label">Gate and Access</div>
                 <div class="grid-2">
                   <label><span>Gate size</span>
@@ -339,8 +203,7 @@
                 <label><span>Yard access notes</span><input name="yard_access_notes" placeholder="Left gate, latch sticks, dogs inside." /></label>
               </section>
 
-              <!-- Property Notes — NOT shown on Step 3 (quote review). Fields collected on Step 4 (leadRequestForm). Kept for quoteForm payload compatibility; values default to first option. -->
-              <section class="flow-card quiet-options" style="display:none" hidden aria-hidden="true">
+              <section class="flow-card quiet-options" style="display:none" hidden>
                 <div class="section-label">Property Notes</div>
                 <div class="grid-2">
                   <label><span>Property Type</span>
@@ -377,7 +240,10 @@
                 <input type="hidden" name="gates" value="" />
               </section>
 
-              <button class="btn primary request-service-cta hidden" type="button" id="requestServiceBtn">Continue to Secure Checkout</button>
+              <button class="btn primary request-service-cta hidden" type="button" id="requestServiceBtn">
+                <span>Book This Service</span>
+                <small>You'll confirm details on the next step</small>
+              </button>
               <button class="btn secondary manual-quote-cta hidden" type="button" id="manualQuoteBtn">
                 <span>Request In-Person Quote</span>
                 <small>Want us to check it in person? No payment required.</small>
@@ -516,35 +382,7 @@
               <input type="hidden" name="available_date_start" />
               <input type="hidden" name="available_date_end" />
               <input type="hidden" name="specific_service_date" />
-              <div class="section-label" style="margin-top:4px">Property Details</div>
-              <div class="grid-2">
-                <label><span>Gate Size</span>
-                  <select name="gate_size_category">
-                    <option value="no_gate_open_access">No gate / open access</option>
-                    <option value="small_under_36">Small walk gate — under 36"</option>
-                    <option value="standard_36">Standard walk gate — 36"</option>
-                    <option value="wide_48">Wide gate — 48"</option>
-                    <option value="double_60_plus">Double / equipment gate — 60"+</option>
-                    <option value="not_sure">Not sure</option>
-                  </select>
-                </label>
-                <label><span>Pets</span>
-                  <select name="pets">
-                    <option value="none">No pets</option>
-                    <option value="dogs_inside">Dogs inside during service</option>
-                    <option value="dogs_present">Dogs may be present</option>
-                    <option value="other_animals">Other animals</option>
-                    <option value="not_sure">Not sure</option>
-                  </select>
-                </label>
-              </div>
-              <div class="checks compact-checks">
-                <label><input type="checkbox" name="obstacles_list" value="none" /> No obstacles</label>
-                <label><input type="checkbox" name="obstacles_list" value="trampoline" /> Trampoline</label>
-                <label><input type="checkbox" name="obstacles_list" value="lawn_furniture" /> Lawn furniture</label>
-                <label><input type="checkbox" name="obstacles_list" value="debris_branches" /> Branches/debris</label>
-              </div>
-              <label><span>Access Notes</span><textarea name="notes" rows="3" placeholder="Gate code, dogs, HOA rules, or anything the crew should know."></textarea></label>
+              <label><span>Access Notes</span><textarea name="notes" rows="4" placeholder="Access, dogs, HOA rules, timing, or anything the crew should know."></textarea></label>
               <p class="meta" style="margin:0">Stripe test checkout enabled. Use card 4242 4242 4242 4242.</p>
               <button class="btn primary" type="submit" id="leadSubmitBtn">Book &amp; Pay Securely</button>
               <button class="btn ghost" type="button" id="closeleadRequestPanel">Cancel</button>
@@ -760,86 +598,3 @@
           </section>
 
       </section>
-
-      <!-- PARTIAL:jobs-view -->
-
-      <!-- PARTIAL:providers-view -->
-
-      <!-- PARTIAL:admin-view -->
-
-      <!-- FOOTER -->
-      <!-- PARTIAL:footer -->
-    </main>
-  </div>
-
-  <!-- BOTTOM NAV -->
-  <!-- PARTIAL:mobile-nav -->
-
-  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js" crossorigin=""></script>
-  <script src="https://cdn.jsdelivr.net/npm/proj4@2.11.0/dist/proj4.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
-  
-  <!-- Phase 1 modules: load before app.js — plain globals, no ES module system -->
-  <script src="/js/config.js"></script>
-  <script src="/js/state.js"></script>
-  <script src="/js/utils/dom.js"></script>
-  <script src="/js/utils/phone.js"></script>
-  <script src="/js/auth/admin-visibility.js"></script>
-
-  <!-- Phase 13d modules: service/config label helpers extracted from app.js -->
-  <script src="/js/core/dom.js"></script>
-
-  <!-- Phase 2 modules: API helper and estimate rendering extracted from app.js -->
-  <script src="/js/core/api.js"></script>
-  <script src="/js/quote/estimate.js"></script>
-
-  <!-- Phase 6 module: auth/session/account UI extracted from app.js -->
-  <script src="/js/auth/auth-ui.js"></script>
-
-  <!-- Phase 3 modules: quote step/state UI logic extracted from app.js -->
-  <script src="/js/quote/quote-flow.js"></script>
-
-  <!-- Phase 13e modules: quote draft persistence extracted from app.js -->
-  <script src="/js/quote/quote-draft.js"></script>
-
-  <!-- Phase 4 modules: property / address / parcel lookup extracted from app.js -->
-  <script src="/js/quote/property-lookup.js"></script>
-
-  <!-- Phase 11: MapLibre map infrastructure extracted from app.js -->
-  <script src="/js/map/map-core.js"></script>
-
-  <!-- Phase 12a: Mowable area / editor helpers extracted from app.js -->
-  <script src="/js/map/mow-editor.js"></script>
-
-  <!-- Phase 5 modules: AI detect yard logic extracted from app.js -->
-
-  <script src="/data/local-content.js"></script>
-
-  <!-- Phase 7: Customer jobs/quotes UI extracted from app.js -->
-  <script src="/js/jobs/jobs-ui.js"></script>
-
-  <!-- Phase 8: Provider dashboard/jobs/profile/areas UI extracted from app.js -->
-  <script src="/js/provider/provider-ui.js"></script>
-
-  <!-- Phase 9: Admin dashboard/leads/pricing UI extracted from app.js -->
-  <script src="/js/admin/admin-ui.js"></script>
-
-  <!-- Phase 10: Checkout, lead/service request, manual quote, account recommendation extracted from app.js -->
-  <script src="/js/quote/checkout-request.js"></script>
-
-  <!-- Phase 13b: Parcel/address utilities and homepage/local content rendering extracted from app.js -->
-  <script src="/js/quote/parcel-utils.js"></script>
-  <script src="/js/core/content.js"></script>
-
-  <!-- Phase 13h: Mowable estimate + account panel extracted from app.js -->
-  <script src="/js/quote/mowable-estimate.js"></script>
-  <script src="/js/auth/account-panel.js"></script>
-
-  <script src="/app.js?v=service-address-single-source-v4"></script>
-  <script src="/js/ai-detect-grass.js"></script>
-  <script src="/js/lasso-yard.js?v=boundary-fix-v5-exit-enter-fat-thumb"></script>
-  <script src="/js/ai/ai-detect.js"></script>
-
-  <script src="/js/quote/weather-scheduler.js?v=weather1"></script>
-</body>
-</html>
