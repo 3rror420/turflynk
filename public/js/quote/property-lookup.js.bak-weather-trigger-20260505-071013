@@ -1,0 +1,441 @@
+// Property / address / parcel lookup UI logic.
+// Extracted from app.js — Phase 4 modular refactor. Loads before app.js.
+//
+// Pre-load globals required:
+//   state                       → public/js/state.js
+//   byId, $$, escapeHtml,
+//   showResult, showWarning,
+//   showError, formatAcres      → public/js/utils/dom.js
+//   api                         → public/js/core/api.js
+//   showQuoteFlowStep,
+//   updateQuoteFlowState        → public/js/quote/quote-flow.js
+//
+// Runtime globals called (resolved from app.js at call time):
+//   normalizeServiceAddressParts, getQuoteFormServiceAddress,
+//   setCurrentServiceAddress, hasServiceAddress,
+//   resolveServiceAddressFromParcel, parcelPropertiesFromLookupData,
+//   propText, setLatLng, placeMarker, placeCurrentLocationMarker,
+//   drawParcel, clearParcelLayer, clearMowLayer,
+//   layerAreaSqFt, updateMowAreaHelper, renderSuggestedMowablePanel,
+//   scheduleEstimateRefresh, saveQuoteDraft, formToObject,
+//   prettyApiError, hydrateLiveBidForm, resetParcelQuoteStateForNewAddress
+
+async function geocodeAddress() {
+  const form = byId('quoteForm');
+  if (!form) return;
+
+  const payload = formToObject(form);
+  const q = [payload.address, payload.city, payload.state || 'AR', payload.zip]
+    .filter(Boolean)
+    .join(', ');
+
+  if (!q.trim()) {
+    showPropertyConfirmationPanel(true);
+    return showResult('parcelInfo', '<strong>Enter an address first.</strong>');
+  }
+
+  const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&countrycodes=us&q=${encodeURIComponent(q)}`;
+  const res = await fetch(url, { headers: { Accept: 'application/json' } });
+  const data = await res.json();
+
+  if (!Array.isArray(data) || !data.length) {
+    showPropertyConfirmationPanel(true);
+    return showResult(
+      'parcelInfo',
+      '<strong>Address not found.</strong> Try adding city/state or use autocomplete.'
+    );
+  }
+
+  const { lat, lon } = data[0];
+  setCurrentServiceAddress(getQuoteFormServiceAddress(), 'typed-address');
+  setLatLng(lat, lon);
+  placeMarker(lat, lon);
+
+  showResult(
+    'parcelInfo',
+    `<strong>Address located.</strong><br />Lat: ${Number(lat).toFixed(6)} · Lng: ${Number(lon).toFixed(6)}`
+  );
+}
+
+function addressPartsFromGoogleComponents(components = []) {
+  const getLong = (type) => components.find((component) => component.types?.includes(type))?.long_name || '';
+  const getShort = (type) => components.find((component) => component.types?.includes(type))?.short_name || '';
+  return normalizeServiceAddressParts({
+    address: `${getLong('street_number')} ${getLong('route')}`.trim(),
+    city:
+      getLong('locality') ||
+      getLong('sublocality') ||
+      getLong('administrative_area_level_3') ||
+      getLong('administrative_area_level_2') ||
+      '',
+    state: getShort('administrative_area_level_1') || 'AR',
+    zip: getLong('postal_code') || '',
+  });
+}
+
+function addressPartsFromNominatim(data = {}) {
+  const address = data.address || {};
+  const stateValue = address.state_code || (address.state === 'Arkansas' ? 'AR' : address.state);
+  return normalizeServiceAddressParts({
+    address: [address.house_number, address.road].filter(Boolean).join(' '),
+    city:
+      address.city ||
+      address.town ||
+      address.village ||
+      address.hamlet ||
+      address.municipality ||
+      '',
+    state: stateValue || 'AR',
+    zip: address.postcode || '',
+    full: data.display_name || '',
+  });
+}
+
+async function reverseGeocodeServiceAddress(lat, lng) {
+  const point = { lat: Number(lat), lng: Number(lng) };
+  if (!Number.isFinite(point.lat) || !Number.isFinite(point.lng)) return normalizeServiceAddressParts();
+
+  if (window.google?.maps?.Geocoder) {
+    try {
+      const geocoder = new google.maps.Geocoder();
+      const results = await new Promise((resolve, reject) => {
+        geocoder.geocode({ location: point }, (items, status) => {
+          if (status === 'OK') resolve(items || []);
+          else reject(new Error(status || 'Google reverse geocode failed'));
+        });
+      });
+      const first = results[0];
+      if (first) {
+        const parts = addressPartsFromGoogleComponents(first.address_components || []);
+        parts.full = first.formatted_address || parts.full;
+        return parts;
+      }
+    } catch (error) {
+      console.warn('[Reverse Geocode Failed] google', error);
+    }
+  }
+
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3500);
+    const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&addressdetails=1&lat=${encodeURIComponent(point.lat)}&lon=${encodeURIComponent(point.lng)}`;
+    try {
+      const res = await fetch(url, { headers: { Accept: 'application/json' }, signal: controller.signal });
+      if (!res.ok) throw new Error(`Nominatim ${res.status}`);
+      return addressPartsFromNominatim(await res.json());
+    } finally {
+      clearTimeout(timeout);
+    }
+  } catch (error) {
+    console.warn('[Reverse Geocode Failed] nominatim', error);
+    return normalizeServiceAddressParts();
+  }
+}
+
+async function fillMissingServiceAddressFromReverseGeocode(address, point = {}) {
+  const current = normalizeServiceAddressParts(address || {});
+  if (current.city && current.zip) return current;
+  const reverse = await reverseGeocodeServiceAddress(point.lat, point.lng);
+  if (!reverse.city && !reverse.zip) return current;
+
+  const merged = normalizeServiceAddressParts({
+    street: current.street || reverse.street,
+    address: current.address || reverse.address,
+    city: current.city || reverse.city,
+    state: current.state || reverse.state || 'AR',
+    zip: current.zip || reverse.zip,
+    full: current.full || reverse.full,
+  });
+
+  console.log('[Service Address Reverse Geocode Fallback]', {
+    point,
+    reverse,
+    final: merged,
+  });
+
+  return merged;
+}
+
+function parcelLookupPointFromGeometry(geometry = null) {
+  const ring = geometry?.rings?.[0] || geometry?.coordinates?.[0]?.[0] || geometry?.coordinates?.[0] || [];
+  const points = Array.isArray(ring) ? ring : [];
+  const totals = points.reduce((acc, point) => {
+    const lng = Number(point?.[0]);
+    const lat = Number(point?.[1]);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return acc;
+    acc.lat += lat;
+    acc.lng += lng;
+    acc.count += 1;
+    return acc;
+  }, { lat: 0, lng: 0, count: 0 });
+  if (!totals.count) return null;
+  return { lat: totals.lat / totals.count, lng: totals.lng / totals.count };
+}
+
+function quoteFormLatLng() {
+  const form = byId('quoteForm');
+  const lat = Number(form?.elements?.lat?.value || 0);
+  const lng = Number(form?.elements?.lng?.value || 0);
+  return Number.isFinite(lat) && Number.isFinite(lng) && lat && lng ? { lat, lng } : null;
+}
+
+function showPropertyConfirmationPanel(visible = true) {
+  byId('quoteParcelScreen')?.classList.toggle('hidden', !visible);
+}
+
+async function lookupParcel(options = {}) {
+  const quoteForm = byId('quoteForm');
+  const parcelInfo = byId('parcelInfo');
+  if (!quoteForm || !parcelInfo) return;
+
+  const lat = quoteForm.elements.lat.value;
+  const lng = quoteForm.elements.lng.value;
+
+  if (!lat || !lng) {
+    showPropertyConfirmationPanel(true);
+    return showResult(
+      'parcelInfo',
+      '<strong>No coordinates yet.</strong> Use Find Address or autocomplete first.'
+    );
+  }
+
+  const address = quoteForm.elements.address?.value || '';
+  const city = quoteForm.elements.city?.value || '';
+  const zip = quoteForm.elements.zip?.value || '';
+
+  const qs = new URLSearchParams({ lat, lng, address, city, zip });
+  const data = await api(`/api/parcel/lookup?${qs.toString()}`);
+
+  if (!data.ok) {
+    const message = options.notFoundMessage || 'Parcel boundary not found. You can still draw the mowable area manually.';
+    parcelInfo.innerHTML = options.hideNotFoundDetails
+      ? `<strong>${escapeHtml(message)}</strong>`
+      : `
+        <strong>${escapeHtml(message)}</strong><br>
+        Reason: ${escapeHtml(data.reason || 'unknown')}<br>
+        You can still draw the mowable area manually.
+      `;
+    parcelInfo.classList.remove('hidden');
+    showPropertyConfirmationPanel(true);
+    clearParcelLayer();
+    updateQuoteFlowState();
+    if (!options.suppressNotFoundToast) {
+      showWarning('Parcel lookup failed. You can still draw the area manually.');
+    }
+    return;
+  }
+
+  const normalized = data.normalized || {};
+  const attrs = normalized.attributes || {};
+  const parcelProps = parcelPropertiesFromLookupData(data);
+  const fallbackAddress = options.allowAddressFallback === false ? {} : getQuoteFormServiceAddress();
+  let serviceAddress = resolveServiceAddressFromParcel(parcelProps, fallbackAddress);
+  serviceAddress = await fillMissingServiceAddressFromReverseGeocode(serviceAddress, { lat, lng });
+
+  const parcelId = normalized.parcelId || propText(attrs, 'parcelid', 'parcel_id', 'PARCELID', 'PIN') || '';
+  const ownerName = attrs.ownername || 'n/a';
+  const addressLabel = propText(parcelProps, 'adrlabel') || 'n/a';
+  const county = normalized.county || propText(attrs, 'countyid', 'county', 'COUNTY') || 'n/a';
+  const geometry = data.feature?.geometry || null;
+  state.parcelProperties = parcelProps;
+  state.selectedParcelProperties = parcelProps;
+  state.selectedParcel = { type: 'Feature', geometry: null, properties: parcelProps };
+
+  quoteForm.elements.parcelId.value = parcelId;
+  quoteForm.elements.lotAreaSqft.value = '';
+  quoteForm.elements.mowAreaSqft.value = '';
+  if (quoteForm.elements.customerAdjustedMowableSqft) quoteForm.elements.customerAdjustedMowableSqft.value = '';
+  const serviceAddressSource = hasServiceAddress(serviceAddress)
+    ? `parcel-${data.method || 'lookup'}`
+    : options.allowAddressFallback === false
+      ? 'parcel-no-address'
+      : `parcel-${data.method || 'lookup'}`;
+  setCurrentServiceAddress(serviceAddress, serviceAddressSource, {
+    syncQuoteForm: true,
+    clearQuoteFormMissing: true,
+  });
+
+  if (geometry) {
+    drawParcel(geometry, parcelProps); // TODO: drawParcel is map-coupled, stays in app.js
+    const parcelAreaSqft = Number(normalized.areaSqft || 0)
+      || (state.parcelLayer ? layerAreaSqFt(state.parcelLayer) : 0);
+    quoteForm.elements.lotAreaSqft.value = parcelAreaSqft || '';
+    renderSuggestedMowablePanel(null);
+    scheduleEstimateRefresh('parcel-loaded');
+  }
+
+  updateMowAreaHelper(
+    Number(quoteForm.elements.lotAreaSqft.value || 0),
+    Number(quoteForm.elements.mowAreaSqft.value || 0)
+  );
+
+  const lotSqft = Number(quoteForm.elements.lotAreaSqft.value || 0);
+  const mowSqft = Number(quoteForm.elements.mowAreaSqft.value || 0);
+  const customerLines = [
+    '<strong>Parcel found. Boundary loaded.</strong>',
+    addressLabel && addressLabel !== 'n/a' ? `Address: ${escapeHtml(addressLabel)}` : null,
+    lotSqft > 0 ? `<span class="parcel-customer-acres">Lot Area: ${formatAcres(lotSqft)}</span>` : null,
+    mowSqft > 0 ? `<span class="parcel-customer-acres">Mowable Area: ${formatAcres(mowSqft)}</span>` : null,
+    'Use <strong>Lasso Yard</strong> to draw the mowable area.',
+  ].filter(Boolean);
+  const techLines = [
+    `Match: ${escapeHtml(data.method || 'n/a')}`,
+    `County: ${escapeHtml(county)}`,
+    `Parcel ID: ${escapeHtml(parcelId || 'n/a')}`,
+  ].join('<br>');
+
+  parcelInfo.innerHTML = customerLines.join('<br>')
+    + `<details class="parcel-tech-details"><summary>Advanced parcel details</summary>${techLines}</details>`;
+  parcelInfo.classList.remove('hidden');
+  showPropertyConfirmationPanel(true);
+
+  saveQuoteDraft();
+  scheduleEstimateRefresh('parcel-loaded');
+  updateQuoteFlowState();
+  showQuoteFlowStep('property');
+}
+
+async function lookupParcelByLatLng(lat, lng) {
+  clearParcelLayer(); // TODO: clearParcelLayer is map-coupled, stays in app.js
+  clearMowLayer();    // TODO: clearMowLayer is map-coupled, stays in app.js
+  renderSuggestedMowablePanel(null);
+  setCurrentServiceAddress({}, 'gps-location', {
+    syncQuoteForm: true,
+    clearQuoteFormMissing: true,
+  });
+  setLatLng(lat, lng);
+  placeCurrentLocationMarker(lat, lng); // TODO: placeCurrentLocationMarker is map-coupled, stays in app.js
+  await lookupParcel({
+    notFoundMessage: 'We found your location, but could not match a parcel here. Try typing the address.',
+    hideNotFoundDetails: true,
+    suppressNotFoundToast: true,
+    allowAddressFallback: false,
+  });
+}
+
+function setGpsStatus(message) {
+  const statusEl = byId('gpsStatusMsg');
+  if (!statusEl) return;
+  statusEl.textContent = message || '';
+  statusEl.classList.toggle('hidden', !message);
+}
+
+function setGpsButtonLocating(isLocating) {
+  $$('[data-use-current-location]').forEach((btn) => {
+    if (isLocating) {
+      btn.dataset.originalText = btn.textContent || 'Use Current Location';
+      btn.textContent = 'Finding your location...';
+      btn.disabled = true;
+      return;
+    }
+    btn.disabled = false;
+    btn.textContent = btn.dataset.originalText || 'Use Current Location';
+    delete btn.dataset.originalText;
+  });
+}
+
+function gpsErrorMessage(error) {
+  if (error?.code === 1) {
+    return 'Location permission was denied. You can still type your address.';
+  }
+  return 'Could not get your location. Try again or type your address.';
+}
+
+async function requestCurrentLocation() {
+  if (!navigator.geolocation) {
+    setGpsStatus('GPS location is not supported on this device/browser.');
+    return;
+  }
+
+  setGpsButtonLocating(true);
+  setGpsStatus('Finding your location...');
+  byId('gpsConfirmBar')?.classList.add('hidden');
+  showPropertyConfirmationPanel(false);
+
+  // Browser geolocation requires HTTPS in production, or localhost during development.
+  navigator.geolocation.getCurrentPosition(
+    async (position) => {
+      const { latitude: lat, longitude: lng } = position.coords;
+      setGpsStatus('Location found. Checking parcel...');
+      try {
+        await lookupParcelByLatLng(lat, lng);
+        if (state.parcelLayer) {
+          setGpsStatus('');
+          showPropertyConfirmationPanel(true);
+          if (state.serviceFlow === 'live_bid') hydrateLiveBidForm(byId('liveBidServiceType')?.value || 'other');
+          byId('gpsConfirmBar')?.classList.remove('hidden');
+        } else {
+          setGpsStatus('We found your location, but could not match a parcel here. Try typing the address.');
+        }
+      } catch (err) {
+        const message = prettyApiError(err) || 'Could not get your location. Try again or type your address.';
+        setGpsStatus(message);
+        showError(message);
+      } finally {
+        setGpsButtonLocating(false);
+      }
+    },
+    (geoError) => {
+      setGpsButtonLocating(false);
+      const message = gpsErrorMessage(geoError);
+      setGpsStatus(message);
+      showError(message);
+    },
+    { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
+  );
+}
+
+// Continue to draw — only confirms parcel exists, then navigates
+byId('continueToDrawBtn')?.addEventListener('click', () => {
+  if (!state.parcelLayer) {
+    showWarning('Lookup the parcel before drawing.');
+    return;
+  }
+  showQuoteFlowStep('draw');
+});
+
+// Find address by typing
+byId('locateAddressBtn')?.addEventListener('click', async () => {
+  byId('gpsConfirmBar')?.classList.add('hidden');
+  try {
+    await geocodeAddress();
+    await lookupParcel();
+  } catch (error) {
+    showError(prettyApiError(error));
+  }
+});
+
+// Search again / change property
+byId('lookupParcelBtn')?.addEventListener('click', () => {
+  byId('gpsConfirmBar')?.classList.add('hidden');
+  resetParcelQuoteStateForNewAddress();
+  showPropertyConfirmationPanel(false);
+  showQuoteFlowStep('property');
+  byId('quoteForm')?.elements?.address?.focus?.();
+});
+
+// Use Current Location buttons
+$$('[data-use-current-location]').forEach((btn) => btn.addEventListener('click', requestCurrentLocation));
+
+// GPS confirm bar — Yes: proceed to draw
+byId('gpsConfirmYesBtn')?.addEventListener('click', () => {
+  byId('gpsConfirmBar')?.classList.add('hidden');
+  showQuoteFlowStep('draw');
+});
+
+// GPS confirm bar — No: discard GPS parcel and return to property search
+byId('gpsConfirmNoBtn')?.addEventListener('click', () => {
+  byId('gpsConfirmBar')?.classList.add('hidden');
+  clearParcelLayer();
+  clearMowLayer();
+  byId('gpsStatusMsg')?.classList.add('hidden');
+  showPropertyConfirmationPanel(false);
+  showQuoteFlowStep('property');
+});
+
+// Expose globally — called from app.js (autocomplete, confirmParcelSelection, init, clearQuoteDraftBtn)
+window.lookupParcel = lookupParcel;
+window.showPropertyConfirmationPanel = showPropertyConfirmationPanel;
+window.quoteFormLatLng = quoteFormLatLng;
+window.fillMissingServiceAddressFromReverseGeocode = fillMissingServiceAddressFromReverseGeocode;
+window.parcelLookupPointFromGeometry = parcelLookupPointFromGeometry;

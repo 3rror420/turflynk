@@ -1,0 +1,1148 @@
+'use strict';
+// checkout-request.js — Checkout, lead/service request, manual quote, and account
+// recommendation logic. Extracted from app.js — Phase 10 modular refactor.
+// Loads before app.js.
+//
+// Pre-load globals required:
+//   state                              → public/js/state.js
+//   byId, $$                           → public/js/utils/dom.js
+//   api                                → public/js/core/api.js
+//   escapeHtml, prettyApiError         → public/js/core/api.js
+//   money, formatAcres                 → public/js/config.js
+//   showResult, showError, showSuccess, showWarning → public/js/utils/dom.js
+//   setActiveView                      → app.js (called at runtime)
+//   showQuoteFlowStep, updateQuoteStepper → public/js/quote/quote-flow.js
+//   hasActiveMowableArea, currentEstimateSignature → app.js (resolved at call-time)
+//   refreshEstimate                    → app.js (resolved at call-time)
+//   buildQuotePayload                  → app.js (resolved at call-time)
+//   bookingContactMissing, quoteContactMissing → defined in this file (Phase 13c)
+//   normalizeBookingContact            → defined in this file (Phase 13c)
+//   buildAccessSummary, buildScheduleSummary → app.js (resolved at call-time)
+//   currentJobScopeSnapshotFields      → app.js (resolved at call-time)
+//   sanitizeJobForPublic, sanitizeCustomerName → app.js (resolved at call-time)
+//   serviceLabel, regionLabel          → public/js/config.js
+//   isValidLookingPhone, showPhoneRequiredError → defined in this file (Phase 13c)
+//   formToObject, checkedValues        → app.js (resolved at call-time)
+//   syncServiceAddressFields, getCurrentServiceAddress → app.js (resolved at call-time)
+//   setCurrentServiceAddress, applyServiceAddressToLeadForm → app.js (resolved at call-time)
+//   resolveServiceAddressFromParcel, hasServiceAddress → app.js (resolved at call-time)
+//   hydrateLeadFormFromUser, rememberProfilePhoneIfBlank → app.js (resolved at call-time)
+//   equipmentRecommendation            → app.js (resolved at call-time)
+//   showMissingMowableAreaPrompt       → app.js (resolved at call-time)
+//   setAuthToken                       → public/js/auth/auth-ui.js
+//   updateSessionStatus                → public/js/auth/auth-ui.js
+//   applyRoleVisibility                → public/js/auth/admin-visibility.js
+//   hasActiveSession                   → public/js/auth/auth-ui.js
+//   isAdmin, loadAdmin                 → app.js (resolved at call-time)
+//   loadMyJobs                         → public/js/jobs/jobs-ui.js
+//   submitBidRequest, uploadPhotoInput → defined in this file (Phase 13c)
+//   aiPhotoPlaceholder                 → app.js (resolved at call-time)
+//   saveQuoteDraft                     → app.js (resolved at call-time)
+//   INCLUDED_MOW_TASKS, EXCLUDED_MOW_TASKS, MOWABLE_ESTIMATE_FIELDS → public/js/config.js
+
+/* ─────────────────────────────────────────────────────────────────────────
+   SHOW / HIDE LEAD REQUEST PANEL
+───────────────────────────────────────────────────────────────────────── */
+
+function showLeadRequestPanel(payload) {
+  const panel = byId('leadRequestPanel');
+  if (!panel) return;
+
+  const estimate = payload.estimate || 0;
+  const quoteForm = byId('quoteForm');
+  const quoteFields = quoteForm ? formToObject(quoteForm) : {};
+  const payloadServiceAddress = payload?.parcelProperties
+    ? resolveServiceAddressFromParcel(payload.parcelProperties, payload)
+    : getCurrentServiceAddress(payload);
+  if (hasServiceAddress(payloadServiceAddress)) setCurrentServiceAddress(payloadServiceAddress, 'show-lead-request');
+
+  // Populate hidden fields from the estimate payload
+  const set = (id, val) => { const el = byId(id); if (el) el.value = val || ''; };
+  set('leadEstimatedPrice', estimate);
+  set('leadMowAreaSqft', payload.mowAreaSqft || 0);
+  set('leadLotAreaSqft', payload.lotAreaSqft || 0);
+  set('leadRegionId', payload.regionId || '');
+  set('leadServiceType', payload.serviceType || 'mowing');
+  set('leadParcelAreaSqft', payload.parcelAreaSqft || quoteFields.parcelAreaSqft || '');
+  set('leadBuildingFootprintSqft', payload.buildingFootprintSqft || quoteFields.buildingFootprintSqft || '');
+  set('leadBuildingAdjustedSqft', payload.buildingAdjustedSqft || quoteFields.buildingAdjustedSqft || '');
+  set('leadEstimatedNonMowableSqft', payload.estimatedNonMowableSqft || quoteFields.estimatedNonMowableSqft || '');
+  set('leadAutoEstimatedMowableSqft', payload.autoEstimatedMowableSqft || quoteFields.autoEstimatedMowableSqft || '');
+  set('leadMowableEstimateConfidence', payload.mowableEstimateConfidence || quoteFields.mowableEstimateConfidence || '');
+  set('leadBuildingFootprintsSource', payload.buildingFootprintsSource || quoteFields.buildingFootprintsSource || '');
+  set('leadCustomerAdjustedMowableSqft', payload.customerAdjustedMowableSqft || quoteFields.customerAdjustedMowableSqft || '');
+
+  const display = byId('leadEstimateDisplay');
+  if (display) display.textContent = estimate > 0 ? money(estimate) : '—';
+  const submitBtn = byId('leadSubmitBtn');
+  if (submitBtn) {
+    submitBtn.disabled = false;
+    submitBtn.textContent = 'Book & Pay Securely';
+  }
+  const leadForm = byId('leadRequestForm');
+  if (leadForm) {
+    const fillBlank = (name, value) => {
+      const field = leadForm.elements[name];
+      if (field && !String(field.value || '').trim() && value) field.value = value;
+    };
+    fillBlank('customerName', payload.customerName || payload.name || '');
+    fillBlank('customerPhone', payload.customerPhone || payload.phone || '');
+    fillBlank('customerEmail', payload.customerEmail || payload.email || '');
+  }
+
+  panel.classList.remove('hidden');
+  showQuoteFlowStep('request');
+  updateQuoteStepper();
+
+  // Fill blank customer fields from logged-in user profile (does not overwrite typed values)
+  hydrateLeadFormFromUser(state.currentUser);
+  if (state.currentUser) console.info('[Auth UI] showing signed-in controls on request panel');
+
+  applyServiceAddressToLeadForm();
+  console.log('[FINAL FORM STATE]', {
+    city: document.getElementById('leadCity')?.value,
+    state: document.getElementById('leadState')?.value,
+    zip: document.getElementById('leadZip')?.value
+  });
+}
+
+function hideManualQuotePanel() {
+  const panel = byId('manualQuotePanel');
+  if (panel) {
+    panel.classList.add('hidden');
+    panel.hidden = true;
+    panel.setAttribute('aria-hidden', 'true');
+  }
+  showQuoteFlowStep('estimate');
+  updateQuoteStepper();
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   SHOW / HIDE MANUAL QUOTE PANEL
+───────────────────────────────────────────────────────────────────────── */
+
+function showManualQuotePanel(payload = {}) {
+  const panel = byId('manualQuotePanel');
+  if (!panel) return;
+
+  const quoteForm = byId('quoteForm');
+  const quoteFields = quoteForm ? formToObject(quoteForm) : {};
+  const estimate = Number(payload.estimate || state.currentEstimate?.estimate || 0);
+  syncServiceAddressFields(payload);
+
+  const display = byId('manualQuoteEstimateDisplay');
+  if (display) display.textContent = estimate > 0 ? money(estimate) : '-';
+
+  const form = byId('manualQuoteForm');
+  if (form) {
+    if (form.elements.name) form.elements.name.value = payload.name || payload.customerName || form.elements.name.value || '';
+    if (form.elements.phone) form.elements.phone.value = payload.phone || payload.customerPhone || form.elements.phone.value || '';
+    if (form.elements.email) form.elements.email.value = payload.email || payload.customerEmail || form.elements.email.value || '';
+    if (form.elements.notes) form.elements.notes.value = form.elements.notes.value || quoteFields.notes || '';
+  }
+
+  byId('manualQuoteResult')?.classList.add('hidden');
+  $$('[data-quote-step-panel]').forEach((stepPanel) => {
+    stepPanel.classList.remove('is-active');
+    stepPanel.classList.add('is-hidden', 'hidden');
+    stepPanel.hidden = true;
+    stepPanel.setAttribute('aria-hidden', 'true');
+  });
+  panel.classList.remove('hidden');
+  panel.hidden = false;
+  panel.setAttribute('aria-hidden', 'false');
+  panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function buildManualQuoteRequestPayload(form) {
+  const fd = new FormData(form);
+  const contact = Object.fromEntries(fd.entries());
+  const quoteForm = byId('quoteForm');
+  const quotePayload = quoteForm ? buildQuotePayload(quoteForm) : {};
+  const serviceAddress = getCurrentServiceAddress(quotePayload);
+  const estimate = Number(state.currentEstimate?.estimate || state.pendingQuote?.estimate || quotePayload.estimate || 0);
+  const preferredDayTime = String(contact.preferredDayTime || '').trim();
+  const customerNotes = String(contact.notes || '').trim();
+  const notes = [
+    'Manual quote requested.',
+    preferredDayTime ? `Preferred day/time: ${preferredDayTime}` : '',
+    customerNotes ? `Customer notes: ${customerNotes}` : '',
+    quotePayload.yard_access_notes ? `Yard access notes: ${quotePayload.yard_access_notes}` : '',
+  ].filter(Boolean).join('\n');
+
+  return {
+    ...quotePayload,
+    name: String(contact.name || '').trim(),
+    phone: String(contact.phone || '').trim(),
+    email: String(contact.email || '').trim(),
+    customerName: String(contact.name || '').trim(),
+    customerPhone: String(contact.phone || '').trim(),
+    customerEmail: String(contact.email || '').trim(),
+    preferredDayTime,
+    notes,
+    address: serviceAddress.address || quotePayload.address || '',
+    city: serviceAddress.city || quotePayload.city || '',
+    state: serviceAddress.state || quotePayload.state || 'AR',
+    zip: serviceAddress.zip || quotePayload.zip || '',
+    quote_type: 'manual_quote',
+    quoteType: 'manual_quote',
+    status: 'manual_requested',
+    estimate,
+    final_price: estimate,
+  };
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   CLOSE HANDLERS — lead request and manual quote panels
+───────────────────────────────────────────────────────────────────────── */
+
+byId('closeleadRequestPanel')?.addEventListener('click', () => {
+  byId('leadRequestPanel')?.classList.add('hidden');
+  showQuoteFlowStep('estimate');
+  updateQuoteStepper();
+});
+
+byId('closeManualQuotePanel')?.addEventListener('click', hideManualQuotePanel);
+byId('cancelManualQuotePanel')?.addEventListener('click', hideManualQuotePanel);
+
+/* ─────────────────────────────────────────────────────────────────────────
+   REQUEST SERVICE BTN / MANUAL QUOTE BTN click handlers
+───────────────────────────────────────────────────────────────────────── */
+
+byId('requestServiceBtn')?.addEventListener('click', async () => {
+  const form = byId('quoteForm');
+  if (!form) return;
+  try {
+    if (!hasActiveMowableArea()) {
+      showMissingMowableAreaPrompt('quoteResult');
+      return;
+    }
+    const signature = currentEstimateSignature();
+    if (
+      !state.pendingQuote?.estimate ||
+      !state.currentEstimate ||
+      state.currentEstimate.status !== 'fresh' ||
+      state.currentEstimate.signature !== signature
+    ) {
+      await refreshEstimate({ force: true, navigate: false });
+    }
+    showLeadRequestPanel(state.pendingQuote || buildQuotePayload(form));
+  } catch (error) {
+    showResult('quoteResult', `<strong>Estimate failed:</strong> ${escapeHtml(prettyApiError(error))}`);
+    showError(prettyApiError(error));
+  }
+});
+
+byId('manualQuoteBtn')?.addEventListener('click', async () => {
+  const form = byId('quoteForm');
+  if (!form) return;
+  try {
+    if (!hasActiveMowableArea()) {
+      showMissingMowableAreaPrompt('quoteResult');
+      return;
+    }
+    const signature = currentEstimateSignature();
+    if (
+      !state.pendingQuote?.estimate ||
+      !state.currentEstimate ||
+      state.currentEstimate.status !== 'fresh' ||
+      state.currentEstimate.signature !== signature
+    ) {
+      await refreshEstimate({ force: true, navigate: false });
+    }
+    showManualQuotePanel(state.pendingQuote || buildQuotePayload(form));
+  } catch (error) {
+    showResult('quoteResult', `<strong>Estimate failed:</strong> ${escapeHtml(prettyApiError(error))}`);
+    showError(prettyApiError(error));
+  }
+});
+
+/* ─────────────────────────────────────────────────────────────────────────
+   MANUAL QUOTE FORM submit
+───────────────────────────────────────────────────────────────────────── */
+
+byId('manualQuoteForm')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const btn = byId('manualQuoteSubmitBtn');
+  const result = byId('manualQuoteResult');
+  const originalText = btn?.textContent || 'Submit Request';
+
+  try {
+    const payload = buildManualQuoteRequestPayload(e.target);
+    const missing = [];
+    if (!payload.name) missing.push('name');
+    if (!isValidLookingPhone(payload.phone)) missing.push('phone');
+    if (missing.length) {
+      if (missing.includes('phone')) showPhoneRequiredError('manualQuoteResult');
+      else showError(`Add ${missing.join(', ')} to request an in-person quote.`);
+      return;
+    }
+
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = 'Submitting...';
+    }
+
+    const data = await api('/api/quotes', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+
+    state.lastQuote = { ...payload, ...data.quote };
+    state.pendingQuote = state.lastQuote;
+    rememberProfilePhoneIfBlank(payload.phone);
+    if (result) {
+      result.innerHTML = `<strong>Request sent.</strong><br>Quote ID: ${escapeHtml(data.quote?.id || '')}<br><span class="meta">No payment was started.</span>`;
+      result.classList.remove('hidden');
+    }
+    showSuccess('In-person quote request sent');
+    if (isAdmin()) await loadAdmin().catch(() => {});
+  } catch (err) {
+    if (result) {
+      result.innerHTML = `<strong>Could not submit:</strong> ${escapeHtml(prettyApiError(err))}`;
+      result.classList.remove('hidden');
+    }
+    showError(prettyApiError(err));
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = originalText;
+    }
+  }
+});
+
+/* ─────────────────────────────────────────────────────────────────────────
+   LEAD REQUEST FORM — public service request submission
+───────────────────────────────────────────────────────────────────────── */
+
+byId('leadRequestForm')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  console.log('[Checkout] button tapped');
+  console.log('[MowNWA Checkout Debug] leadRequestForm submit fired');
+  const btn = byId('leadSubmitBtn');
+
+  try {
+    const form = e.target;
+    const currentServiceAddress = syncServiceAddressFields();
+    const fd = new FormData(form);
+    const payload = Object.fromEntries(fd.entries());
+    if (form.elements.customerPhone) form.elements.customerPhone.value = String(form.elements.customerPhone.value || '').trim();
+    payload.customerPhone = String(payload.customerPhone || '').trim();
+    payload.phone = payload.customerPhone;
+    const requestAvailableDays = checkedValues('available_days_json', form);
+
+    // Merge in the quote form address/service data from hidden fields
+    const quoteForm = byId('quoteForm');
+    if (quoteForm) {
+      const qd = buildQuotePayload(quoteForm);
+      if (Number(qd.mowAreaSqft || 0) <= 0) {
+        console.log('[MowNWA Checkout Debug] mowAreaSqft=0, blocking checkout');
+        const resultEl = byId('leadRequestResult');
+        if (resultEl) {
+          resultEl.innerHTML = '<strong>No lawn area selected.</strong> Go back and draw your mowable area first.';
+          resultEl.classList.remove('hidden');
+        }
+        showMissingMowableAreaPrompt('quoteResult');
+        return;
+      }
+      payload.address = currentServiceAddress.address || payload.address || qd.address || '';
+      payload.city = currentServiceAddress.city || payload.city || qd.city || '';
+      payload.state = currentServiceAddress.state || payload.state || qd.state || 'AR';
+      payload.zip = currentServiceAddress.zip || payload.zip || qd.zip || '';
+      payload.regionId = payload.regionId || qd.regionId || '';
+      payload.serviceType = payload.serviceType || qd.serviceType || 'mowing';
+      payload.mowAreaSqft = qd.mowAreaSqft;
+      payload.lotAreaSqft = payload.lotAreaSqft || qd.lotAreaSqft || 0;
+      payload.quote_type = qd.quote_type || 'instant_mow';
+      payload.quoteType = payload.quote_type;
+      payload.service_frequency = qd.service_frequency || '';
+      payload.grass_height_range = qd.grass_height_range || '';
+      payload.selected_yard_areas = checkedValues('selected_yard_areas', quoteForm);
+      // Prefer Step 4 (leadRequestForm) values over hidden quoteForm defaults
+      payload.gate_size_category = payload.gate_size_category || qd.gate_size_category || '';
+      payload.gate_access_type = payload.gate_size_category || qd.gate_size_category || qd.gate_access_type || '';
+      console.log('[MowNWA Checkout Debug] Step 4 property fields | gate=' + payload.gate_size_category + ' pets=' + payload.pets + ' obstacles=' + (Array.isArray(payload.obstacles_list) ? payload.obstacles_list.join(',') : payload.obstacles_list || '') + ' notes=' + (payload.notes ? String(payload.notes).slice(0, 60) : ''));
+      payload.gate_width_inches = qd.gate_width_inches || '';
+      payload.mower_access = qd.mower_access || '';
+      payload.yard_access_notes = qd.yard_access_notes || qd.access_notes || '';
+      payload.community_access_type = qd.community_access_type || 'no';
+      payload.community_access_instructions = qd.community_access_instructions || '';
+      payload.available_days_json = requestAvailableDays.length
+        ? requestAvailableDays
+        : checkedValues('available_days_json', quoteForm);
+      payload.time_preference = payload.schedule_preference || qd.time_preference || '';
+      payload.schedule_flexibility = payload.schedule_preference || qd.schedule_flexibility || '';
+      payload.available_date_start = qd.available_date_start || '';
+      payload.available_date_end = qd.available_date_end || '';
+      payload.specific_service_date = qd.specific_service_date || '';
+      payload.pets = payload.pets || qd.pets || '';
+      payload.pet_waste_level = payload.pet_waste_level || qd.pet_waste_level || '';
+      const leadObstaclesList = checkedValues('obstacles_list', form);
+      payload.obstacles_list = leadObstaclesList.length ? leadObstaclesList : checkedValues('obstacles_list', quoteForm);
+      payload.requested_tasks = checkedValues('requested_tasks', quoteForm);
+      payload.included_tasks_json = INCLUDED_MOW_TASKS;
+      payload.excluded_tasks_json = EXCLUDED_MOW_TASKS;
+      payload.scope_locked = Boolean(qd.standardMowScopeAck);
+      MOWABLE_ESTIMATE_FIELDS.forEach((name) => {
+        payload[name] = payload[name] || qd[name] || '';
+      });
+    }
+
+    const estimate = Number(payload.estimatedPrice || state.pendingQuote?.estimate || state.lastQuote?.estimate || 0);
+    const bookingQuote = normalizeBookingContact({
+      ...(state.pendingQuote || state.lastQuote || {}),
+      ...payload,
+      estimate,
+      final_price: estimate,
+      scope_locked: true,
+      standardMowScopeAck: true,
+    });
+
+    const missing = bookingContactMissing(bookingQuote);
+    console.log('[MowNWA Checkout Debug] bookingContactMissing result:', missing);
+    if (missing.length) {
+      if (missing.includes('phone')) showPhoneRequiredError('leadRequestResult');
+      else showError(`Add ${missing.join(', ')} to continue to secure checkout.`);
+      return;
+    }
+
+    // Validation passed — disable button now
+    if (btn) { btn.disabled = true; btn.textContent = 'Opening checkout...'; }
+
+    state.lastQuote = bookingQuote;
+    state.pendingQuote = bookingQuote;
+    await bookQuoteAsJob(btn);
+
+  } catch (err) {
+    const result = byId('leadRequestResult');
+    if (result) {
+      result.innerHTML = `<strong>Could not submit:</strong> ${escapeHtml(err.message)}`;
+      result.classList.remove('hidden');
+    }
+    showError(err.message);
+    if (btn) { btn.disabled = false; btn.textContent = 'Book & Pay Securely'; }
+  }
+});
+
+/* ─────────────────────────────────────────────────────────────────────────
+   QUOTE → JOB BOOKING
+───────────────────────────────────────────────────────────────────────── */
+
+async function bookQuoteAsJob(explicitBtn) {
+  if (!state.lastQuote && state.pendingQuote) {
+    state.lastQuote = state.pendingQuote;
+  }
+
+  if (!state.lastQuote) {
+    showResult('quoteResult', '<strong>Get an estimate, then continue to secure checkout.</strong>');
+    return;
+  }
+
+  const btn = explicitBtn || byId('bookJobBtn') || byId('leadSubmitBtn') || byId('requestServiceBtn');
+  const originalText = btn?.id === 'leadSubmitBtn' ? 'Book & Pay Securely' : (btn?.textContent || 'Book & Pay Securely');
+  console.log('[MowNWA Checkout Debug] bookQuoteAsJob start | btn=' + (btn?.id || 'none'));
+
+  // Hard gate: must be logged in before starting Stripe checkout
+  if (!hasActiveSession()) {
+    state.pendingCheckoutResume = true;
+    showAccountRecommend(null, Number(state.lastQuote?.estimate || 0));
+    if (btn) { btn.disabled = false; btn.textContent = originalText; }
+    return;
+  }
+
+  try {
+    const q = normalizeBookingContact(state.lastQuote);
+    const missing = bookingContactMissing(q);
+    if (missing.length) {
+      showBookingContactPanel(q);
+      if (missing.includes('phone')) {
+        showPhoneRequiredError('leadRequestResult');
+      } else {
+        showWarning(`Add ${missing.join(', ')} to continue to secure checkout.`);
+      }
+      if (btn) { btn.disabled = false; btn.textContent = originalText; }
+      return;
+    }
+
+    if (btn) { btn.disabled = true; btn.textContent = 'Opening checkout...'; }
+
+    const svcLabel = q.serviceType
+      ? String(q.serviceType).replace(/_/g, ' ').replace(/\b\w/g, (m) => m.toUpperCase())
+      : 'Mowing';
+    const currentScopeFields = currentJobScopeSnapshotFields();
+
+    const detailParts = [
+      q.notes ? `Notes: ${q.notes}` : '',
+      q.parcelId ? `Parcel ID: ${q.parcelId}` : '',
+      Number(q.mowAreaSqft || 0) > 0 ? `Mow area: ${formatAcres(q.mowAreaSqft)} (${Number(q.mowAreaSqft).toLocaleString()} sq ft)` : '',
+      Number(q.lotAreaSqft || 0) > 0 ? `Lot area: ${formatAcres(q.lotAreaSqft)} (${Number(q.lotAreaSqft).toLocaleString()} sq ft)` : '',
+      q.propertyType && q.propertyType !== 'standard' ? `Property type: ${q.propertyType}` : '',
+      q.fenced ? 'Fenced' : '',
+      q.overgrown ? 'Overgrown' : '',
+      q.obstacles ? 'Obstacles' : '',
+      q.rushJob ? 'Rush job' : '',
+      q.slopedTerrain ? 'Sloped terrain' : '',
+      q.grass_height_range ? `Grass height: ${q.grass_height_range}` : '',
+      q.service_frequency ? `Frequency: ${q.service_frequency}` : '',
+      q.selected_yard_areas?.length ? `Yard areas: ${q.selected_yard_areas.join(', ')}` : '',
+      buildAccessSummary(q),
+      buildScheduleSummary(q),
+      equipmentRecommendation(q),
+      q.pets ? `Pets: ${q.pets}` : '',
+      q.pet_waste_level ? `Pet waste: ${q.pet_waste_level}` : '',
+      q.obstacles_list?.length ? `Obstacles: ${q.obstacles_list.join(', ')}` : '',
+    ].filter(Boolean).join(' · ');
+
+    const payload = {
+      title: `${svcLabel} — ${q.address || 'Property'}`,
+      customerName: q.customerName || q.name || '',
+      customerPhone: q.customerPhone || q.phone || '',
+      customerEmail: q.customerEmail || q.email || '',
+      name: q.name || q.customerName || '',
+      phone: q.phone || q.customerPhone || '',
+      email: q.email || q.customerEmail || '',
+      address: q.address || '',
+      city: q.city || '',
+      state: q.state || 'AR',
+      zip: q.zip || '',
+      regionId: q.regionId || '',
+      budget: Number(q.estimate || 0),
+      serviceType: q.serviceType || 'mowing',
+      preferredDate: q.preferredDate || null,
+      details: detailParts,
+      photos: [],
+      quote_id: q.id || q.quote_id || null,
+
+      // Critical for server-side Stripe pricing.
+      // The checkout route recalculates from mowAreaSqft/settings and must not receive zero area.
+      mowAreaSqft: Number(q.mowAreaSqft || 0),
+      lotAreaSqft: Number(q.lotAreaSqft || 0),
+      areaSqft: Number(q.mowAreaSqft || 0),
+
+      final_price: Number(q.estimate || 0),
+      payment_status: 'checkout_pending',
+      scope_locked: true,
+      included_tasks_json: INCLUDED_MOW_TASKS,
+      excluded_tasks_json: EXCLUDED_MOW_TASKS,
+      parcelGeoJSON: q.parcelGeoJSON || currentScopeFields.parcelGeoJSON,
+      selectedMowableGeoJSON: q.selectedMowableGeoJSON || q.mowableGeoJSON || currentScopeFields.selectedMowableGeoJSON,
+      mowableGeoJSON: q.mowableGeoJSON || q.selectedMowableGeoJSON || currentScopeFields.mowableGeoJSON,
+      excludedGeoJSON: q.excludedGeoJSON || q.cutoutGeoJSON || currentScopeFields.excludedGeoJSON,
+      mapCenter: q.mapCenter || currentScopeFields.mapCenter || null,
+      mapBounds: q.mapBounds || currentScopeFields.mapBounds || null,
+    };
+
+    const checkoutBody = {
+      quote_id: q.id || q.quote_id || '',
+      serviceType: q.serviceType || 'mowing',
+      estimate: Number(q.estimate || 0),
+      final_price: Number(q.estimate || 0),
+      mowAreaSqft: Number(q.mowAreaSqft || 0),
+      lotAreaSqft: Number(q.lotAreaSqft || 0),
+      job: payload,
+    };
+    console.log('[MowNWA Checkout Debug] payload to /api/checkout/instant-mow | mowAreaSqft=' + checkoutBody.mowAreaSqft + ' lotAreaSqft=' + checkoutBody.lotAreaSqft);
+    const checkout = await api('/api/checkout/instant-mow', {
+      method: 'POST',
+      body: JSON.stringify(checkoutBody),
+    });
+    rememberProfilePhoneIfBlank(q.phone || q.customerPhone);
+    console.log('[MowNWA Checkout Debug] checkout API response | ok=' + checkout.ok + ' session=' + (checkout.checkoutSessionId ? checkout.checkoutSessionId.slice(0, 12) + '...' : 'none') + ' url=' + (checkout.checkoutUrl ? 'present' : 'missing'));
+    if (checkout.checkoutUrl) {
+      if (btn) { btn.disabled = false; btn.textContent = btn.id === 'leadSubmitBtn' ? 'Book & Pay Securely' : (btn.textContent || 'Book & Pay Securely'); }
+      window.location.href = checkout.checkoutUrl;
+      return;
+    }
+    payload.payment_status = checkout.paymentStatus || 'checkout_pending';
+
+    const data = checkout.job
+      ? { ok: true, job: checkout.job }
+      : await api('/api/jobs', {
+          method: 'POST',
+          body: JSON.stringify(payload),
+        });
+
+    let extraBidMessage = '';
+    if (state.pendingExtraBid?.tasks?.length) {
+      const photoUrls = await uploadPhotoInput(byId('extraBidPhotos'));
+      const bidRequest = await submitBidRequest({
+        related_quote_id: q.id || null,
+        related_job_id: data.job.id,
+        service_types: state.pendingExtraBid.tasks,
+        requested_tasks: state.pendingExtraBid.tasks,
+        address: q.address || '',
+        city: q.city || '',
+        state: q.state || 'AR',
+        zip: q.zip || '',
+        customerName: q.name || '',
+        customerPhone: q.phone || '',
+        customerEmail: q.email || '',
+        notes: state.pendingExtraBid.notes || '',
+        preferredTiming: state.pendingExtraBid.preferredTiming || 'flexible',
+        photos: photoUrls,
+        ai_summary_json: aiPhotoPlaceholder({
+          detected_services: state.pendingExtraBid.tasks,
+          live_bid_recommended: true,
+        }),
+      }, '');
+      extraBidMessage = `<br>Extra services: live bid requested (${escapeHtml(bidRequest.id)}), quoted separately.`;
+    }
+
+    state.lastQuote = null;
+    state.pendingExtraBid = null;
+
+    showResult(
+      'quoteResult',
+      `<strong>Job booked!</strong><br>
+       Job ID: ${escapeHtml(data.job.id)}<br>
+       Service area: ${escapeHtml(sanitizeJobForPublic(data.job).location)}<br>
+       Price: <strong>${money(data.job.budget)}</strong><br>
+       Status: <span class="status-badge ${escapeHtml(data.job.status)}">${escapeHtml(data.job.status)}</span>${extraBidMessage}<br><br>
+       <button class="btn secondary small" type="button"
+         onclick="showAccountPanel('jobs')">View My Bookings &rarr;</button>`
+    );
+
+    await loadMyJobs();
+    if (isAdmin()) await loadAdmin().catch(() => {});
+  } catch (error) {
+    showResult('quoteResult', `<strong>Booking failed:</strong> ${escapeHtml(error.message)}`);
+    if (btn) { btn.disabled = false; btn.textContent = originalText; }
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   ACCOUNT RECOMMENDATION (shown before Stripe redirect for guests)
+───────────────────────────────────────────────────────────────────────── */
+
+function showAccountRecommend(checkoutUrl, estimate) {
+  state.pendingCheckoutUrl = checkoutUrl;
+  const panel = byId('accountRecommendPanel');
+  const estimateEl = byId('accountRecommendEstimate');
+  if (estimateEl && estimate > 0) estimateEl.textContent = money(estimate);
+  // Hide other panels
+  byId('leadRequestPanel')?.classList.add('hidden');
+  byId('checkoutSuccessPanel')?.classList.add('hidden');
+  if (panel) {
+    panel.style.display = '';
+    panel.classList.remove('hidden');
+    panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+  setActiveView('quote');
+}
+
+function hideAccountRecommend() {
+  const panel = byId('accountRecommendPanel');
+  if (panel) { panel.style.display = 'none'; panel.classList.add('hidden'); }
+}
+
+function proceedToCheckout() {
+  const url = state.pendingCheckoutUrl;
+  state.pendingCheckoutUrl = null;
+  hideAccountRecommend();
+  if (url) window.location.href = url;
+}
+
+byId('accountRecommendGuestBtn')?.addEventListener('click', () => {
+  if (state.pendingCheckoutResume) {
+    showError('Please log in or create an account to continue to payment.');
+    return;
+  }
+  proceedToCheckout();
+});
+
+byId('accountRecommendCreateBtn')?.addEventListener('click', () => {
+  const authForm = byId('accountRecommendAuthForm');
+  if (authForm) authForm.classList.toggle('hidden');
+});
+
+byId('accountRecommendLoginToggle')?.addEventListener('click', () => {
+  byId('accountRecommendRegisterForm')?.classList.add('hidden');
+  byId('accountRecommendLoginForm')?.classList.remove('hidden');
+});
+
+byId('accountRecommendRegisterToggle')?.addEventListener('click', () => {
+  byId('accountRecommendLoginForm')?.classList.add('hidden');
+  byId('accountRecommendRegisterForm')?.classList.remove('hidden');
+});
+
+byId('accountRecommendRegisterForm')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const btn = byId('accountRecommendRegisterBtn');
+  const result = byId('accountRecommendAuthResult');
+  if (btn) { btn.disabled = true; btn.textContent = 'Creating account...'; }
+  try {
+    const fd = new FormData(e.target);
+    const data = await api('/api/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({ fullName: fd.get('fullName'), email: fd.get('email'), password: fd.get('password') }),
+    });
+    // Auto-login after register
+    const loginData = await api('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email: fd.get('email'), password: fd.get('password') }),
+    });
+    setAuthToken(loginData.token);
+    state.currentUser = loginData.user;
+    updateSessionStatus(loginData.user);
+    applyRoleVisibility();
+    if (state.pendingCheckoutResume) {
+      state.pendingCheckoutResume = false;
+      hideAccountRecommend();
+      await bookQuoteAsJob();
+    } else {
+      proceedToCheckout();
+    }
+  } catch (err) {
+    if (result) {
+      result.innerHTML = `<strong>Could not create account:</strong> ${escapeHtml(prettyApiError(err))}`;
+      result.classList.remove('hidden');
+    }
+    if (btn) { btn.disabled = false; btn.textContent = 'Create Account & Proceed to Checkout'; }
+  }
+});
+
+byId('accountRecommendLoginForm')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const btn = byId('accountRecommendLoginBtn');
+  const result = byId('accountRecommendAuthResult');
+  if (btn) { btn.disabled = true; btn.textContent = 'Signing in...'; }
+  try {
+    const fd = new FormData(e.target);
+    const loginData = await api('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email: fd.get('email'), password: fd.get('password') }),
+    });
+    setAuthToken(loginData.token);
+    state.currentUser = loginData.user;
+    updateSessionStatus(loginData.user);
+    applyRoleVisibility();
+    if (state.pendingCheckoutResume) {
+      state.pendingCheckoutResume = false;
+      hideAccountRecommend();
+      await bookQuoteAsJob();
+    } else {
+      proceedToCheckout();
+    }
+  } catch (err) {
+    if (result) {
+      result.innerHTML = `<strong>Could not sign in:</strong> ${escapeHtml(prettyApiError(err))}`;
+      result.classList.remove('hidden');
+    }
+    if (btn) { btn.disabled = false; btn.textContent = 'Sign In & Proceed to Checkout'; }
+  }
+});
+
+/* ─────────────────────────────────────────────────────────────────────────
+   CHECKOUT RETURN — success / cancel UI helpers
+───────────────────────────────────────────────────────────────────────── */
+
+async function handleCheckoutReturn() {
+  const params = new URLSearchParams(window.location.search);
+  const checkout = params.get('checkout');
+  if (!checkout) return;
+
+  const sessionId = params.get('session_id');
+  const jobId = params.get('job_id'); // eslint-disable-line no-unused-vars
+
+  // Clear URL params early so refresh doesn't re-trigger
+  window.history.replaceState({}, '', window.location.pathname);
+
+  if (checkout === 'success') {
+    setActiveView('quote');
+    showQuoteFlowStep('estimate');
+    const successPanel = byId('checkoutSuccessPanel');
+    const cancelPanel = byId('checkoutCancelPanel');
+    if (cancelPanel) { cancelPanel.style.display = 'none'; cancelPanel.classList.add('hidden'); }
+    if (successPanel) {
+      successPanel.style.display = '';
+      successPanel.classList.remove('hidden');
+      const contentEl = byId('checkoutSuccessContent');
+      if (contentEl) contentEl.innerHTML = '<div style="color:var(--muted);padding:12px">Loading receipt&hellip;</div>';
+      successPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+    if (sessionId) {
+      try {
+        const data = await api(`/api/payments/session/${encodeURIComponent(sessionId)}`);
+        renderCheckoutSuccess(data.session);
+      } catch {
+        const contentEl = byId('checkoutSuccessContent');
+        if (contentEl) {
+          contentEl.innerHTML = `<p><strong>Payment received.</strong> Your mow is booked.</p>
+            <p class="meta">Your receipt is being processed. Check My Bookings for status.</p>
+            <button class="btn secondary small" type="button" onclick="showAccountPanel('jobs')">View My Bookings</button>`;
+        }
+      }
+    }
+    if (hasActiveSession()) loadMyJobs().catch(() => {});
+  } else if (checkout === 'cancel') {
+    setActiveView('quote');
+    showQuoteFlowStep('estimate');
+    const successPanel = byId('checkoutSuccessPanel');
+    const cancelPanel = byId('checkoutCancelPanel');
+    if (successPanel) { successPanel.style.display = 'none'; successPanel.classList.add('hidden'); }
+    if (cancelPanel) {
+      cancelPanel.style.display = '';
+      cancelPanel.classList.remove('hidden');
+      const contentEl = byId('checkoutCancelContent');
+      if (contentEl) {
+        contentEl.innerHTML = `<p>Your card was not charged. You can return to the quote and book when ready.</p>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
+            <button class="btn primary" type="button" onclick="showQuoteFlowStep('estimate')">Return to Quote</button>
+            <button class="btn ghost" type="button" onclick="setActiveView('quote')">Start Over</button>
+          </div>`;
+      }
+      cancelPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+    showWarning('Checkout canceled. Your card was not charged.');
+  }
+}
+
+function renderCheckoutSuccess(session) {
+  const contentEl = byId('checkoutSuccessContent');
+  if (!contentEl) return;
+
+  const s = session || {};
+  const job = s.job || {};
+  const svc = s.service || {};
+  const customer = s.customer || {};
+
+  const formatSqftLocal = (n) => n > 0 ? `${Number(n).toLocaleString()} sq ft` : '';
+  const acresLocal = (n) => n > 0 ? `${(n / 43560).toFixed(3)} acres` : '';
+  const moneyLocal = (n) => n > 0 ? `$${Number(n).toFixed(2)}` : '';
+
+  const safeJob = sanitizeJobForPublic({
+    ...svc,
+    ...job,
+    city: job.city || svc.city,
+    state: job.state || svc.state,
+    serviceType: job.serviceType || svc.serviceType,
+    budget: s.amount || job.budget || svc.estimate,
+  });
+  const mowSqft = Number(svc.mowAreaSqft || 0);
+  const lotSqft = Number(svc.lotAreaSqft || 0);
+  const isGuest = !hasActiveSession();
+  const accountSetup = s.accountSetup || {};
+  const canSetPassword = Boolean(accountSetup.token);
+  const setupEmail = accountSetup.email || customer.email || '';
+
+  contentEl.innerHTML = `
+    <div class="estimate-card" style="margin:0">
+      <div class="estimate-head">
+        <div>
+          <span class="pill">Your booking is confirmed</span>
+          <h3>${moneyLocal(s.amount) || 'Payment received'}</h3>
+          <p>Payment status: <strong>${escapeHtml(s.status || 'paid')}</strong></p>
+        </div>
+        ${mowSqft > 0 ? `<div class="preview-pill"><span>Mowable area</span><strong>${formatSqftLocal(mowSqft)}</strong></div>` : ''}
+      </div>
+      <div style="margin-top:12px;display:grid;gap:6px">
+        ${s.job_id ? `<div><span class="meta">Booking ID:</span> <strong>${escapeHtml(s.job_id)}</strong></div>` : ''}
+        ${safeJob.location ? `<div><span class="meta">Service area:</span> ${escapeHtml(safeJob.location)}</div>` : ''}
+        ${safeJob.serviceType ? `<div><span class="meta">Service:</span> ${escapeHtml(serviceLabel(safeJob.serviceType))}</div>` : ''}
+        ${mowSqft > 0 ? `<div><span class="meta">Mowable area:</span> ${formatSqftLocal(mowSqft)}${acresLocal(mowSqft) ? ` (${acresLocal(mowSqft)})` : ''}</div>` : ''}
+        ${lotSqft > 0 ? `<div><span class="meta">Lot area:</span> ${formatSqftLocal(lotSqft)}</div>` : ''}
+        ${customer.name ? `<div><span class="meta">Name:</span> ${escapeHtml(sanitizeCustomerName(customer.name))}</div>` : ''}
+        ${(job.preferredDate || svc.preferredDate) ? `<div><span class="meta">Preferred date:</span> ${escapeHtml(job.preferredDate || svc.preferredDate)}</div>` : ''}
+        ${s.paid_at ? `<div><span class="meta">Paid:</span> ${escapeHtml(new Date(s.paid_at).toLocaleString())}</div>` : ''}
+        ${job.status ? `<div><span class="meta">Job status:</span> <span class="status-badge ${escapeHtml(job.status)}">${escapeHtml(job.status)}</span></div>` : ''}
+      </div>
+      <div class="final-review" style="margin-top:12px">
+        <h4>${canSetPassword ? 'Set your password to manage your jobs' : hasActiveSession() ? 'Manage your booking' : accountSetup.existingUser ? 'Log in to manage your jobs' : 'Next steps'}</h4>
+        <p class="meta">${canSetPassword
+          ? `We created an account for ${escapeHtml(setupEmail)} after payment. Set a password to view this booking, receipts, and future jobs.`
+          : accountSetup.existingUser
+            ? `This booking is linked to ${escapeHtml(setupEmail)}. Log in to manage your jobs.`
+            : `We'll review your access details and schedule your mow. You'll be contacted to confirm the appointment.`}</p>
+        ${canSetPassword ? `
+          <button class="btn primary small" type="button" id="successCreateAccountBtn">Create Account / Set Password</button>
+          <form id="successSetPasswordForm" class="stack hidden" style="gap:10px;margin-top:12px">
+            <input type="hidden" name="token" value="${escapeHtml(accountSetup.token)}" />
+            <label><span>Password</span><input name="password" type="password" autocomplete="new-password" required minlength="8" /></label>
+            <label><span>Confirm Password</span><input name="confirmPassword" type="password" autocomplete="new-password" required minlength="8" /></label>
+            <button class="btn primary" type="submit" id="successSetPasswordSubmitBtn">Set Password</button>
+            <div id="successSetPasswordResult" class="result hidden"></div>
+          </form>
+        ` : ''}
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
+        ${hasActiveSession() ? `<button class="btn secondary small" type="button" onclick="showAccountPanel('jobs')">View My Bookings</button>` : ''}
+        ${isGuest && !canSetPassword ? `<button class="btn secondary small" type="button" id="successCreateAccountBtn">Log In / Create Account</button>` : ''}
+        <button class="btn ghost small" type="button" onclick="setActiveView('quote')">Return Home</button>
+      </div>
+    </div>`;
+
+  if (canSetPassword) {
+    byId('successCreateAccountBtn')?.addEventListener('click', () => {
+      byId('successSetPasswordForm')?.classList.toggle('hidden');
+    });
+    byId('successSetPasswordForm')?.addEventListener('submit', submitSuccessSetPassword);
+  } else if (isGuest) {
+    byId('successCreateAccountBtn')?.addEventListener('click', () => {
+      byId('openAuth')?.click();
+    });
+  }
+}
+
+async function submitSuccessSetPassword(event) {
+  event.preventDefault();
+  const form = event.target;
+  const btn = byId('successSetPasswordSubmitBtn');
+  const result = byId('successSetPasswordResult');
+  const fd = new FormData(form);
+  const password = String(fd.get('password') || '');
+  const confirmPassword = String(fd.get('confirmPassword') || '');
+
+  if (password !== confirmPassword) {
+    if (result) {
+      result.innerHTML = '<strong>Passwords do not match.</strong>';
+      result.classList.remove('hidden');
+    }
+    return;
+  }
+
+  if (btn) { btn.disabled = true; btn.textContent = 'Setting password...'; }
+  try {
+    const data = await api('/api/auth/set-password', {
+      method: 'POST',
+      body: JSON.stringify({ token: fd.get('token'), password }),
+    });
+    setAuthToken(data.token);
+    state.currentUser = data.user;
+    updateSessionStatus(data.user);
+    applyRoleVisibility();
+    if (result) {
+      result.innerHTML = '<strong>Password set.</strong> You can now manage your bookings.';
+      result.classList.remove('hidden');
+    }
+    form.querySelectorAll('input,button').forEach((el) => { el.disabled = true; });
+    await loadMyJobs().catch(() => {});
+    showSuccess('Account ready');
+  } catch (error) {
+    if (result) {
+      result.innerHTML = `<strong>Could not set password:</strong> ${escapeHtml(prettyApiError(error))}`;
+      result.classList.remove('hidden');
+    }
+    if (btn) { btn.disabled = false; btn.textContent = 'Set Password'; }
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   PHONE HELPERS — moved from app.js (Phase 13c)
+───────────────────────────────────────────────────────────────────────── */
+
+function phoneDigits(value) {
+  return String(value || '').replace(/\D/g, '');
+}
+
+function isValidLookingPhone(value) {
+  const digits = phoneDigits(value);
+  return digits.length >= 10 && digits.length <= 15;
+}
+
+function bookingPhoneValue(payload = {}) {
+  return String(payload.phone || payload.customerPhone || '').trim();
+}
+
+function focusBookingPhoneField() {
+  const phoneField = byId('leadPhone')
+    || byId('leadRequestForm')?.elements?.customerPhone
+    || byId('manualQuoteForm')?.elements?.phone
+    || byId('quoteForm')?.elements?.phone
+    || null;
+  phoneField?.focus?.();
+}
+
+function showPhoneRequiredError(resultId = 'leadRequestResult') {
+  const message = 'Enter a valid phone number before booking or payment.';
+  const result = byId(resultId);
+  if (result) {
+    result.innerHTML = `<strong>Phone needed.</strong><br>${escapeHtml(message)}`;
+    result.classList.remove('hidden');
+  }
+  showError(message);
+  focusBookingPhoneField();
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   CONTACT VALIDATION HELPERS — moved from app.js (Phase 13c)
+───────────────────────────────────────────────────────────────────────── */
+
+function quoteContactMissing(payload) {
+  const missing = [];
+  if (!String(payload.name || '').trim()) missing.push('name');
+  if (!String(payload.email || '').trim()) missing.push('email');
+  if (!isValidLookingPhone(payload.phone || '')) missing.push('phone');
+  return missing;
+}
+
+function bookingAccessNotesRequired(payload = {}) {
+  const gate = payload.gate_size_category || payload.gate_access_type || '';
+  const mowerAccess = payload.mower_access || '';
+  const community = payload.community_access_type || '';
+  return (
+    (gate && gate !== 'no_gate_open_access') ||
+    (mowerAccess && mowerAccess !== 'yes') ||
+    (community && community !== 'no')
+  );
+}
+
+function bookingContactMissing(payload = {}) {
+  const missing = [];
+  if (!String(payload.name || payload.customerName || '').trim()) missing.push('name');
+  if (!isValidLookingPhone(payload.phone || payload.customerPhone || '')) missing.push('phone');
+  if (!String(payload.email || payload.customerEmail || '').trim()) missing.push('email');
+  if (!String(payload.address || '').trim()) missing.push('address');
+  const accessNotes = payload.yard_access_notes || payload.access_notes || payload.notes || payload.community_access_instructions || '';
+  if (bookingAccessNotesRequired(payload) && !String(accessNotes).trim()) missing.push('access notes');
+  return missing;
+}
+
+function normalizeBookingContact(payload = {}) {
+  const serviceAddress = getCurrentServiceAddress(payload);
+  const phone = bookingPhoneValue(payload);
+  return {
+    ...payload,
+    ...(hasServiceAddress(serviceAddress) ? serviceAddress : {}),
+    name: payload.name || payload.customerName || '',
+    phone,
+    email: payload.email || payload.customerEmail || '',
+    customerName: payload.customerName || payload.name || '',
+    customerPhone: phone,
+    customerEmail: payload.customerEmail || payload.email || '',
+  };
+}
+
+function showBookingContactPanel(payload = {}) {
+  showLeadRequestPanel(payload);
+  showWarning('Add booking details to continue to secure checkout.');
+}
+
+function showQuoteContactRequest(missing) {
+  const details = document.querySelector('#quoteForm .contact-details');
+  if (details) details.open = true;
+
+  const first = missing[0];
+  const field = first ? document.querySelector(`#quoteForm [name="${first}"]`) : null;
+  if (field?.focus) field.focus();
+
+  showResult(
+    'quoteResult',
+    `<strong>Almost there.</strong><br>Add your ${escapeHtml(missing.join(', '))}, then accept the quote.<br><br>
+     <button class="btn primary" type="button" id="acceptQuoteBtn">Book &amp; Pay Securely</button>`
+  );
+
+  byId('acceptQuoteBtn')?.addEventListener('click', acceptPendingQuote);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   FILE PREVIEW / EXTRA BID HELPERS — moved from app.js (Phase 13c)
+───────────────────────────────────────────────────────────────────────── */
+
+function renderFilePreview(input, preview) {
+  if (!input || !preview) return;
+  preview.innerHTML = '';
+  Array.from(input.files || []).forEach((file) => {
+    const item = document.createElement('div');
+    item.className = 'photo-thumb';
+    const img = document.createElement('img');
+    img.alt = file.name;
+    img.src = URL.createObjectURL(file);
+    img.onload = () => URL.revokeObjectURL(img.src);
+    const label = document.createElement('span');
+    label.textContent = file.name;
+    item.append(img, label);
+    preview.append(item);
+  });
+}
+
+function updateExtraBidFields() {
+  const wantsExtra = document.querySelector('input[name="extraWorkChoice"]:checked')?.value === 'yes';
+  byId('extraBidFields')?.classList.toggle('hidden', !wantsExtra);
+  if (!wantsExtra) state.pendingExtraBid = null;
+  updateExtraBidReview();
+}
+
+function updateExtraBidReview() {
+  const wantsExtra = document.querySelector('input[name="extraWorkChoice"]:checked')?.value === 'yes';
+  const review = byId('extraBidReview');
+  if (!wantsExtra) {
+    if (review) review.textContent = 'Extra services: none selected.';
+    state.pendingExtraBid = null;
+    return;
+  }
+
+  const tasks = checkedValues('extra_requested_tasks');
+  const photoCount = byId('extraBidPhotos')?.files?.length || 0;
+  const notes = byId('extraBidNotes')?.value || '';
+  const preferredTiming = byId('extraBidTiming')?.value || 'flexible';
+  state.pendingExtraBid = { tasks, photoCount, notes, preferredTiming };
+  if (review) {
+    review.textContent = `Extra services: live bid requested for ${tasks.length || 0} task(s), ${photoCount} photo(s). Quoted separately.`;
+  }
+}
+
+async function uploadPhotoInput(input) {
+  if (!input?.files?.length) return [];
+  const fd = new FormData();
+  Array.from(input.files).forEach((file) => fd.append('photos', file));
+  const uploadRes = await fetch('/api/upload', { method: 'POST', body: fd });
+  const uploadText = await uploadRes.text();
+  let uploadData;
+  try {
+    uploadData = JSON.parse(uploadText);
+  } catch {
+    throw new Error(`Upload did not return JSON: ${uploadText.slice(0, 120)}`);
+  }
+  if (!uploadRes.ok || !uploadData.ok) throw new Error(uploadData?.error || 'Upload failed');
+  return (uploadData.files || []).map((file) => file.url);
+}
+
+async function submitBidRequest(payload, resultId = 'liveBidResult') {
+  const res = await fetch('/api/bid-requests', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json();
+  if (!data.ok) throw new Error(data.error || 'Bid request failed');
+  if (resultId) {
+    showResult(
+      resultId,
+      `<strong>Bid request submitted.</strong><br>Request ID: ${escapeHtml(data.bidRequest?.id || '')}<br><span class="meta">No payment is due until a provider bid is accepted.</span>`
+    );
+  }
+  return data.bidRequest;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   WINDOW EXPORTS — functions called from app.js or other modules
+───────────────────────────────────────────────────────────────────────── */
+
+window.showLeadRequestPanel = showLeadRequestPanel;
+window.showManualQuotePanel = showManualQuotePanel;
+window.hideManualQuotePanel = hideManualQuotePanel;
+window.buildManualQuoteRequestPayload = buildManualQuoteRequestPayload;
+window.showAccountRecommend = showAccountRecommend;
+window.hideAccountRecommend = hideAccountRecommend;
+window.proceedToCheckout = proceedToCheckout;
+window.bookQuoteAsJob = bookQuoteAsJob;
+window.handleCheckoutReturn = handleCheckoutReturn;
+window.renderCheckoutSuccess = renderCheckoutSuccess;
+window.submitSuccessSetPassword = submitSuccessSetPassword;
+// phone / contact / bid helpers (moved from app.js Phase 13c)
+window.phoneDigits = phoneDigits;
+window.isValidLookingPhone = isValidLookingPhone;
+window.bookingPhoneValue = bookingPhoneValue;
+window.focusBookingPhoneField = focusBookingPhoneField;
+window.showPhoneRequiredError = showPhoneRequiredError;
+window.quoteContactMissing = quoteContactMissing;
+window.bookingAccessNotesRequired = bookingAccessNotesRequired;
+window.bookingContactMissing = bookingContactMissing;
+window.normalizeBookingContact = normalizeBookingContact;
+window.showBookingContactPanel = showBookingContactPanel;
+window.showQuoteContactRequest = showQuoteContactRequest;
+window.renderFilePreview = renderFilePreview;
+window.updateExtraBidFields = updateExtraBidFields;
+window.updateExtraBidReview = updateExtraBidReview;
+window.uploadPhotoInput = uploadPhotoInput;
+window.submitBidRequest = submitBidRequest;

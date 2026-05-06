@@ -1,0 +1,718 @@
+// admin-ui.js — Admin dashboard, leads, pricing controls (Phase 9 modular refactor)
+// Depends on: state (state.js), byId/$$ (utils/dom.js), api (core/api.js),
+//   escapeHtml/money/showToast/showError/showSuccess/showResult/card/formatAcres (utils/dom.js),
+//   prettyApiError (core/api.js), statusBadge (jobs/jobs-ui.js),
+//   hasActiveSession/isAdmin (auth/auth-ui.js, auth/admin-visibility.js),
+//   buildAccessSummary/buildScheduleSummary/equipmentRecommendation/regionLabel/serviceLabel/loadConfig (app.js)
+// Must load after: config.js, state.js, utils/dom.js, core/api.js, auth/admin-visibility.js, jobs/jobs-ui.js, provider/provider-ui.js
+// Must load before: app.js
+
+function friendlyAdminSaveError(error) {
+  const message = prettyApiError(error);
+  if (/missing auth token|unauthorized|invalid session|forbidden/i.test(message)) {
+    return 'Please log in as an admin to save pricing changes.';
+  }
+  return message;
+}
+
+function hydrateRegionEditor() {
+  const select = byId('regionEditorSelect');
+  const region = state.regions.find((item) => item.id === select?.value) || state.regions[0];
+  if (!region) return;
+
+  if (byId('regionMarketMultiplier')) byId('regionMarketMultiplier').value = region.marketMultiplier ?? 1;
+  if (byId('regionTravelFee')) byId('regionTravelFee').value = region.travelFee ?? 0;
+  if (byId('regionMinimumJob')) byId('regionMinimumJob').value = region.minimumJob ?? 0;
+  if (byId('regionFeaturedCities')) byId('regionFeaturedCities').value = (region.featuredCities || []).join(', ');
+  if (byId('regionEnabled')) byId('regionEnabled').value = String(Boolean(region.enabled));
+}
+
+function hydrateServiceEditor() {
+  const select = byId('serviceEditorSelect');
+  const service = state.services.find((item) => item.id === select?.value) || state.services[0];
+  if (!service) return;
+
+  if (byId('serviceBaseFee')) byId('serviceBaseFee').value = service.baseFee ?? 0;
+  if (byId('serviceRate')) byId('serviceRate').value = service.ratePer1000Sqft ?? 0;
+  if (byId('serviceMinimum')) byId('serviceMinimum').value = service.minimumPrice ?? 0;
+}
+
+async function loadAdmin() {
+  const metrics = byId('adminMetrics');
+  if (!metrics) return;
+
+  let data;
+  try {
+    data = await api('/api/admin/overview');
+  } catch {
+    metrics.innerHTML = '<div class="metric"><strong>🔒</strong><span>Sign in for admin metrics</span></div>';
+    return;
+  }
+
+  metrics.innerHTML = `
+    <div class="metric"><strong>${data.metrics.totalQuotes}</strong><span>Total quotes</span></div>
+    <div class="metric"><strong>${data.metrics.totalJobs ?? data.metrics.openJobs}</strong><span>Total jobs</span></div>
+    <div class="metric"><strong>${data.metrics.openJobs}</strong><span>Open jobs</span></div>
+    <div class="metric"><strong>${data.metrics.completedJobs ?? 0}</strong><span>Completed jobs</span></div>
+    <div class="metric"><strong>${data.metrics.providers}</strong><span>Providers</span></div>
+    <div class="metric"><strong>${money(data.metrics.revenuePipeline)}</strong><span>Revenue pipeline</span></div>
+  `;
+
+  const latestQuotes = byId('latestQuotes');
+  if (latestQuotes) {
+    latestQuotes.innerHTML = '';
+    (data.latestQuotes.length
+      ? data.latestQuotes
+      : [{ name: 'No quotes yet', address: 'Start with the quote form.', estimate: 0, region_id: '', service_type: '' }]).forEach((quote) => {
+        latestQuotes.append(card(`
+          <h4>${escapeHtml(quote.name)}</h4>
+          <div class="meta">${escapeHtml(regionLabel(quote.regionId || quote.region_id))} · ${escapeHtml(serviceLabel(quote.serviceType || quote.service_type))}</div>
+          <div class="meta">${escapeHtml(quote.address || '')}</div>
+          <div class="meta">Estimate ${money(quote.estimate)}</div>
+        `));
+    });
+  }
+
+  const latestJobs = byId('latestJobs');
+  if (latestJobs) {
+    latestJobs.innerHTML = '';
+    (data.latestJobs.length
+      ? data.latestJobs
+      : [{ title: 'No jobs yet', address: '', service_type: '', status: 'open', budget: 0 }]).forEach((job) => {
+        const addr = [job.address, job.city, job.state].filter(Boolean).join(', ');
+        const jobCard = card(`
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:6px">
+            <div>
+              <h4 style="margin:0 0 4px">${escapeHtml(job.title || 'Job')}</h4>
+              ${addr ? `<div class="meta">${escapeHtml(addr)}</div>` : ''}
+              <div class="meta">${escapeHtml(serviceLabel(job.service_type || job.serviceType))} &middot; <strong>${money(job.budget || 0)}</strong></div>
+            </div>
+            ${statusBadge(job.status || 'open')}
+          </div>
+          <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+            <select class="admin-job-status-select" data-job-id="${escapeHtml(job.id || '')}" style="width:auto;padding:6px 8px;font-size:.85rem">
+              <option value="">Move to&hellip;</option>
+              <option value="open">Open</option>
+              <option value="assigned">Assigned</option>
+              <option value="in_progress">In Progress</option>
+              <option value="completed">Completed</option>
+              <option value="canceled">Canceled</option>
+            </select>
+          </div>
+        `);
+        latestJobs.append(jobCard);
+    });
+    latestJobs.querySelectorAll('.admin-job-status-select').forEach((sel) => {
+      sel.addEventListener('change', async () => {
+        const jobId = sel.dataset.jobId;
+        const status = sel.value;
+        if (!jobId || !status) return;
+        try {
+          await api(`/api/admin/jobs/${jobId}/status`, { method: 'PATCH', body: JSON.stringify({ status }) });
+          showToast(`Job status updated to ${status}`, 'success');
+          loadAdmin().catch(() => {});
+        } catch (err) {
+          showError('Could not update status: ' + prettyApiError(err));
+          sel.value = '';
+        }
+      });
+    });
+  }
+
+  const latestProviders = byId('latestProviders');
+  if (latestProviders) {
+    latestProviders.innerHTML = '';
+    (data.latestProviders?.length
+      ? data.latestProviders
+      : [{ businessName: 'No providers yet', ownerName: 'Invite local crews to join.' }]).forEach((provider) => {
+        latestProviders.append(card(`
+          <h4>${escapeHtml(provider.businessName)}</h4>
+          <div class="meta">${escapeHtml(provider.ownerName || '')}</div>
+        `));
+    });
+  }
+}
+
+async function loadAdminPaidJobs() {
+  const list = byId('adminPaidJobsList');
+  if (!list) return;
+  list.innerHTML = '<div style="color:var(--muted);padding:12px">Loading...</div>';
+  try {
+    const data = await api('/api/admin/paid-jobs');
+    if (!data.jobs?.length) {
+      list.innerHTML = '<div style="color:var(--muted);padding:12px">No paid jobs found.</div>';
+      return;
+    }
+    list.innerHTML = '';
+    data.jobs.forEach((job) => {
+      const addr = [job.address, job.city, job.state, job.zip].filter(Boolean).join(', ');
+      list.append(card(`
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:4px">
+          <div>
+            <h4 style="margin:0">${escapeHtml(job.title || 'Mowing job')}</h4>
+            <div class="meta">${escapeHtml(addr)}</div>
+            <div class="meta">Amount: <strong>${job.paymentAmount ? money(job.paymentAmount) : money(job.budget)}</strong> &middot; Service: ${escapeHtml(serviceLabel(job.serviceType))}</div>
+            ${job.yard_access_notes ? `<div class="meta">Access: ${escapeHtml(job.yard_access_notes)}</div>` : ''}
+            <div class="meta">Job ID: <code>${escapeHtml(job.id)}</code> &middot; ${statusBadge(job.status)}</div>
+            ${job.paidAt ? `<div class="meta">Paid: ${escapeHtml(new Date(job.paidAt).toLocaleString())}</div>` : ''}
+          </div>
+          <div style="display:flex;flex-direction:column;gap:6px">
+            <select class="admin-job-status-select" data-job-id="${escapeHtml(job.id)}" style="width:auto;padding:6px 8px;font-size:13px">
+              <option value="">Move to...</option>
+              <option value="open">Open</option>
+              <option value="assigned">Assigned</option>
+              <option value="scheduled">Scheduled</option>
+              <option value="in_progress">In Progress</option>
+              <option value="completed">Completed</option>
+              <option value="canceled">Canceled</option>
+            </select>
+          </div>
+        </div>
+      `));
+    });
+    list.querySelectorAll('.admin-job-status-select').forEach((sel) => {
+      sel.addEventListener('change', async () => {
+        const status = sel.value;
+        const jobId = sel.dataset.jobId;
+        if (!status || !jobId) return;
+        sel.disabled = true;
+        try {
+          await api(`/api/admin/jobs/${encodeURIComponent(jobId)}/status`, { method: 'PATCH', body: JSON.stringify({ status }) });
+          showSuccess(`Job ${jobId} moved to ${status}`);
+          await loadAdminPaidJobs();
+        } catch (err) {
+          showError(prettyApiError(err));
+          sel.disabled = false;
+          sel.value = '';
+        }
+      });
+    });
+  } catch (err) {
+    list.innerHTML = `<div style="color:var(--muted);padding:12px">Could not load paid jobs: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+// ── Admin pricing editor event handlers ──────────────────────────────────────
+
+byId('regionEditorSelect')?.addEventListener('change', hydrateRegionEditor);
+byId('serviceEditorSelect')?.addEventListener('change', hydrateServiceEditor);
+
+byId('regionEditorForm')?.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const id = byId('regionEditorSelect')?.value;
+  if (!id) return;
+
+  try {
+    await api(`/api/regions/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        marketMultiplier: Number(byId('regionMarketMultiplier')?.value || 1),
+        travelFee: Number(byId('regionTravelFee')?.value || 0),
+        minimumJob: Number(byId('regionMinimumJob')?.value || 0),
+        featuredCities: String(byId('regionFeaturedCities')?.value || '')
+          .split(',')
+          .map((v) => v.trim())
+          .filter(Boolean),
+        enabled: byId('regionEnabled')?.value === 'true',
+      }),
+    });
+
+    showResult('regionEditorResult', '<strong>Region pricing saved.</strong>');
+    await loadConfig();
+  } catch (error) {
+    showResult('regionEditorResult', `<strong>Could not save:</strong> ${escapeHtml(friendlyAdminSaveError(error))}`);
+  }
+});
+
+byId('serviceEditorForm')?.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const id = byId('serviceEditorSelect')?.value;
+  if (!id) return;
+
+  try {
+    await api(`/api/services/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        baseFee: Number(byId('serviceBaseFee')?.value || 0),
+        ratePer1000Sqft: Number(byId('serviceRate')?.value || 0),
+        minimumPrice: Number(byId('serviceMinimum')?.value || 0),
+      }),
+    });
+
+    showResult('serviceEditorResult', '<strong>Service pricing saved.</strong>');
+    await loadConfig();
+  } catch (error) {
+    showResult('serviceEditorResult', `<strong>Could not save:</strong> ${escapeHtml(friendlyAdminSaveError(error))}`);
+  }
+});
+
+byId('refreshAdmin')?.addEventListener('click', loadAdmin);
+
+/* ─────────────────────────────────────────────────────────────────────────
+   ADMIN LEADS DASHBOARD
+───────────────────────────────────────────────────────────────────────── */
+
+async function loadAdminLeads() {
+  const list = byId('leadsList');
+  if (!list) return;
+
+  if (!hasActiveSession()) {
+    list.innerHTML = '<div style="color:var(--muted);padding:12px">Sign in as admin to view leads. Use the ADMIN_API_KEY as your Bearer token.</div>';
+    return;
+  }
+
+  list.innerHTML = '<div style="color:var(--muted);padding:12px">Loading leads...</div>';
+
+  try {
+    const statusFilter = byId('leadsStatusFilter')?.value || '';
+    const serviceFilter = byId('leadsServiceFilter')?.value || '';
+    const params = new URLSearchParams();
+    if (statusFilter) params.set('status', statusFilter);
+    if (serviceFilter) params.set('serviceType', serviceFilter);
+    const qs = params.toString() ? '?' + params.toString() : '';
+
+    const [data, bidData] = await Promise.all([
+      api('/api/admin/jobs' + qs),
+      api('/api/admin/bid-requests' + qs).catch(() => ({ bidRequests: [] })),
+    ]);
+    list.innerHTML = '';
+
+    if ((!data.jobs || !data.jobs.length) && (!bidData.bidRequests || !bidData.bidRequests.length)) {
+      list.innerHTML = '<div style="color:var(--muted);padding:12px">No leads yet. Customer service requests will appear here after submission.</div>';
+      return;
+    }
+
+    const instantBookings = (data.jobs || []).filter((lead) => (lead.quote_type || lead.quoteType || 'instant_mow') === 'instant_mow');
+    const otherLeads = (data.jobs || []).filter((lead) => (lead.quote_type || lead.quoteType || 'instant_mow') !== 'instant_mow');
+
+    if (instantBookings.length) {
+      const heading = document.createElement('div');
+      heading.className = 'admin-group-title';
+      heading.textContent = 'Instant mow bookings';
+      list.append(heading);
+    }
+
+    [...instantBookings, ...otherLeads].forEach((lead) => {
+      const estimateText = lead.estimatedPrice > 0 ? money(lead.estimatedPrice) : (lead.suggestedBudget > 0 ? `Budget: ${money(lead.suggestedBudget)}` : 'No estimate');
+      const mowText = lead.mowAreaSqft > 0 ? `${formatAcres(lead.mowAreaSqft)} (${Number(lead.mowAreaSqft).toLocaleString()} sq ft) mowable` : '';
+      const autoText = lead.autoEstimatedMowableSqft > 0 ? `${formatAcres(lead.autoEstimatedMowableSqft)} (${Number(lead.autoEstimatedMowableSqft).toLocaleString()} sq ft) suggested` : '';
+      const parcelText = lead.parcelAreaSqft > 0 ? `${formatAcres(lead.parcelAreaSqft)} (${Number(lead.parcelAreaSqft).toLocaleString()} sq ft) parcel` : '';
+      const dateText = lead.preferredDate ? `Preferred: ${lead.preferredDate}` : 'Date flexible';
+      const accessText = buildAccessSummary(lead);
+      const scheduleText = buildScheduleSummary(lead);
+      const equipmentText = equipmentRecommendation(lead);
+      const requestedTasks = (lead.requested_tasks || lead.requestedTasks || []).join(', ');
+
+      const c = card(`
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
+          <div>
+            <h4 style="margin:0 0 4px">${escapeHtml(lead.customerName || 'Anonymous')}</h4>
+            <div class="meta">${escapeHtml(lead.customerPhone || '')}${lead.customerEmail ? ' &nbsp;&middot;&nbsp; ' + escapeHtml(lead.customerEmail) : ''}</div>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            ${statusBadge(lead.status)}
+            <select class="lead-status-select" data-lead-id="${escapeHtml(lead.id)}" style="padding:7px 10px;border-radius:10px;font-size:.85rem;width:auto">
+              <option value="new" ${lead.status === 'new' ? 'selected' : ''}>New</option>
+              <option value="quoted" ${lead.status === 'quoted' ? 'selected' : ''}>Quoted</option>
+              <option value="bidding" ${lead.status === 'bidding' ? 'selected' : ''}>Bidding</option>
+              <option value="scheduled" ${lead.status === 'scheduled' ? 'selected' : ''}>Scheduled</option>
+              <option value="completed" ${lead.status === 'completed' ? 'selected' : ''}>Completed</option>
+              <option value="canceled" ${lead.status === 'canceled' ? 'selected' : ''}>Canceled</option>
+            </select>
+          </div>
+        </div>
+        <div class="meta" style="margin-top:8px">${escapeHtml(lead.address || '')}${lead.city ? ', ' + escapeHtml(lead.city) : ''}${lead.zip ? ' ' + escapeHtml(lead.zip) : ''}</div>
+        <div class="meta">${escapeHtml(serviceLabel(lead.serviceType))} &nbsp;&middot;&nbsp; ${escapeHtml(lead.quote_type || 'instant_mow')} &nbsp;&middot;&nbsp; ${estimateText}${mowText ? ' &nbsp;&middot;&nbsp; ' + escapeHtml(mowText) : ''}</div>
+        ${(autoText || parcelText || lead.mowableEstimateConfidence || lead.buildingFootprintsSource) ? `<div class="meta">${escapeHtml([parcelText, autoText, lead.mowableEstimateConfidence ? `confidence: ${lead.mowableEstimateConfidence}` : '', lead.buildingFootprintsSource ? `source: ${lead.buildingFootprintsSource}` : ''].filter(Boolean).join(' - '))}</div>` : ''}
+        ${accessText ? `<div class="meta">Gate/access: ${escapeHtml(accessText)}</div>` : ''}
+        ${scheduleText ? `<div class="meta">Scheduling: ${escapeHtml(scheduleText)}</div>` : ''}
+        ${equipmentText ? `<div class="meta">${escapeHtml(equipmentText)}</div>` : ''}
+        ${requestedTasks ? `<div class="meta">Requested tasks: ${escapeHtml(requestedTasks)}</div>` : ''}
+        ${lead.photos?.length ? `<div class="meta">Photos: ${lead.photos.length}</div>` : ''}
+        ${lead.aiSummaryJson ? `<div class="mini-card notice admin-ai-note"><strong>AI notes placeholder</strong><span>${escapeHtml(lead.aiSummaryJson.customer_summary || 'Rough photo guidance only. Provider bid required.')}</span></div>` : ''}
+        <div class="meta">${dateText} &nbsp;&middot;&nbsp; ${new Date(lead.createdAt).toLocaleString()}</div>
+        ${lead.notes ? `<p style="margin:6px 0 0;font-size:.9rem">${escapeHtml(lead.notes)}</p>` : ''}
+        <div class="tool-row admin-actions"><button class="btn secondary small" type="button">Create bid / assign provider</button></div>
+        <div class="meta" style="font-size:.8rem;margin-top:4px">ID: ${escapeHtml(lead.id)} &nbsp;&middot;&nbsp; Source: ${escapeHtml(lead.sourceBrand || 'MowNWA')}</div>
+      `);
+
+      list.append(c);
+    });
+
+    if (bidData.bidRequests?.length) {
+      const heading = document.createElement('div');
+      heading.className = 'admin-group-title';
+      heading.textContent = 'Live bid requests';
+      list.append(heading);
+
+      bidData.bidRequests.forEach((bid) => {
+        const services = (bid.service_types || []).join(', ') || 'other_outdoor_work';
+        const aiSummary = bid.ai_summary_json || {};
+        const bidAccess = buildAccessSummary(bid);
+        const bidSchedule = buildScheduleSummary(bid);
+        const c = card(`
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
+            <div>
+              <h4 style="margin:0 0 4px">${escapeHtml(bid.customerName || 'Live bid request')}</h4>
+              <div class="meta">${escapeHtml(bid.customerPhone || '')}${bid.customerEmail ? ' &nbsp;&middot;&nbsp; ' + escapeHtml(bid.customerEmail) : ''}</div>
+            </div>
+            ${statusBadge(bid.status || 'new')}
+          </div>
+          <div class="meta" style="margin-top:8px">${escapeHtml(bid.address || '')}${bid.city ? ', ' + escapeHtml(bid.city) : ''}${bid.zip ? ' ' + escapeHtml(bid.zip) : ''}</div>
+          <div class="meta">Services: ${escapeHtml(services)} &nbsp;&middot;&nbsp; Photos: ${(bid.photos || []).length} &nbsp;&middot;&nbsp; Quoted separately</div>
+          ${bidAccess ? `<div class="meta">Gate/access: ${escapeHtml(bidAccess)}</div>` : ''}
+          ${bidSchedule ? `<div class="meta">Scheduling: ${escapeHtml(bidSchedule)}</div>` : ''}
+          <div class="photo-preview-grid">${(bid.photos || []).map((url) => `<img src="${escapeHtml(url)}" alt="Bid request photo" class="job-photo" />`).join('')}</div>
+          <div class="mini-card notice admin-ai-note"><strong>AI notes placeholder</strong><span>${escapeHtml(aiSummary.customer_summary || 'Rough photo guidance only. Final amount should come from provider bid.')}</span></div>
+          ${bid.notes ? `<p style="margin:6px 0 0;font-size:.9rem">${escapeHtml(bid.notes)}</p>` : ''}
+          <div class="tool-row admin-actions"><button class="btn primary small" type="button">Create bid</button><button class="btn secondary small" type="button">Assign provider</button></div>
+          <div class="meta" style="font-size:.8rem;margin-top:4px">ID: ${escapeHtml(bid.id)}${bid.related_job_id ? ' &nbsp;&middot;&nbsp; Job: ' + escapeHtml(bid.related_job_id) : ''}</div>
+        `);
+        list.append(c);
+      });
+    }
+
+    // Wire status dropdowns
+    list.querySelectorAll('.lead-status-select').forEach((sel) => {
+      sel.addEventListener('change', async () => {
+        const leadId = sel.dataset.leadId;
+        const status = sel.value;
+        try {
+          await api(`/api/admin/jobs/${leadId}/status`, {
+            method: 'PATCH',
+            body: JSON.stringify({ status }),
+          });
+          await loadAdminLeads();
+        } catch (err) {
+          showError('Could not update status: ' + err.message);
+        }
+      });
+    });
+
+  } catch (err) {
+    list.innerHTML = `<div style="color:var(--muted);padding:12px">Could not load leads: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+byId('refreshLeadsBtn')?.addEventListener('click', loadAdminLeads);
+byId('leadsStatusFilter')?.addEventListener('change', loadAdminLeads);
+byId('leadsServiceFilter')?.addEventListener('change', loadAdminLeads);
+byId('refreshAdminPaidJobsBtn')?.addEventListener('click', loadAdminPaidJobs);
+
+window.loadAdmin = loadAdmin;
+window.loadAdminLeads = loadAdminLeads;
+window.loadAdminPaidJobs = loadAdminPaidJobs;
+
+/* ─────────────────────────────────────────────────────────────────────────
+   ADMIN MANAGEMENT — Jobs / Users / Providers
+───────────────────────────────────────────────────────────────────────── */
+
+// ── Tab switching ─────────────────────────────────────────────────────────────
+
+function initAdminMgmtTabs() {
+  const panel = byId('adminManagementPanel');
+  if (!panel) return;
+
+  panel.querySelectorAll('.admin-mgmt-tab-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const target = btn.dataset.tab;
+      panel.querySelectorAll('.admin-mgmt-tab-btn').forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+      panel.querySelectorAll('.admin-mgmt-tab').forEach((t) => { t.style.display = 'none'; });
+      const tabEl = byId(`adminMgmt${target.charAt(0).toUpperCase() + target.slice(1)}`);
+      if (tabEl) tabEl.style.display = '';
+      if (target === 'jobs') loadAdminMgmtJobs().catch(() => {});
+      if (target === 'users') loadAdminMgmtUsers().catch(() => {});
+      if (target === 'providers') loadAdminMgmtProviders().catch(() => {});
+    });
+  });
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function mgmtTable(headers, rows) {
+  if (!rows.length) return '<div style="color:var(--muted);padding:12px">No records found.</div>';
+  const th = headers.map((h) => `<th style="white-space:nowrap">${escapeHtml(h)}</th>`).join('');
+  const body = rows.map((cells) => `<tr>${cells.map((c) => `<td>${c}</td>`).join('')}</tr>`).join('');
+  return `<table class="admin-mgmt-tbl" style="width:100%;border-collapse:collapse;font-size:.85rem">
+    <thead><tr style="text-align:left;border-bottom:1px solid var(--line)">${th}</tr></thead>
+    <tbody>${body}</tbody>
+  </table>`;
+}
+
+function payBadge(status) {
+  const colors = { paid: '#4ade80', unpaid: '#f87171', deposit_paid: '#facc15', pending: '#94a3b8' };
+  const c = colors[status] || '#94a3b8';
+  return `<span style="background:${c}22;color:${c};padding:2px 8px;border-radius:6px;font-size:.8rem">${escapeHtml(status || 'unknown')}</span>`;
+}
+
+function activeBadge(active) {
+  return active
+    ? '<span style="background:#4ade8022;color:#4ade80;padding:2px 8px;border-radius:6px;font-size:.8rem">Active</span>'
+    : '<span style="background:#f871712a;color:#f87171;padding:2px 8px;border-radius:6px;font-size:.8rem">Inactive</span>';
+}
+
+// ── Jobs Management ───────────────────────────────────────────────────────────
+
+async function loadAdminMgmtJobs() {
+  const wrap = byId('adminMgmtJobsTable');
+  if (!wrap) return;
+  wrap.innerHTML = '<div style="color:var(--muted);padding:12px">Loading...</div>';
+  try {
+    const data = await api('/api/admin/db-jobs');
+    if (!data.jobs?.length) {
+      wrap.innerHTML = '<div style="color:var(--muted);padding:12px">No DB jobs found.</div>';
+      return;
+    }
+
+    const statusOptions = ['pending','assigned','completed','canceled','open','scheduled','in_progress','paid','payment_pending'];
+    const paymentOptions = ['unpaid','deposit_paid','paid'];
+
+    const rows = data.jobs.map((job) => {
+      const addr = [job.address, job.city, job.state].filter(Boolean).join(', ');
+      const statusSel = `<select class="mgmt-job-status" data-job-id="${escapeHtml(job.id)}" style="padding:4px 6px;font-size:.8rem;width:auto">
+        ${statusOptions.map((s) => `<option value="${s}" ${job.status === s ? 'selected' : ''}>${s}</option>`).join('')}
+      </select>`;
+      const paymentSel = `<select class="mgmt-job-payment" data-job-id="${escapeHtml(job.id)}" style="padding:4px 6px;font-size:.8rem;width:auto">
+        ${paymentOptions.map((p) => `<option value="${p}" ${job.payment_status === p ? 'selected' : ''}>${p}</option>`).join('')}
+      </select>`;
+      const deleteBtn = `<button class="btn secondary small mgmt-job-delete" data-job-id="${escapeHtml(job.id)}" type="button" style="color:#ef4444;border-color:#ef4444;padding:3px 8px;font-size:.8rem">Del</button>`;
+      return [
+        `<code style="font-size:.75rem">${escapeHtml(job.id)}</code>`,
+        escapeHtml(job.customer_name || job.customer_email || '—'),
+        escapeHtml(addr || '—'),
+        statusSel,
+        payBadge(job.payment_status),
+        `$${Number(job.estimate_at_booking || 0).toFixed(2)}`,
+        escapeHtml(job.created_at ? new Date(job.created_at).toLocaleDateString() : '—'),
+        `${paymentSel} ${deleteBtn}`,
+      ];
+    });
+
+    wrap.innerHTML = mgmtTable(
+      ['Job ID','Customer','Address','Status','Payment','Amount','Created','Actions'],
+      rows
+    );
+
+    // Wire status dropdowns
+    wrap.querySelectorAll('.mgmt-job-status').forEach((sel) => {
+      sel.addEventListener('change', async () => {
+        const jobId = sel.dataset.jobId;
+        try {
+          await api(`/api/admin/jobs/${encodeURIComponent(jobId)}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ status: sel.value }),
+          });
+          showToast(`Status → ${sel.value}`, 'success');
+        } catch (err) {
+          showError('Could not update status: ' + prettyApiError(err));
+          loadAdminMgmtJobs().catch(() => {});
+        }
+      });
+    });
+
+    // Wire payment dropdowns
+    wrap.querySelectorAll('.mgmt-job-payment').forEach((sel) => {
+      sel.addEventListener('change', async () => {
+        const jobId = sel.dataset.jobId;
+        try {
+          await api(`/api/admin/jobs/${encodeURIComponent(jobId)}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ payment_status: sel.value }),
+          });
+          showToast(`Payment → ${sel.value}`, 'success');
+        } catch (err) {
+          showError('Could not update payment: ' + prettyApiError(err));
+          loadAdminMgmtJobs().catch(() => {});
+        }
+      });
+    });
+
+    // Wire delete buttons
+    wrap.querySelectorAll('.mgmt-job-delete').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const jobId = btn.dataset.jobId;
+        if (!confirm(`Permanently delete job ${jobId}? This cannot be undone.`)) return;
+        btn.disabled = true;
+        try {
+          await api(`/api/admin/jobs/${encodeURIComponent(jobId)}`, { method: 'DELETE' });
+          showToast('Job deleted', 'success');
+          await loadAdminMgmtJobs();
+        } catch (err) {
+          showError('Could not delete: ' + prettyApiError(err));
+          btn.disabled = false;
+        }
+      });
+    });
+  } catch (err) {
+    wrap.innerHTML = `<div style="color:var(--muted);padding:12px">Could not load jobs: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+// ── Users Management ──────────────────────────────────────────────────────────
+
+async function loadAdminMgmtUsers() {
+  const wrap = byId('adminMgmtUsersTable');
+  if (!wrap) return;
+  wrap.innerHTML = '<div style="color:var(--muted);padding:12px">Loading...</div>';
+  try {
+    const data = await api('/api/admin/users');
+    if (!data.users?.length) {
+      wrap.innerHTML = '<div style="color:var(--muted);padding:12px">No customers found.</div>';
+      return;
+    }
+
+    const rows = data.users.map((u) => {
+      const toggleLabel = u.active ? 'Deactivate' : 'Activate';
+      const toggleBtn = `<button class="btn secondary small mgmt-user-toggle" data-user-id="${escapeHtml(u.id)}" data-active="${u.active ? '1' : '0'}" type="button" style="padding:3px 8px;font-size:.8rem">${toggleLabel}</button>`;
+      return [
+        escapeHtml(u.full_name || '—'),
+        escapeHtml(u.email),
+        escapeHtml(u.created_at ? new Date(u.created_at).toLocaleDateString() : '—'),
+        String(u.job_count || 0),
+        activeBadge(u.active !== false),
+        toggleBtn,
+      ];
+    });
+
+    wrap.innerHTML = mgmtTable(
+      ['Name','Email','Created','Jobs','Status','Action'],
+      rows
+    );
+
+    wrap.querySelectorAll('.mgmt-user-toggle').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const userId = btn.dataset.userId;
+        const newActive = btn.dataset.active !== '1';
+        btn.disabled = true;
+        try {
+          await api(`/api/admin/users/${encodeURIComponent(userId)}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ active: newActive }),
+          });
+          showToast(`User ${newActive ? 'activated' : 'deactivated'}`, 'success');
+          await loadAdminMgmtUsers();
+        } catch (err) {
+          showError('Could not update user: ' + prettyApiError(err));
+          btn.disabled = false;
+        }
+      });
+    });
+  } catch (err) {
+    wrap.innerHTML = `<div style="color:var(--muted);padding:12px">Could not load users: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+// ── Providers Management ──────────────────────────────────────────────────────
+
+async function loadAdminMgmtProviders() {
+  const wrap = byId('adminMgmtProvidersTable');
+  if (!wrap) return;
+  wrap.innerHTML = '<div style="color:var(--muted);padding:12px">Loading...</div>';
+  try {
+    const data = await api('/api/admin/providers');
+    if (!data.providers?.length) {
+      wrap.innerHTML = '<div style="color:var(--muted);padding:12px">No providers found.</div>';
+      return;
+    }
+
+    const rows = data.providers.map((p) => {
+      const toggleLabel = p.active ? 'Deactivate' : 'Activate';
+      const toggleBtn = `<button class="btn secondary small mgmt-provider-toggle" data-provider-id="${escapeHtml(p.id)}" data-active="${p.active ? '1' : '0'}" type="button" style="padding:3px 8px;font-size:.8rem">${toggleLabel}</button>`;
+      return [
+        escapeHtml(p.business_name || p.owner_name || '—'),
+        escapeHtml(p.email),
+        activeBadge(p.active !== false),
+        String(p.job_count || 0),
+        escapeHtml(p.created_at ? new Date(p.created_at).toLocaleDateString() : '—'),
+        toggleBtn,
+      ];
+    });
+
+    wrap.innerHTML = mgmtTable(
+      ['Business','Email','Active','Jobs','Created','Action'],
+      rows
+    );
+
+    wrap.querySelectorAll('.mgmt-provider-toggle').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const providerId = btn.dataset.providerId;
+        const newActive = btn.dataset.active !== '1';
+        btn.disabled = true;
+        try {
+          await api(`/api/admin/providers/${encodeURIComponent(providerId)}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ active: newActive }),
+          });
+          showToast(`Provider ${newActive ? 'activated' : 'deactivated'}`, 'success');
+          await loadAdminMgmtProviders();
+        } catch (err) {
+          showError('Could not update provider: ' + prettyApiError(err));
+          btn.disabled = false;
+        }
+      });
+    });
+  } catch (err) {
+    wrap.innerHTML = `<div style="color:var(--muted);padding:12px">Could not load providers: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+// ── Cleanup modal ─────────────────────────────────────────────────────────────
+
+function initCleanupModal() {
+  const modal = byId('adminCleanupModal');
+  const input = byId('cleanupConfirmInput');
+  const cancelBtn = byId('cleanupCancelBtn');
+  const confirmBtn = byId('cleanupConfirmBtn');
+  const resultEl = byId('cleanupModalResult');
+  const openBtn = byId('cleanupTestJobsBtn');
+  if (!modal || !openBtn) return;
+
+  openBtn.addEventListener('click', () => {
+    if (input) input.value = '';
+    if (resultEl) resultEl.textContent = '';
+    modal.style.display = 'flex';
+  });
+
+  cancelBtn?.addEventListener('click', () => { modal.style.display = 'none'; });
+
+  modal.addEventListener('click', (e) => { if (e.target === modal) modal.style.display = 'none'; });
+
+  confirmBtn?.addEventListener('click', async () => {
+    if (!input || input.value.trim() !== 'DELETE') {
+      if (resultEl) resultEl.textContent = 'Type DELETE to confirm.';
+      return;
+    }
+    confirmBtn.disabled = true;
+    if (resultEl) resultEl.textContent = 'Deleting...';
+    try {
+      const data = await api('/api/admin/jobs/cleanup', {
+        method: 'POST',
+        body: JSON.stringify({ confirm: 'DELETE' }),
+      });
+      if (resultEl) resultEl.textContent = `Done — removed ${data.total} jobs (${data.deletedLeads} leads, ${data.deletedDb} DB).`;
+      confirmBtn.disabled = false;
+      await loadAdminMgmtJobs();
+    } catch (err) {
+      if (resultEl) resultEl.textContent = 'Error: ' + prettyApiError(err);
+      confirmBtn.disabled = false;
+    }
+  });
+}
+
+// ── Refresh button wiring ─────────────────────────────────────────────────────
+
+byId('refreshMgmtJobsBtn')?.addEventListener('click', () => loadAdminMgmtJobs().catch(() => {}));
+byId('refreshMgmtUsersBtn')?.addEventListener('click', () => loadAdminMgmtUsers().catch(() => {}));
+byId('refreshMgmtProvidersBtn')?.addEventListener('click', () => loadAdminMgmtProviders().catch(() => {}));
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+
+initAdminMgmtTabs();
+initCleanupModal();
+// Load jobs tab on first render
+loadAdminMgmtJobs().catch(() => {});
+
+window.loadAdminMgmtJobs = loadAdminMgmtJobs;
+window.loadAdminMgmtUsers = loadAdminMgmtUsers;
+window.loadAdminMgmtProviders = loadAdminMgmtProviders;

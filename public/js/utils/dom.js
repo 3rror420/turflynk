@@ -64,3 +64,11 @@ function card(html) {
   wrap.innerHTML = html;
   return wrap;
 }
+
+const SQFT_PER_ACRE = 43560;
+function sqftToAcres(sqft) { return Math.round(Number(sqft || 0)) / SQFT_PER_ACRE; }
+function formatSqft(value) {
+  const n = Math.round(Number(value || 0));
+  return n > 0 ? `${n.toLocaleString()} sq ft` : 'n/a';
+}
+function formatAcres(sqft) { const n = Math.round(Number(sqft || 0)); return n > 0 ? `${sqftToAcres(n).toFixed(2)} acres` : 'n/a'; }

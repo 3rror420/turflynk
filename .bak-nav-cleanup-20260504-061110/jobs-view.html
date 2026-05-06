@@ -1,0 +1,61 @@
+<section class="view" data-view-panel="jobs">
+        <!-- My Jobs (customer) / Open Jobs toggle (provider/admin) -->
+        <section class="panel" id="myBookingsPanel" style="margin-bottom:20px">
+          <div class="panel-head">
+            <div>
+              <h2 id="myBookingsPanelTitle">My Jobs</h2>
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <button class="btn secondary small provider-only-nav" id="showMyJobsBtn" type="button" style="display:none">My Jobs</button>
+              <button class="btn ghost small provider-only-nav" id="showOpenJobsBtn" type="button" style="display:none">Open Jobs</button>
+              <button class="btn ghost small" id="refreshMyJobs" type="button">Refresh</button>
+            </div>
+          </div>
+          <div id="myJobsList" class="card-list"><div style="color:var(--muted);padding:12px">Sign in to see your bookings.</div></div>
+        </section>
+
+        <div class="section-grid two-up provider-only-nav">
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Post a Lawn Job</h2>
+            </div>
+            <form id="jobForm" class="stack">
+              <div class="grid-2">
+                <label><span>Job Title</span><input name="title" required /></label>
+                <label><span>Budget</span><input name="budget" type="number" step="1" required /></label>
+              </div>
+              <div class="grid-2">
+                <label><span>Region</span><select name="regionId" id="jobRegionSelect"></select></label>
+                <label><span>Service</span><select name="serviceType" id="jobServiceSelect"></select></label>
+              </div>
+              <label><span>Address</span><input name="address" required /></label>
+              <div class="grid-3">
+                <label><span>City</span><input name="city" /></label>
+                <label><span>State</span><input name="state" value="AR" /></label>
+                <label><span>ZIP</span><input name="zip" inputmode="numeric" autocomplete="postal-code" /></label>
+              </div>
+              <div class="grid-2">
+                <label><span>Preferred Date</span><input name="preferredDate" type="date" /></label>
+                <label><span>Details</span><input name="details" placeholder="HOA, rental turnover, slope, gates..." /></label>
+              </div>
+
+<label>
+  <span>Photos of the job (optional)</span>
+  <input type="file" id="jobPhotos" multiple accept="image/*" />
+</label>
+<div id="jobPhotoPreview" class="photo-preview-grid"></div>
+
+<button class="btn primary" type="submit">Post Job</button>
+            </form>
+            <div id="jobResult" class="result hidden"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Open Jobs</h2>
+              <button class="btn secondary small" id="refreshJobs" type="button">Refresh</button>
+            </div>
+            <div id="jobsList" class="card-list"></div>
+          </section>
+        </div>
+      </section>

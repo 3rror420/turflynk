@@ -17,26 +17,133 @@
     "gateHandlingUpcharge": 6
   },
   "services": [
-    { "id": "mowing", "label": "Mowing", "baseFee": 0, "ratePer1000Sqft": 6.5, "minimumPrice": 38 },
-    { "id": "mowing_edging", "label": "Mowing + Edging", "baseFee": 10, "ratePer1000Sqft": 7.4, "minimumPrice": 46 },
-    { "id": "edging", "label": "Edging Only", "baseFee": 20, "ratePer1000Sqft": 3.5, "minimumPrice": 35 },
-    { "id": "full_service", "label": "Full Service", "baseFee": 24, "ratePer1000Sqft": 9.25, "minimumPrice": 64 },
-    { "id": "leaf_cleanup", "label": "Leaf Cleanup", "baseFee": 28, "ratePer1000Sqft": 4.0, "minimumPrice": 58 },
-    { "id": "brush_cleanup", "label": "Brush Cleanup", "baseFee": 45, "ratePer1000Sqft": 5.0, "minimumPrice": 75 },
-    { "id": "yard_cleanup", "label": "Yard Cleanup", "baseFee": 40, "ratePer1000Sqft": 4.5, "minimumPrice": 65 },
-    { "id": "cleanup", "label": "Cleanup / Blowoff", "baseFee": 35, "ratePer1000Sqft": 4.5, "minimumPrice": 65 },
-    { "id": "landscaping", "label": "Landscaping", "baseFee": 75, "ratePer1000Sqft": 0, "minimumPrice": 125 },
-    { "id": "hauling", "label": "Hauling / Debris Removal", "baseFee": 65, "ratePer1000Sqft": 0, "minimumPrice": 85 },
-    { "id": "mulch_refresh", "label": "Mulch Refresh", "baseFee": 55, "ratePer1000Sqft": 1.5, "minimumPrice": 95 },
-    { "id": "other", "label": "Other / Custom Request", "baseFee": 0, "ratePer1000Sqft": 0, "minimumPrice": 0 }
+    {
+      "id": "mowing",
+      "label": "Mowing",
+      "baseFee": 0,
+      "ratePer1000Sqft": 4.5,
+      "minimumPrice": 38,
+      "active": true,
+      "name": "Mowing"
+    },
+    {
+      "id": "mowing_edging",
+      "label": "Mowing + Edging",
+      "baseFee": 10,
+      "ratePer1000Sqft": 7.4,
+      "minimumPrice": 46,
+      "active": true,
+      "name": "Mowing + Edging"
+    },
+    {
+      "id": "edging",
+      "label": "Edging Only",
+      "baseFee": 20,
+      "ratePer1000Sqft": 3.5,
+      "minimumPrice": 35,
+      "active": true,
+      "name": "Edging Only"
+    },
+    {
+      "id": "full_service",
+      "label": "Full Service",
+      "baseFee": 24,
+      "ratePer1000Sqft": 9.25,
+      "minimumPrice": 64,
+      "active": true,
+      "name": "Full Service"
+    },
+    {
+      "id": "leaf_cleanup",
+      "label": "Leaf Cleanup",
+      "baseFee": 28,
+      "ratePer1000Sqft": 4,
+      "minimumPrice": 58,
+      "active": true,
+      "name": "Leaf Cleanup"
+    },
+    {
+      "id": "brush_cleanup",
+      "label": "Brush Cleanup",
+      "baseFee": 45,
+      "ratePer1000Sqft": 5,
+      "minimumPrice": 75,
+      "active": true,
+      "name": "Brush Cleanup"
+    },
+    {
+      "id": "yard_cleanup",
+      "label": "Yard Cleanup",
+      "baseFee": 40,
+      "ratePer1000Sqft": 4.5,
+      "minimumPrice": 65,
+      "active": true,
+      "name": "Yard Cleanup"
+    },
+    {
+      "id": "cleanup",
+      "label": "Cleanup / Blowoff",
+      "baseFee": 35,
+      "ratePer1000Sqft": 4.5,
+      "minimumPrice": 65,
+      "active": true,
+      "name": "Cleanup / Blowoff"
+    },
+    {
+      "id": "landscaping",
+      "label": "Landscaping",
+      "baseFee": 75,
+      "ratePer1000Sqft": 0,
+      "minimumPrice": 125,
+      "active": true,
+      "name": "Landscaping"
+    },
+    {
+      "id": "hauling",
+      "label": "Hauling / Debris Removal",
+      "baseFee": 65,
+      "ratePer1000Sqft": 0,
+      "minimumPrice": 85,
+      "active": true,
+      "name": "Hauling / Debris Removal"
+    },
+    {
+      "id": "mulch_refresh",
+      "label": "Mulch Refresh",
+      "baseFee": 55,
+      "ratePer1000Sqft": 1.5,
+      "minimumPrice": 95,
+      "active": true,
+      "name": "Mulch Refresh"
+    },
+    {
+      "id": "other",
+      "label": "Other / Custom Request",
+      "baseFee": 0,
+      "ratePer1000Sqft": 0,
+      "minimumPrice": 0,
+      "active": true,
+      "name": "Other / Custom Request"
+    }
   ],
   "regions": [
     {
       "id": "nwa",
       "label": "Northwest Arkansas",
       "metro": "Fayetteville-Springdale-Rogers",
-      "counties": ["Benton", "Washington"],
-      "featuredCities": ["Bentonville", "Rogers", "Springdale", "Fayetteville", "Bella Vista", "Lowell", "Siloam Springs"],
+      "counties": [
+        "Benton",
+        "Washington"
+      ],
+      "featuredCities": [
+        "Bentonville",
+        "Rogers",
+        "Springdale",
+        "Fayetteville",
+        "Bella Vista",
+        "Lowell",
+        "Siloam Springs"
+      ],
       "marketMultiplier": 1.08,
       "travelFee": 0,
       "minimumJob": 42,
@@ -46,9 +153,25 @@
       "id": "central",
       "label": "Central Arkansas",
       "metro": "Little Rock-North Little Rock-Conway",
-      "counties": ["Pulaski", "Saline", "Faulkner", "Lonoke", "Grant", "Perry"],
-      "featuredCities": ["Little Rock", "North Little Rock", "Conway", "Sherwood", "Cabot", "Bryant", "Benton", "Maumelle"],
-      "marketMultiplier": 1.0,
+      "counties": [
+        "Pulaski",
+        "Saline",
+        "Faulkner",
+        "Lonoke",
+        "Grant",
+        "Perry"
+      ],
+      "featuredCities": [
+        "Little Rock",
+        "North Little Rock",
+        "Conway",
+        "Sherwood",
+        "Cabot",
+        "Bryant",
+        "Benton",
+        "Maumelle"
+      ],
+      "marketMultiplier": 1,
       "travelFee": 0,
       "minimumJob": 38,
       "enabled": true
@@ -57,8 +180,19 @@
       "id": "river_valley",
       "label": "Fort Smith / River Valley",
       "metro": "Fort Smith",
-      "counties": ["Sebastian", "Crawford", "Franklin", "Logan"],
-      "featuredCities": ["Fort Smith", "Van Buren", "Greenwood", "Alma", "Russellville"],
+      "counties": [
+        "Sebastian",
+        "Crawford",
+        "Franklin",
+        "Logan"
+      ],
+      "featuredCities": [
+        "Fort Smith",
+        "Van Buren",
+        "Greenwood",
+        "Alma",
+        "Russellville"
+      ],
       "marketMultiplier": 0.98,
       "travelFee": 4,
       "minimumJob": 40,
@@ -68,8 +202,15 @@
       "id": "hot_springs",
       "label": "Hot Springs / Garland County",
       "metro": "Hot Springs",
-      "counties": ["Garland", "Hot Spring"],
-      "featuredCities": ["Hot Springs", "Hot Springs Village", "Malvern"],
+      "counties": [
+        "Garland",
+        "Hot Spring"
+      ],
+      "featuredCities": [
+        "Hot Springs",
+        "Hot Springs Village",
+        "Malvern"
+      ],
       "marketMultiplier": 1.12,
       "travelFee": 6,
       "minimumJob": 48,
@@ -79,8 +220,16 @@
       "id": "nea",
       "label": "Jonesboro / Northeast Arkansas",
       "metro": "Jonesboro",
-      "counties": ["Craighead", "Greene", "Poinsett"],
-      "featuredCities": ["Jonesboro", "Paragould", "Brookland"],
+      "counties": [
+        "Craighead",
+        "Greene",
+        "Poinsett"
+      ],
+      "featuredCities": [
+        "Jonesboro",
+        "Paragould",
+        "Brookland"
+      ],
       "marketMultiplier": 0.97,
       "travelFee": 4,
       "minimumJob": 40,
@@ -90,8 +239,14 @@
       "id": "texarkana",
       "label": "Texarkana",
       "metro": "Texarkana",
-      "counties": ["Miller", "Little River"],
-      "featuredCities": ["Texarkana", "Ashdown"],
+      "counties": [
+        "Miller",
+        "Little River"
+      ],
+      "featuredCities": [
+        "Texarkana",
+        "Ashdown"
+      ],
       "marketMultiplier": 1.02,
       "travelFee": 6,
       "minimumJob": 42,
@@ -101,8 +256,15 @@
       "id": "pine_bluff",
       "label": "Pine Bluff / South Central",
       "metro": "Pine Bluff",
-      "counties": ["Jefferson", "Cleveland", "Lincoln"],
-      "featuredCities": ["Pine Bluff", "White Hall"],
+      "counties": [
+        "Jefferson",
+        "Cleveland",
+        "Lincoln"
+      ],
+      "featuredCities": [
+        "Pine Bluff",
+        "White Hall"
+      ],
       "marketMultiplier": 0.95,
       "travelFee": 6,
       "minimumJob": 40,
@@ -112,8 +274,14 @@
       "id": "searcy",
       "label": "Searcy / White County",
       "metro": "Searcy",
-      "counties": ["White", "Cleburne"],
-      "featuredCities": ["Searcy", "Beebe"],
+      "counties": [
+        "White",
+        "Cleburne"
+      ],
+      "featuredCities": [
+        "Searcy",
+        "Beebe"
+      ],
       "marketMultiplier": 0.96,
       "travelFee": 5,
       "minimumJob": 40,
@@ -123,8 +291,13 @@
       "id": "eureka",
       "label": "Eureka Springs / Carroll County",
       "metro": "Ozark Tourism Premium",
-      "counties": ["Carroll"],
-      "featuredCities": ["Eureka Springs", "Berryville"],
+      "counties": [
+        "Carroll"
+      ],
+      "featuredCities": [
+        "Eureka Springs",
+        "Berryville"
+      ],
       "marketMultiplier": 1.18,
       "travelFee": 10,
       "minimumJob": 55,

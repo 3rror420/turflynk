@@ -1,0 +1,121 @@
+      <section class="view" data-view-panel="admin">
+        <!-- Shown to non-admins instead of pricing controls -->
+        <div id="adminAuthWall" class="panel" style="display:none;text-align:center;padding:40px">
+          <h3>Admin access required</h3>
+          <p class="section-copy">Log in as an admin to manage leads and pricing.</p>
+          <button class="btn primary" type="button" onclick="document.getElementById('openAuth').click()">Log In</button>
+        </div>
+
+        <section class="panel admin-only" id="adminMetricsPanel" style="margin-bottom:20px">
+          <div class="panel-head">
+            <h2>Admin Metrics</h2>
+          </div>
+          <div id="adminMetrics" class="metrics"></div>
+        </section>
+
+        <section class="panel admin-only" id="adminRecentActivityPanel" style="margin-bottom:20px">
+          <div class="panel-head">
+            <div>
+              <h2>Recent Activity</h2>
+              <p class="section-copy" style="margin:0">Admin-only quote and provider activity.</p>
+            </div>
+            <button class="btn secondary small" id="refreshAdmin" type="button">Refresh</button>
+          </div>
+          <div class="stack-cols">
+            <div><h4>Latest Quotes</h4><div id="latestQuotes" class="card-list compact"></div></div>
+            <div><h4>Latest Providers</h4><div id="latestProviders" class="card-list compact"></div></div>
+          </div>
+        </section>
+
+        <section class="panel admin-only" id="adminRecentJobsPanel" style="margin-bottom:20px">
+          <div class="panel-head">
+            <div>
+              <h2>Recent Jobs</h2>
+              <p class="section-copy" style="margin:0">Admin-only recent job history.</p>
+            </div>
+          </div>
+          <div id="latestJobs" class="card-list compact"></div>
+        </section>
+
+        <!-- Paid Jobs panel -->
+        <section class="panel" id="adminPaidJobsPanel" style="margin-bottom:20px">
+          <div class="panel-head">
+            <div>
+              <h2>Paid Jobs</h2>
+              <p class="section-copy" style="margin:0">Jobs with completed payments needing scheduling or assignment.</p>
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+              <button class="btn secondary small" id="refreshAdminPaidJobsBtn" type="button">Refresh</button>
+            </div>
+          </div>
+          <div id="adminPaidJobsList" class="card-list">
+            <div style="color:var(--muted);padding:12px">No paid jobs found.</div>
+          </div>
+        </section>
+
+        <!-- Leads & Jobs panel -->
+        <section class="panel" id="leadsPanel" style="margin-bottom:20px">
+          <div class="panel-head">
+            <div>
+              <h2>Incoming Leads &amp; Service Requests</h2>
+              <p class="section-copy" style="margin:0">Customer service requests submitted from the quote form.</p>
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+              <select id="leadsStatusFilter" style="width:auto;padding:10px 12px">
+                <option value="">All Statuses</option>
+                <option value="new">New</option>
+                <option value="quoted">Quoted</option>
+                <option value="bidding">Bidding</option>
+                <option value="scheduled">Scheduled</option>
+                <option value="completed">Completed</option>
+                <option value="canceled">Canceled</option>
+              </select>
+              <select id="leadsServiceFilter" style="width:auto;padding:10px 12px">
+                <option value="">All Services</option>
+              </select>
+              <button class="btn secondary small" id="refreshLeadsBtn" type="button">Refresh</button>
+            </div>
+          </div>
+          <div id="leadsList" class="card-list">
+            <div style="color:var(--muted);padding:12px">Sign in as admin to view leads. Use the ADMIN_API_KEY as your auth token.</div>
+          </div>
+        </section>
+
+        <div id="adminControlsWrap" class="section-grid two-up">
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Region Pricing Controls</h2>
+              <button class="btn secondary small" id="refreshRegions" type="button">Refresh</button>
+            </div>
+            <form id="regionEditorForm" class="stack">
+              <label><span>Region</span><select id="regionEditorSelect"></select></label>
+              <div class="grid-3">
+                <label><span>Market Multiplier</span><input id="regionMarketMultiplier" type="number" step="0.01" /></label>
+                <label><span>Travel Fee</span><input id="regionTravelFee" type="number" step="1" /></label>
+                <label><span>Minimum Job</span><input id="regionMinimumJob" type="number" step="1" /></label>
+              </div>
+              <label><span>Featured Cities</span><input id="regionFeaturedCities" /></label>
+              <label><span>Enabled</span><select id="regionEnabled"><option value="true">Enabled</option><option value="false">Disabled</option></select></label>
+              <button class="btn primary" type="submit">Save Region Pricing</button>
+            </form>
+            <div id="regionEditorResult" class="result hidden"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Service Pricing Controls</h2>
+              <button class="btn secondary small" id="refreshServices" type="button">Refresh</button>
+            </div>
+            <form id="serviceEditorForm" class="stack">
+              <label><span>Service</span><select id="serviceEditorSelect"></select></label>
+              <div class="grid-3">
+                <label><span>Base Fee</span><input id="serviceBaseFee" type="number" step="1" /></label>
+                <label><span>Rate / 1000 Sq Ft</span><input id="serviceRate" type="number" step="0.01" /></label>
+                <label><span>Minimum Price</span><input id="serviceMinimum" type="number" step="1" /></label>
+              </div>
+              <button class="btn primary" type="submit">Save Service Pricing</button>
+            </form>
+            <div id="serviceEditorResult" class="result hidden"></div>
+          </section>
+        </div><!-- /adminControlsWrap -->
+      </section>

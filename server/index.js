@@ -43,6 +43,7 @@ try {
 const pgdb = require("./db.cjs");
 
 const app = express();
+import weatherRoutes from "./routes/weather.js";
 app.set("trust proxy", 1);
 
 const PORT = Number(process.env.PORT || 3000);
@@ -99,11 +100,22 @@ const PAYMENTS_FILE = path.join(DATA_DIR, "payments.json");
 const ACCOUNT_SETUP_TOKENS_FILE = path.join(DATA_DIR, "account_setup_tokens.json");
 const FACEBOOK_DATA_DELETION_FILE = path.join(DATA_DIR, "facebook_data_deletion_requests.json");
 
-let localSettings = { services: [], regions: [] };
-try {
-  localSettings = JSON.parse(readFileSync(SETTINGS_FILE, "utf8"));
-} catch {
-  console.warn("Could not load data/settings.json — using empty defaults");
+function readSettingsFile() {
+  try {
+    return JSON.parse(readFileSync(SETTINGS_FILE, "utf8"));
+  } catch {
+    console.warn("Could not load data/settings.json — using empty defaults");
+    return { services: [], regions: [] };
+  }
+}
+
+let localSettings = readSettingsFile();
+
+function writeSettingsFile(settings) {
+  const tmp = SETTINGS_FILE + ".tmp";
+  writeFileSync(tmp, JSON.stringify(settings, null, 2) + "\n");
+  renameSync(tmp, SETTINGS_FILE);
+  localSettings = settings;
 }
 
 function readLeads() {
@@ -294,7 +306,7 @@ function safeFacebookDeletionPayload(payload = {}) {
 }
 
 function escapeHtml(value) {
-  return String(value ?? "")
+  return String(value === undefined || value === null ? "" : value)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
@@ -433,6 +445,7 @@ app.use(express.json({
     req.rawBody = buf;
   }
 }));
+app.use("/api/weather", weatherRoutes);
 app.use(express.urlencoded({ extended: false }));
 app.use(session({
   secret: process.env.SESSION_SECRET || "mownwa-development-session-secret",
@@ -655,13 +668,47 @@ function detectionExclusionEvidence(normalized, visionDiagnostics = {}, detected
   const reducedArea = detectedRatio > 0 && detectedRatio <= 0.92 && boundarySimilarity < 0.95;
   const hardscapeExcluded = Number(visionDiagnostics.hardscapePixels || 0) > 0
     || Number(visionDiagnostics.hardscapeExcludedAreaSqft || 0) > 0;
+  const hardscapeExcludedAreaSqft = Number(visionDiagnostics.hardscapeExcludedAreaSqft || 0);
+  const parcelAreaSqft = Number(visionDiagnostics.parcelAreaSqft || 0);
+  const hardscapeExcludedRatio = parcelAreaSqft > 0 ? hardscapeExcludedAreaSqft / parcelAreaSqft : 0;
+  const strong = Boolean(
+    holes
+    || hardscapeExcludedAreaSqft >= Math.max(250, parcelAreaSqft * 0.04)
+    || hardscapeExcludedRatio >= 0.06
+  );
   return {
     present: Boolean(removedComponents || holes || reducedArea || hardscapeExcluded),
+    strong,
     holes,
     removedComponents,
     reducedArea,
-    hardscapeExcluded
+    hardscapeExcluded,
+    hardscapeExcludedAreaSqft: Number.isFinite(hardscapeExcludedAreaSqft) ? hardscapeExcludedAreaSqft : 0,
+    hardscapeExcludedRatio: Number.isFinite(hardscapeExcludedRatio) ? Number(hardscapeExcludedRatio.toFixed(4)) : 0
   };
+}
+
+function aiDetectionPresetForParcel(parcelAreaSqft) {
+  const area = Number(parcelAreaSqft || 0);
+  if (area > 0 && area < 12000) return "small_residential";
+  if (area > 0 && area < 43560) return "medium_residential";
+  return "large_rural";
+}
+
+function normalizeAiDetectionPreset(value, parcelAreaSqft) {
+  const preset = String(value || "").trim();
+  if (["small_residential", "medium_residential", "large_rural"].includes(preset)) return preset;
+  return aiDetectionPresetForParcel(parcelAreaSqft);
+}
+
+function aiPresetGuardrailThresholds(detectionPreset) {
+  if (detectionPreset === "small_residential") {
+    return { highRatioNeedsEvidence: 0.80, hardRatioLimit: 0.98, allowLowConfidenceCandidate: false, minimumConfidence: 0.35 };
+  }
+  if (detectionPreset === "medium_residential") {
+    return { highRatioNeedsEvidence: 0.75, hardRatioLimit: 0.93, allowLowConfidenceCandidate: false, minimumConfidence: 0.35 };
+  }
+  return { highRatioNeedsEvidence: 0.92, hardRatioLimit: 0.97, allowLowConfidenceCandidate: true, minimumConfidence: 0.35 };
 }
 
 function fallbackishSource(value) {
@@ -685,12 +732,18 @@ function numericConfidence(payload = {}) {
 
 function compactAiDetectDiagnostics(value = {}) {
   const detectedRatio = Number(value.detectedRatio);
+  const parcelAreaSqft = Number(value.parcelAreaSqft);
+  const detectedAreaSqft = Number(value.detectedAreaSqft);
   const confidence = Number(value.confidenceScore ?? value.confidence);
   const hardscapePixels = Number(value.hardscapePixels);
   const vegetationCandidatePixels = Number(value.vegetationCandidatePixels);
   const hardscapeExcludedAreaSqft = Number(value.hardscapeExcludedAreaSqft);
+  const hardscapeExclusionRatio = Number(value.hardscapeExclusionRatio);
+  const hardscapeExcludedRatio = Number(value.hardscapeExcludedRatio);
+  const remainderAreaSqft = Number(value.remainderAreaSqft);
   const vegetationCandidateAreaSqft = Number(value.vegetationCandidateAreaSqft);
   const finalSelectedAreaSqft = Number(value.finalSelectedAreaSqft);
+  const detectionPreset = value.detectionPreset || value.detection_preset || "";
   const vegetationPixels = Number(value.vegetationPixels);
   const polygonCount = Number(value.polygonCount);
   const ndviThreshold = Number(value.ndviThreshold);
@@ -711,12 +764,17 @@ function compactAiDetectDiagnostics(value = {}) {
   return {
     reason: value.reason || "",
     guardrailReason: value.guardrailReason || value.reason || "",
+    detectionPreset,
+    thresholds: value.thresholds || value.thresholdsUsed || null,
     highRatioAllowed: value.highRatioAllowed === true,
     parcelBoundarySimilarity: Number.isFinite(parcelSimilarity) ? parcelSimilarity : null,
     exclusionEvidence: value.exclusionEvidence || null,
+    parcelAreaSqft: Number.isFinite(parcelAreaSqft) ? parcelAreaSqft : null,
+    detectedAreaSqft: Number.isFinite(detectedAreaSqft) ? detectedAreaSqft : null,
     detectedRatio: Number.isFinite(detectedRatio) ? detectedRatio : 0,
     confidence: Number.isFinite(confidence) ? confidence : null,
     confidenceLabel: typeof value.confidence === "string" ? value.confidence : (value.confidenceLabel || null),
+    detectionMode: value.detectionMode || value.detection_mode || "",
     detection_mode: value.detection_mode || value.detectionMode || "",
     mode: value.mode || "",
     usedNir: value.usedNir,
@@ -739,6 +797,13 @@ function compactAiDetectDiagnostics(value = {}) {
     vegetationCandidatePixels: Number.isFinite(vegetationCandidatePixels) ? vegetationCandidatePixels : 0,
     validPixels: Number.isFinite(Number(value.validPixels)) ? Number(value.validPixels) : 0,
     hardscapeExcludedAreaSqft: Number.isFinite(hardscapeExcludedAreaSqft) ? hardscapeExcludedAreaSqft : 0,
+    hardscapeExclusionRatio: Number.isFinite(hardscapeExclusionRatio) ? hardscapeExclusionRatio : null,
+    hardscapeExcludedRatio: Number.isFinite(hardscapeExcludedRatio)
+      ? hardscapeExcludedRatio
+      : (Number.isFinite(hardscapeExclusionRatio) ? hardscapeExclusionRatio : null),
+    remainderAreaSqft: Number.isFinite(remainderAreaSqft) ? remainderAreaSqft : null,
+    vegetationFilterApplied: value.vegetationFilterApplied === true ? true : value.vegetationFilterApplied === false ? false : null,
+    retryReason: value.retryReason || "",
     vegetationCandidateAreaSqft: Number.isFinite(vegetationCandidateAreaSqft) ? vegetationCandidateAreaSqft : 0,
     finalSelectedAreaSqft: Number.isFinite(finalSelectedAreaSqft) ? finalSelectedAreaSqft : null,
     hardscapeRules: value.hardscapeRules || null,
@@ -793,6 +858,8 @@ function emptyMowableDetection(reason, metrics = {}) {
   const diagnostics = compactAiDetectDiagnostics({
     ...(metrics.visionDiagnostics || metrics.diagnostics || {}),
     reason,
+    detectionPreset: metrics.detectionPreset ?? metrics.visionDiagnostics?.detectionPreset ?? metrics.diagnostics?.detectionPreset,
+    thresholds: metrics.thresholds ?? metrics.visionDiagnostics?.thresholds ?? metrics.diagnostics?.thresholds,
     detectedRatio,
     confidence: metrics.confidence ?? metrics.visionDiagnostics?.confidence ?? metrics.diagnostics?.confidence,
     mode: metrics.mode ?? metrics.visionDiagnostics?.mode ?? metrics.diagnostics?.mode,
@@ -817,6 +884,7 @@ function emptyMowableDetection(reason, metrics = {}) {
     console.log(`[AI Detect] features returned=${Number(metrics.featuresReturned || 0)}`);
   }
   console.log(`[AI Detect] parcelAreaSqft=${Math.round(parcelAreaSqft)}`);
+  if (diagnostics.detectionPreset) console.log(`[AI Detect] detectionPreset=${diagnostics.detectionPreset}`);
   console.log(`[AI Detect] detectedAreaSqft=${Math.round(detectedAreaSqft)}`);
   console.log(`[AI Detect] detectedRatio=${detectedRatio.toFixed(4)}`);
   console.log(`[AI Detect] final reject reason=${reason}`);
@@ -950,6 +1018,7 @@ function normalizeMowableResponse(payload = {}) {
     mowableAreaSqft,
     source,
     mode: payload.mode,
+    detectionMode: payload.detectionMode || payload.detection_mode || payload.mode,
     detection_mode: payload.detection_mode || payload.detectionMode || payload.mode,
     confidence: confidenceLabel,
     confidenceScore,
@@ -957,7 +1026,9 @@ function normalizeMowableResponse(payload = {}) {
   };
 }
 
-function guardrailForMowableDetection(normalized, parcelCollection, parcelAreaSqft, detectedAreaSqft, payload = {}, visionDiagnostics = {}) {
+function guardrailForMowableDetection(normalized, parcelCollection, parcelAreaSqft, detectedAreaSqft, payload = {}, visionDiagnostics = {}, detectionPreset = "") {
+  const preset = normalizeAiDetectionPreset(detectionPreset || visionDiagnostics?.detectionPreset || payload?.detectionPreset, parcelAreaSqft);
+  const presetThresholds = aiPresetGuardrailThresholds(preset);
   const detectedRatio = parcelAreaSqft > 0 ? detectedAreaSqft / parcelAreaSqft : 0;
   const confidence = normalized?.confidenceScore ?? numericConfidence(payload);
   const boundarySimilarity = normalized
@@ -965,7 +1036,11 @@ function guardrailForMowableDetection(normalized, parcelCollection, parcelAreaSq
     : 0;
   const exclusionEvidence = detectionExclusionEvidence(normalized, visionDiagnostics, detectedRatio, boundarySimilarity);
   const isLargeParcel = parcelAreaSqft > 43560;
+  const detectionMode = String(visionDiagnostics?.detectionMode || visionDiagnostics?.detection_mode || payload?.detectionMode || payload?.detection_mode || "").toLowerCase();
+  const isSmallHardscapeRemainder = preset === "small_residential" && detectionMode === "hardscape_exclusion_then_remainder";
+  const smallHardscapeEvidence = isSmallHardscapeRemainder && exclusionEvidence.hardscapeExcluded;
   const roughCandidateAllowed = Boolean(visionDiagnostics?.lowConfidenceCandidateReturned)
+    && presetThresholds.allowLowConfidenceCandidate
     && (exclusionEvidence.present || isLargeParcel)
     && detectedRatio > 0.01
     && detectedRatio <= 0.97
@@ -988,12 +1063,13 @@ function guardrailForMowableDetection(normalized, parcelCollection, parcelAreaSq
     reason = "extremely small detection";
   } else if (detectionUsesFallbackSource(normalized)) {
     reason = "parcel-sized fallback";
-  } else if (detectedRatio > 0.95 && !roughCandidateAllowed) {
+  } else if (detectedRatio > presetThresholds.hardRatioLimit && !roughCandidateAllowed) {
     reason = "detected ratio above hard limit";
   } else if (
     (boundarySimilarity >= 0.97 ||
     featureCollectionsApproximatelyEqual(normalized.featureCollection, parcelCollection, detectedAreaSqft, parcelAreaSqft))
     && !allowMostlyFailedManualReview
+    && !smallHardscapeEvidence
   ) {
     reason = "detected geometry matched the full parcel";
   } else if (
@@ -1002,19 +1078,30 @@ function guardrailForMowableDetection(normalized, parcelCollection, parcelAreaSq
     && allowMostlyFailedManualReview
   ) {
     reason = "";
-  } else if (detectedRatio >= 0.70 && detectedRatio <= 0.92) {
-    highRatioAllowed = roughCandidateAllowed || (confidence !== null && confidence >= 0.45 && boundarySimilarity < 0.95 && exclusionEvidence.present);
+  } else if (detectedRatio >= presetThresholds.highRatioNeedsEvidence && detectedRatio <= presetThresholds.hardRatioLimit) {
+    highRatioAllowed = roughCandidateAllowed || (
+      smallHardscapeEvidence
+      && detectedRatio <= presetThresholds.hardRatioLimit
+    ) || (
+      confidence !== null
+      && confidence >= 0.45
+      && boundarySimilarity < 0.95
+      && exclusionEvidence.present
+      && (preset === "large_rural" || exclusionEvidence.strong)
+    );
     if (!highRatioAllowed) {
       reason = "high detected ratio without enough exclusion evidence";
     }
-  } else if (detectedRatio > 0.92 && !roughCandidateAllowed) {
+  } else if (detectedRatio > presetThresholds.hardRatioLimit && !roughCandidateAllowed) {
     reason = "high detected ratio";
-  } else if (confidence !== null && confidence < 0.35 && !roughCandidateAllowed) {
+  } else if (confidence !== null && confidence < presetThresholds.minimumConfidence && !roughCandidateAllowed) {
     reason = "low confidence";
   }
 
   return {
     reason,
+    detectionPreset: preset,
+    thresholds: presetThresholds,
     highRatioAllowed,
     parcelBoundarySimilarity: Number(boundarySimilarity.toFixed(4)),
     exclusionEvidence,
@@ -1045,12 +1132,28 @@ async function handleAiDetectMowable(req, res, options = {}) {
     features: parcelFeatures
   };
   const parcelAreaSqft = featureCollectionAreaSqft(validatedParcelGeoJson);
+  const detectionPreset = normalizeAiDetectionPreset(body.detectionPreset, parcelAreaSqft);
+
+  const rawConstraint = body.constraintGeoJson || null;
+  console.log("[AI Detect] constraintGeoJson present:", !!rawConstraint);
+  const constraintFeatures = rawConstraint ? featuresFromGeoJson(rawConstraint) : [];
+  console.log("[AI Detect] parsed constraint features:", constraintFeatures?.length || 0);
+  const validatedConstraintGeoJson = constraintFeatures.length
+    ? { type: "FeatureCollection", features: constraintFeatures }
+    : null;
+  const constraintAreaSqft = validatedConstraintGeoJson ? featureCollectionAreaSqft(validatedConstraintGeoJson) : 0;
+  if (validatedConstraintGeoJson) {
+    console.log(`[AI Detect] mode=constrained-selection constraintAreaSqft=${Math.round(constraintAreaSqft)}`);
+  } else {
+    console.log("[AI Detect] mode=full-parcel");
+  }
   const visionServiceUrl = (process.env.VISION_SERVICE_URL || "http://127.0.0.1:8017").replace(/\/+$/, "");
   const visionStatus = await checkVisionServiceStatus(visionServiceUrl);
 
   if (!visionStatus.available) {
     return res.json(emptyMowableDetection("vision service unavailable", {
       parcelAreaSqft,
+      detectionPreset,
       source: "vision_unavailable",
       featuresReturned: 0,
       includeDiagnostics,
@@ -1059,15 +1162,16 @@ async function handleAiDetectMowable(req, res, options = {}) {
   }
 
   try {
-    const isLargeParcelRequest = parcelAreaSqft > 43560;
+    const isLargeParcelRequest = detectionPreset === "large_rural";
     const visionTimeoutMs = isLargeParcelRequest ? 120000 : 60000;
-    console.log(`[AI Detect] parcelAreaSqft=${Math.round(parcelAreaSqft)} isLargeParcel=${isLargeParcelRequest} timeoutMs=${visionTimeoutMs}`);
+    console.log(`[AI Detect] parcelAreaSqft=${Math.round(parcelAreaSqft)} detectionPreset=${detectionPreset} timeoutMs=${visionTimeoutMs}`);
     const upstream = await fetchWithTimeout(`${visionServiceUrl}/detect-mowable`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         parcelGeoJson: validatedParcelGeoJson,
         parcelFeature: body.parcelFeature || parcelFeatures[0],
+        detectionPreset,
         address: body.address || body.parcelAddress || body.serviceAddress || "",
         center: body.center,
         lat: body.lat,
@@ -1079,7 +1183,8 @@ async function handleAiDetectMowable(req, res, options = {}) {
           type: "tile",
           provider: "esri-world-imagery",
           tileUrl: DEFAULT_SATELLITE_TILE_URL
-        }
+        },
+        ...(validatedConstraintGeoJson ? { constraintGeoJson: validatedConstraintGeoJson } : {}),
       })
     }, visionTimeoutMs);
     console.log(`[AI Detect] vision service status=post_${upstream.status}`);
@@ -1091,6 +1196,7 @@ async function handleAiDetectMowable(req, res, options = {}) {
       console.log("[AI Detect] features returned=0");
       return res.json(emptyMowableDetection("vision service unavailable", {
         parcelAreaSqft,
+        detectionPreset,
         source: "upstream_unavailable",
         featuresReturned: 0,
         includeDiagnostics,
@@ -1101,21 +1207,28 @@ async function handleAiDetectMowable(req, res, options = {}) {
     const payload = await upstream.json().catch(() => null);
     console.log(`[AI Detect] vision response ok=${payload?.ok !== false}`);
     const visionDiagnostics = diagnosticsFromVisionPayload(payload || {});
+    visionDiagnostics.detectionPreset = visionDiagnostics.detectionPreset || detectionPreset;
     logVisionDiagnostics(visionDiagnostics);
     const featuresReturned = featureCountFromPayload(payload);
     console.log(`[AI Detect] features returned=${featuresReturned}`);
     const normalized = normalizeMowableResponse(payload);
     const detectedAreaSqft = normalized ? featureCollectionAreaSqft(normalized.featureCollection) : 0;
+    // In constrained mode use constraint area as reference so ratio guardrails are evaluated
+    // against what the user selected, not the full parcel.
+    const effectiveAreaSqft = constraintAreaSqft > 0 ? constraintAreaSqft : parcelAreaSqft;
     const guardrail = guardrailForMowableDetection(
       normalized,
       validatedParcelGeoJson,
-      parcelAreaSqft,
+      effectiveAreaSqft,
       detectedAreaSqft,
       payload || {},
-      visionDiagnostics
+      visionDiagnostics,
+      detectionPreset
     );
     const rejectionReason = guardrail.reason;
-    console.log(`[AI Detect] guardrail reason=${rejectionReason || "none"} boundarySimilarity=${guardrail.parcelBoundarySimilarity} highRatioAllowed=${guardrail.highRatioAllowed} lowConfCandidateReturned=${visionDiagnostics?.lowConfidenceCandidateReturned}`);
+    const nodeDetectedRatio = effectiveAreaSqft > 0 ? detectedAreaSqft / effectiveAreaSqft : 0;
+    console.log(`[AI Detect] guardrail reason=${rejectionReason || "none"} detectionPreset=${detectionPreset} detectedRatio=${nodeDetectedRatio.toFixed(4)} boundarySimilarity=${guardrail.parcelBoundarySimilarity} highRatioAllowed=${guardrail.highRatioAllowed} lowConfCandidateReturned=${visionDiagnostics?.lowConfidenceCandidateReturned}`);
+    console.log(`[AI Detect] exclusionEvidence=${JSON.stringify(guardrail.exclusionEvidence)} thresholds=${JSON.stringify(guardrail.thresholds)}`);
     console.log(`[AI Detect] selectedCandidate=${JSON.stringify(visionDiagnostics?.selectedCandidate || {})}`);
 
     if (rejectionReason) {
@@ -1123,11 +1236,14 @@ async function handleAiDetectMowable(req, res, options = {}) {
       return res.json(emptyMowableDetection(rejectionReason, {
         parcelAreaSqft,
         detectedAreaSqft,
+        detectionPreset,
         source: normalized?.source || payload?.source || "vision",
         featuresReturned,
         includeDiagnostics,
         visionDiagnostics: {
           ...visionDiagnostics,
+          detectionPreset,
+          thresholds: guardrail.thresholds,
           highRatioAllowed: guardrail.highRatioAllowed,
           parcelBoundarySimilarity: guardrail.parcelBoundarySimilarity,
           exclusionEvidence: guardrail.exclusionEvidence,
@@ -1137,6 +1253,7 @@ async function handleAiDetectMowable(req, res, options = {}) {
     }
 
     console.log(`[AI Detect] parcelAreaSqft=${Math.round(parcelAreaSqft)}`);
+    console.log(`[AI Detect] detectionPreset=${detectionPreset}`);
     console.log(`[AI Detect] detectedAreaSqft=${Math.round(detectedAreaSqft)}`);
     console.log(`[AI Detect] detectedRatio=${parcelAreaSqft > 0 ? (detectedAreaSqft / parcelAreaSqft).toFixed(4) : "0.0000"}`);
     console.log("[AI Detect] final reject reason=none");
@@ -1147,6 +1264,8 @@ async function handleAiDetectMowable(req, res, options = {}) {
         ...visionDiagnostics,
         reason: "",
         guardrailReason: "",
+        detectionPreset,
+        thresholds: guardrail.thresholds,
         highRatioAllowed: guardrail.highRatioAllowed,
         parcelBoundarySimilarity: guardrail.parcelBoundarySimilarity,
         exclusionEvidence: guardrail.exclusionEvidence,
@@ -1164,6 +1283,7 @@ async function handleAiDetectMowable(req, res, options = {}) {
     console.warn("[AI Detect] vision service error", err.message);
     return res.json(emptyMowableDetection("vision service unavailable", {
       parcelAreaSqft,
+      detectionPreset,
       source: "vision_unavailable",
       featuresReturned: 0,
       includeDiagnostics,
@@ -1239,6 +1359,14 @@ const h = (maxY - minY) * 0.2;
   }
 });
 
+app.get("/", (_req, res) => {
+  res.type("html").send(composeHtml());
+});
+
+app.get("/index.html", (_req, res) => {
+  res.type("html").send(composeHtml());
+});
+
 app.use(express.static(path.join(__dirname, "..", "public")));
 
 app.use("/api/upload", uploadRoutes);
@@ -1271,15 +1399,32 @@ function hashPassword(password) {
 
 function sanitizeUser(user) {
   if (!user) return null;
+  const firstName = user.first_name || user.firstName || "";
+  const lastName = user.last_name || user.lastName || "";
+  const fullName = user.full_name || user.fullName || [firstName, lastName].filter(Boolean).join(" ");
   return {
     id: user.id,
     email: user.email,
-    fullName: user.full_name || user.fullName || "",
+    firstName,
+    lastName,
+    fullName,
     phone: user.phone || "",
     role: user.role,
+    active: user.active !== false,
     avatarUrl: user.avatar_url || user.avatarUrl || "",
     createdAt: user.created_at || user.createdAt || null
   };
+}
+
+function splitFullName(name = "") {
+  const parts = String(name || "").trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return { firstName: "", lastName: "" };
+  if (parts.length === 1) return { firstName: parts[0], lastName: "" };
+  return { firstName: parts[0], lastName: parts.slice(1).join(" ") };
+}
+
+function composeFullName(firstName = "", lastName = "", fallback = "") {
+  return [firstName, lastName].map((part) => String(part || "").trim()).filter(Boolean).join(" ") || String(fallback || "").trim();
 }
 
 function phoneDigits(value) {
@@ -1411,10 +1556,31 @@ async function ensureUsersPhoneColumn() {
   if (usersPhoneColumnEnsured) return true;
   try {
     await pgdb.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT");
+    await pgdb.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS first_name TEXT");
+    await pgdb.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_name TEXT");
+    await pgdb.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT true");
+    await pgdb.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ");
+    await pgdb.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS deleted_by TEXT");
+    await pgdb.query(`
+      UPDATE users
+      SET
+        first_name = CASE
+          WHEN COALESCE(TRIM(first_name), '') = '' THEN split_part(TRIM(COALESCE(full_name, '')), ' ', 1)
+          ELSE first_name
+        END,
+        last_name = CASE
+          WHEN COALESCE(TRIM(last_name), '') = ''
+            AND array_length(regexp_split_to_array(TRIM(COALESCE(full_name, '')), '\\s+'), 1) > 1
+          THEN regexp_replace(TRIM(COALESCE(full_name, '')), '^\\S+\\s*', '')
+          ELSE last_name
+        END
+      WHERE COALESCE(TRIM(full_name), '') <> ''
+        AND (COALESCE(TRIM(first_name), '') = '' OR COALESCE(TRIM(last_name), '') = '')
+    `);
     usersPhoneColumnEnsured = true;
     return true;
   } catch (error) {
-    console.warn("Could not ensure users.phone column:", error.message);
+    console.warn("Could not ensure users profile columns:", error.message);
     return false;
   }
 }
@@ -1448,6 +1614,153 @@ async function ensurePaymentColumns() {
     console.warn("Could not ensure payment columns:", error.message);
     return false;
   }
+}
+
+let jobsCustomerEmailColumnEnsured = false;
+async function ensureJobsCustomerEmailColumn() {
+  if (jobsCustomerEmailColumnEnsured) return true;
+  try {
+    await pgdb.query("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS customer_email TEXT");
+    tableColumnCache.delete("jobs");
+    jobsCustomerEmailColumnEnsured = true;
+    return true;
+  } catch (error) {
+    console.warn("Could not ensure jobs.customer_email column:", error.message);
+    return false;
+  }
+}
+
+const CLAIM_EMAIL_COLUMNS = ["customer_email", "email", "contact_email"];
+const tableColumnCache = new Map();
+
+async function tableColumns(tableName) {
+  const safeTableName = String(tableName || "").trim();
+  if (!/^[a-z_][a-z0-9_]*$/i.test(safeTableName)) return new Set();
+  if (tableColumnCache.has(safeTableName)) return tableColumnCache.get(safeTableName);
+  const result = await pgdb.query(
+    `
+    SELECT column_name
+    FROM information_schema.columns
+    WHERE table_schema = current_schema()
+      AND table_name = $1
+    `,
+    [safeTableName]
+  );
+  const columns = new Set(result.rows.map((row) => row.column_name));
+  tableColumnCache.set(safeTableName, columns);
+  return columns;
+}
+
+async function emailColumnsForTable(tableName, { ensureCustomerEmail = false } = {}) {
+  if (ensureCustomerEmail && tableName === "jobs") await ensureJobsCustomerEmailColumn();
+  const columns = await tableColumns(tableName);
+  return CLAIM_EMAIL_COLUMNS.filter((column) => columns.has(column));
+}
+
+function normalizeEmailForClaim(email) {
+  return String(email || "").toLowerCase().trim();
+}
+
+function emailMatchPredicate(columns, parameterIndex = 2) {
+  return columns
+    .filter((column) => CLAIM_EMAIL_COLUMNS.includes(column))
+    .map((column) => `LOWER(TRIM(${column})) = $${parameterIndex}`)
+    .join(" OR ");
+}
+
+async function claimJobsForUserEmail(userId, email) {
+  const normalizedEmail = normalizeEmailForClaim(email);
+  const claimedJobIds = new Set();
+  let quotesClaimed = 0;
+  if (!userId || !normalizedEmail) return { jobsClaimed: 0, quotesClaimed: 0 };
+
+  try {
+    const jobEmailColumns = await emailColumnsForTable("jobs", { ensureCustomerEmail: true });
+    const jobEmailMatch = emailMatchPredicate(jobEmailColumns, 2);
+    if (jobEmailMatch) {
+      const result = await pgdb.query(
+        `
+        UPDATE jobs
+        SET customer_user_id = $1
+        WHERE customer_user_id IS NULL
+          AND (${jobEmailMatch})
+        RETURNING id
+        `,
+        [userId, normalizedEmail]
+      );
+      result.rows.forEach((row) => claimedJobIds.add(String(row.id)));
+    }
+
+    const payments = readJsonArray(PAYMENTS_FILE);
+    const matchingPaymentJobIds = [];
+    let paymentsChanged = false;
+    for (const payment of payments) {
+      const paymentEmail = normalizeEmailForClaim(payment.customer?.email || payment.customer_email || payment.email);
+      if (!paymentEmail || paymentEmail !== normalizedEmail) continue;
+      if (payment.job_id) matchingPaymentJobIds.push(String(payment.job_id));
+      if (!payment.customer_user_id) {
+        payment.customer_user_id = userId;
+        paymentsChanged = true;
+      }
+    }
+
+    if (matchingPaymentJobIds.length) {
+      const hasCustomerEmail = jobEmailColumns.includes("customer_email");
+      const result = await pgdb.query(
+        `
+        UPDATE jobs
+        SET
+          customer_user_id = $1${hasCustomerEmail ? ",\n          customer_email = COALESCE(NULLIF(TRIM(customer_email), ''), $3)" : ""}
+        WHERE customer_user_id IS NULL
+          AND id = ANY($2::text[])
+        RETURNING id
+        `,
+        hasCustomerEmail
+          ? [userId, matchingPaymentJobIds, normalizedEmail]
+          : [userId, matchingPaymentJobIds]
+      );
+      result.rows.forEach((row) => claimedJobIds.add(String(row.id)));
+    }
+    if (paymentsChanged) writeJsonArray(PAYMENTS_FILE, payments);
+
+    const quoteEmailColumns = await emailColumnsForTable("quotes");
+    const quoteEmailMatch = emailMatchPredicate(quoteEmailColumns, 2);
+    if (quoteEmailMatch) {
+      const result = await pgdb.query(
+        `
+        UPDATE quotes
+        SET customer_user_id = $1
+        WHERE customer_user_id IS NULL
+          AND (${quoteEmailMatch})
+        RETURNING id
+        `,
+        [userId, normalizedEmail]
+      );
+      quotesClaimed = result.rows.length;
+    }
+
+    console.log(`[Auth Claim Jobs] user=${userId} email=${normalizedEmail} claimed=${claimedJobIds.size}`);
+    return { jobsClaimed: claimedJobIds.size, quotesClaimed };
+  } catch (error) {
+    console.warn(`[Auth Claim Jobs] user=${userId} email=${normalizedEmail} failed: ${error.message}`);
+    return { jobsClaimed: claimedJobIds.size, quotesClaimed, error: error.message };
+  }
+}
+
+async function attachCheckoutJobToUser(jobId, user = {}, email = "") {
+  const normalizedEmail = normalizeEmailForClaim(email || user.email || "");
+  if (!jobId || !user?.id) return;
+  const hasCustomerEmail = await ensureJobsCustomerEmailColumn();
+  await pgdb.query(
+    `
+    UPDATE jobs
+    SET
+      customer_user_id = COALESCE(customer_user_id, $2)${hasCustomerEmail ? ",\n      customer_email = COALESCE(NULLIF(TRIM(customer_email), ''), $3)" : ""}
+    WHERE id = $1
+      AND (customer_user_id IS NULL OR customer_user_id = $2)
+    `,
+    hasCustomerEmail ? [jobId, user.id, normalizedEmail] : [jobId, user.id]
+  );
 }
 
 async function updateUserPhoneIfBlank(userId, phone) {
@@ -1505,21 +1818,29 @@ async function findUserByEmail(email) {
   return result.rows[0] || null;
 }
 
-async function findOrCreateCustomerUser({ email, fullName } = {}) {
+async function findOrCreateCustomerUser({ email, fullName, firstName, lastName, phone } = {}) {
   const normalized = String(email || "").toLowerCase().trim();
   if (!normalized) return { user: null, created: false };
 
+  await ensureUsersPhoneColumn();
   const existing = await findUserByEmail(normalized);
-  if (existing) return { user: existing, created: false };
+  if (existing) {
+    await updateUserPhoneIfBlank(existing.id, phone);
+    return { user: existing, created: false };
+  }
 
   try {
+    const split = splitFullName(fullName);
+    const safeFirstName = String(firstName || split.firstName || "").trim();
+    const safeLastName = String(lastName || split.lastName || "").trim();
+    const safeFullName = composeFullName(safeFirstName, safeLastName, fullName);
     const result = await pgdb.query(
       `
-      INSERT INTO users (id, email, password_hash, full_name, role)
-      VALUES ($1, $2, $3, $4, 'customer')
+      INSERT INTO users (id, email, password_hash, full_name, first_name, last_name, phone, role)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, 'customer')
       RETURNING *
       `,
-      [nanoid(10), normalized, hashPassword(nanoid(40)), fullName || ""]
+      [nanoid(10), normalized, hashPassword(nanoid(40)), safeFullName, safeFirstName, safeLastName, String(phone || "").trim()]
     );
     return { user: result.rows[0], created: true };
   } catch (error) {
@@ -1759,6 +2080,7 @@ async function linkPasswordProvider(user) {
 }
 
 async function findOrCreateUserForOAuth({ provider, providerUserId, email, fullName, avatarUrl }) {
+  await ensureUsersPhoneColumn();
   await ensureUserAuthProvidersTable();
   const normalizedEmail = String(email || "").toLowerCase().trim();
   const safeAvatarUrl = String(avatarUrl || "").trim().slice(0, 1000);
@@ -1782,6 +2104,9 @@ async function findOrCreateUserForOAuth({ provider, providerUserId, email, fullN
     );
 
     if (linked.rows.length) {
+      if (linked.rows[0].active === false || linked.rows[0].deleted_at) {
+        throw new Error("This account is inactive");
+      }
       await client.query(
         `
         UPDATE user_auth_providers
@@ -1797,21 +2122,33 @@ async function findOrCreateUserForOAuth({ provider, providerUserId, email, fullN
       return { ...linked.rows[0], avatar_url: safeAvatarUrl || linked.rows[0].avatar_url || "" };
     }
 
+    const split = splitFullName(fullName);
     const userResult = await client.query(
       `
-      INSERT INTO users (id, email, password_hash, full_name, role)
-      VALUES ($1, $2, $3, $4, 'customer')
+      INSERT INTO users (id, email, password_hash, full_name, first_name, last_name, role)
+      VALUES ($1, $2, $3, $4, $5, $6, 'customer')
       ON CONFLICT (email) DO UPDATE SET
         full_name = CASE
           WHEN COALESCE(users.full_name, '') = '' THEN EXCLUDED.full_name
           ELSE users.full_name
+        END,
+        first_name = CASE
+          WHEN COALESCE(users.first_name, '') = '' THEN EXCLUDED.first_name
+          ELSE users.first_name
+        END,
+        last_name = CASE
+          WHEN COALESCE(users.last_name, '') = '' THEN EXCLUDED.last_name
+          ELSE users.last_name
         END
       RETURNING *
       `,
-      [nanoid(10), normalizedEmail, hashPassword(nanoid(40)), fullName || ""]
+      [nanoid(10), normalizedEmail, hashPassword(nanoid(40)), fullName || "", split.firstName, split.lastName]
     );
 
     const user = userResult.rows[0];
+    if (user.active === false || user.deleted_at) {
+      throw new Error("This account is inactive");
+    }
     await client.query(
       `
       INSERT INTO user_auth_providers (user_id, provider, provider_user_id, email, avatar_url)
@@ -2134,6 +2471,10 @@ function roundToNearestFive(value) {
   return Math.round(num / 5) * 5;
 }
 
+function isTrue(v) {
+  return v === true || v === 'true' || v === 1 || v === '1' || v === 'yes' || v === 'on';
+}
+
 function estimateQuote(payload, settings) {
   const service = findService(settings, payload.serviceType) || settings.services[0];
   const region = findRegion(settings, payload.regionId);
@@ -2200,23 +2541,23 @@ function estimateQuote(payload, settings) {
 
   if (payload.propertyType === "corner") { const v = Number(rules.cornerLotUpcharge || 0); if (v) { estimate += v; breakdown.push({ label: "Corner lot", amount: v }); } }
   if (payload.propertyType === "double_corner") { const v = Number(rules.doubleCornerUpcharge || 0); if (v) { estimate += v; breakdown.push({ label: "Double corner lot", amount: v }); } }
-  if (payload.fenced) { const v = Number(rules.fencedUpcharge || 0); if (v) { estimate += v; breakdown.push({ label: "Fenced yard", amount: v }); } }
-  if (payload.obstacles) { const v = Number(rules.obstaclesUpcharge || 0); if (v) { estimate += v; breakdown.push({ label: "Obstacles / tight areas", amount: v }); } }
-  if (payload.rushJob) { const v = Number(rules.rushJobUpcharge || 0); if (v) { estimate += v; breakdown.push({ label: "Rush job", amount: v }); } }
-  if (payload.limitedAccess) { const v = Number(rules.limitedAccessUpcharge || 0); if (v) { estimate += v; breakdown.push({ label: "Limited access", amount: v }); } }
-  if (payload.gates) { const v = Number(rules.gateHandlingUpcharge || 0); if (v) { estimate += v; breakdown.push({ label: "Gate handling", amount: v }); } }
+  if (isTrue(payload.fenced)) { const v = Number(rules.fencedUpcharge || 0); if (v > 0) { estimate += v; breakdown.push({ label: "Fenced yard", amount: v }); } }
+  if (isTrue(payload.obstacles)) { const v = Number(rules.obstaclesUpcharge || 0); if (v > 0) { estimate += v; breakdown.push({ label: "Obstacles / tight areas", amount: v }); } }
+  if (isTrue(payload.rushJob)) { const v = Number(rules.rushJobUpcharge || 0); if (v > 0) { estimate += v; breakdown.push({ label: "Rush job", amount: v }); } }
+  if (isTrue(payload.limitedAccess)) { const v = Number(rules.limitedAccessUpcharge || 0); if (v > 0) { estimate += v; breakdown.push({ label: "Limited access", amount: v }); } }
+  if (isTrue(payload.gates)) { const v = Number(rules.gateHandlingUpcharge || 0); if (v > 0) { estimate += v; breakdown.push({ label: "Gate handling", amount: v }); } }
 
-  if (payload.overgrown) {
+  if (isTrue(payload.overgrown)) {
     const m = Number(rules.overgrownMultiplier || 1);
-    if (m !== 1) { const adj = estimate * (m - 1); estimate *= m; breakdown.push({ label: `Overgrown yard (+${Math.round((m - 1) * 100)}%)`, amount: Math.round(adj * 100) / 100 }); }
+    if (m > 1) { const adj = estimate * (m - 1); estimate *= m; breakdown.push({ label: `Overgrown yard (+${Math.round((m - 1) * 100)}%)`, amount: Math.round(adj * 100) / 100 }); }
   }
-  if (payload.slopedTerrain) {
+  if (isTrue(payload.slopedTerrain)) {
     const m = Number(rules.slopedTerrainMultiplier || 1);
-    if (m !== 1) { const adj = estimate * (m - 1); estimate *= m; breakdown.push({ label: `Sloped terrain (+${Math.round((m - 1) * 100)}%)`, amount: Math.round(adj * 100) / 100 }); }
+    if (m > 1) { const adj = estimate * (m - 1); estimate *= m; breakdown.push({ label: `Sloped terrain (+${Math.round((m - 1) * 100)}%)`, amount: Math.round(adj * 100) / 100 }); }
   }
-  if (payload.denseVegetation) {
+  if (isTrue(payload.denseVegetation)) {
     const m = Number(rules.denseVegetationMultiplier || 1);
-    if (m !== 1) { const adj = estimate * (m - 1); estimate *= m; breakdown.push({ label: `Dense vegetation (+${Math.round((m - 1) * 100)}%)`, amount: Math.round(adj * 100) / 100 }); }
+    if (m > 1) { const adj = estimate * (m - 1); estimate *= m; breakdown.push({ label: `Dense vegetation (+${Math.round((m - 1) * 100)}%)`, amount: Math.round(adj * 100) / 100 }); }
   }
 
   const final = roundToNearestFive(Math.round(estimate * 100) / 100);
@@ -2334,27 +2675,29 @@ function estimateQuoteWithBreakdown(payload, settings) {
   }
 
   const addUpcharge = (cond, label, amount) => {
-    if (!cond || !amount) return;
+    if (!cond || amount <= 0) return;
     estimate += amount;
     breakdown.push({ label, amount });
   };
   const addMultiplier = (cond, label, multiplier) => {
-    if (!cond || Math.abs(multiplier - 1) < 0.001) return;
+    if (!cond || multiplier <= 1) return;
     const adj = estimate * (multiplier - 1);
+    const amount = Math.round(adj * 100) / 100;
+    if (amount <= 0) return;
     estimate *= multiplier;
-    breakdown.push({ label, amount: Math.round(adj * 100) / 100 });
+    breakdown.push({ label, amount });
   };
 
   addUpcharge(payload.propertyType === "corner", "Corner lot upcharge", Number(rules.cornerLotUpcharge || 0));
   addUpcharge(payload.propertyType === "double_corner", "Double corner lot upcharge", Number(rules.doubleCornerUpcharge || 0));
-  addUpcharge(payload.fenced, "Fenced yard upcharge", Number(rules.fencedUpcharge || 0));
-  addUpcharge(payload.obstacles, "Obstacles / tight areas upcharge", Number(rules.obstaclesUpcharge || 0));
-  addUpcharge(payload.rushJob, "Rush job upcharge", Number(rules.rushJobUpcharge || 0));
-  addUpcharge(payload.limitedAccess, "Limited access upcharge", Number(rules.limitedAccessUpcharge || 0));
-  addUpcharge(payload.gates, "Gate handling upcharge", Number(rules.gateHandlingUpcharge || 0));
-  addMultiplier(payload.overgrown, `Overgrown yard (+${Math.round((Number(rules.overgrownMultiplier || 1) - 1) * 100)}%)`, Number(rules.overgrownMultiplier || 1));
-  addMultiplier(payload.slopedTerrain, `Sloped terrain (+${Math.round((Number(rules.slopedTerrainMultiplier || 1) - 1) * 100)}%)`, Number(rules.slopedTerrainMultiplier || 1));
-  addMultiplier(payload.denseVegetation, `Dense vegetation (+${Math.round((Number(rules.denseVegetationMultiplier || 1) - 1) * 100)}%)`, Number(rules.denseVegetationMultiplier || 1));
+  addUpcharge(isTrue(payload.fenced), "Fenced yard upcharge", Number(rules.fencedUpcharge || 0));
+  addUpcharge(isTrue(payload.obstacles), "Obstacles / tight areas upcharge", Number(rules.obstaclesUpcharge || 0));
+  addUpcharge(isTrue(payload.rushJob), "Rush job upcharge", Number(rules.rushJobUpcharge || 0));
+  addUpcharge(isTrue(payload.limitedAccess), "Limited access upcharge", Number(rules.limitedAccessUpcharge || 0));
+  addUpcharge(isTrue(payload.gates), "Gate handling upcharge", Number(rules.gateHandlingUpcharge || 0));
+  addMultiplier(isTrue(payload.overgrown), `Overgrown yard (+${Math.round((Number(rules.overgrownMultiplier || 1) - 1) * 100)}%)`, Number(rules.overgrownMultiplier || 1));
+  addMultiplier(isTrue(payload.slopedTerrain), `Sloped terrain (+${Math.round((Number(rules.slopedTerrainMultiplier || 1) - 1) * 100)}%)`, Number(rules.slopedTerrainMultiplier || 1));
+  addMultiplier(isTrue(payload.denseVegetation), `Dense vegetation (+${Math.round((Number(rules.denseVegetationMultiplier || 1) - 1) * 100)}%)`, Number(rules.denseVegetationMultiplier || 1));
 
   const final = roundToNearestFive(Math.round(estimate * 100) / 100);
   return { estimate: final, breakdown };
@@ -2738,6 +3081,160 @@ app.get("/api/settings", requireAuth, requireRole("admin"), async (_req, res) =>
     res.json({ ok: true, settings });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+const SERVICE_PRICING_NUMBER_FIELDS = ["baseFee", "ratePer1000Sqft", "minimumPrice"];
+
+function hasOwn(obj, field) {
+  return Object.prototype.hasOwnProperty.call(obj, field);
+}
+
+function badServiceSettingsRequest(message) {
+  const error = new Error(message);
+  error.statusCode = 400;
+  return error;
+}
+
+function coerceServicePricingNumber(value, field, serviceId) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    throw badServiceSettingsRequest(`Invalid ${field} for service ${serviceId}`);
+  }
+  if (number < 0) {
+    throw badServiceSettingsRequest(`${field} cannot be negative for service ${serviceId}`);
+  }
+  return number;
+}
+
+function coerceServiceActive(value, serviceId) {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number" && (value === 0 || value === 1)) return Boolean(value);
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["true", "1", "yes", "on"].includes(normalized)) return true;
+    if (["false", "0", "no", "off"].includes(normalized)) return false;
+  }
+  throw badServiceSettingsRequest(`Invalid active value for service ${serviceId}`);
+}
+
+function mergeServiceSettings(existingService, incomingService) {
+  const next = { ...existingService };
+  const serviceId = String(existingService.id);
+
+  for (const field of SERVICE_PRICING_NUMBER_FIELDS) {
+    if (hasOwn(incomingService, field)) {
+      next[field] = coerceServicePricingNumber(incomingService[field], field, serviceId);
+    }
+  }
+
+  if (hasOwn(incomingService, "active")) {
+    next.active = coerceServiceActive(incomingService.active, serviceId);
+  }
+
+  for (const field of ["name", "label"]) {
+    if (hasOwn(incomingService, field)) {
+      const value = String(incomingService[field] || "").trim();
+      if (!value) throw badServiceSettingsRequest(`Invalid ${field} for service ${serviceId}`);
+      next[field] = value;
+    }
+  }
+
+  if (hasOwn(incomingService, "sortOrder")) {
+    const sortOrder = Number(incomingService.sortOrder);
+    if (!Number.isFinite(sortOrder)) {
+      throw badServiceSettingsRequest(`Invalid sortOrder for service ${serviceId}`);
+    }
+    next.sortOrder = sortOrder;
+  }
+
+  next.id = existingService.id;
+  return next;
+}
+
+async function syncServiceSettingsToDb(services, updatedIds) {
+  if (!updatedIds.size) return;
+  try {
+    await Promise.all(services
+      .filter((service) => updatedIds.has(String(service.id)))
+      .map((service) => pgdb.query(
+        `
+        UPDATE services
+        SET
+          name = COALESCE($2, name),
+          base_fee = $3,
+          rate_per_1000_sqft = $4,
+          minimum_price = $5,
+          active = $6,
+          sort_order = COALESCE($7, sort_order),
+          updated_at = NOW()
+        WHERE id = $1
+        `,
+        [
+          service.id,
+          service.name || service.label || null,
+          Number(service.baseFee || 0),
+          Number(service.ratePer1000Sqft || 0),
+          Number(service.minimumPrice || 0),
+          service.active !== false,
+          service.sortOrder != null ? Number(service.sortOrder) : null
+        ]
+      )));
+  } catch (error) {
+    console.warn("Could not sync service settings to DB:", error.message);
+  }
+}
+
+app.get("/api/admin/settings/services", requireAuth, requireRole("admin"), (_req, res) => {
+  try {
+    const settings = readSettingsFile();
+    res.json({ ok: true, services: Array.isArray(settings.services) ? settings.services : [] });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+app.put("/api/admin/settings/services", requireAuth, requireRole("admin"), async (req, res) => {
+  try {
+    const incomingServices = req.body?.services;
+    if (!Array.isArray(incomingServices)) {
+      return res.status(400).json({ ok: false, error: "services must be an array" });
+    }
+
+    const settings = readSettingsFile();
+    const existingServices = Array.isArray(settings.services) ? settings.services : [];
+    const servicesById = new Map(existingServices.map((service) => [String(service.id), service]));
+    const updatesById = new Map();
+    const seenIds = new Set();
+
+    for (const incomingService of incomingServices) {
+      if (!incomingService || typeof incomingService !== "object" || Array.isArray(incomingService)) {
+        throw badServiceSettingsRequest("Each service must be an object");
+      }
+
+      const serviceId = String(incomingService.id || "").trim();
+      if (!serviceId || !servicesById.has(serviceId)) {
+        throw badServiceSettingsRequest(`Unknown service id: ${serviceId || "(missing)"}`);
+      }
+      if (seenIds.has(serviceId)) {
+        throw badServiceSettingsRequest(`Duplicate service id: ${serviceId}`);
+      }
+
+      seenIds.add(serviceId);
+      updatesById.set(serviceId, mergeServiceSettings(servicesById.get(serviceId), incomingService));
+    }
+
+    const nextSettings = {
+      ...settings,
+      services: existingServices.map((service) => updatesById.get(String(service.id)) || service)
+    };
+
+    writeSettingsFile(nextSettings);
+    await syncServiceSettingsToDb(nextSettings.services, seenIds);
+
+    res.json({ ok: true, services: nextSettings.services });
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ ok: false, error: error.message });
   }
 });
 
@@ -3186,7 +3683,7 @@ app.post("/api/checkout/instant-mow", optionalAuth, async (req, res) => {
       const payments = readJsonArray(PAYMENTS_FILE);
       payments.push(payment);
       writeJsonArray(PAYMENTS_FILE, payments);
-      await updateUserPhoneIfBlank(req.user?.id, checkoutJobPayload.phone);
+      await updateUserPhoneIfBlank(req.user?.id || null, checkoutJobPayload.phone);
       return res.json({
         ok: true,
         paymentStatus: "checkout_pending",
@@ -3237,6 +3734,7 @@ app.post("/api/checkout/instant-mow", optionalAuth, async (req, res) => {
     params.set("metadata[customer_user_id]", req.user?.id || "");
     params.set("metadata[customer_name]", checkoutJobPayload.name || "");
     params.set("metadata[customer_phone]", checkoutJobPayload.phone || "");
+    params.set("metadata[customer_email]", checkoutJobPayload.email || "");
     params.set("customer_email", checkoutJobPayload.email || "");
     params.set("metadata[service_type]", checkoutJobPayload.serviceType || "mowing");
     params.set("metadata[scope]", "standard_mowing_only");
@@ -3264,7 +3762,7 @@ app.post("/api/checkout/instant-mow", optionalAuth, async (req, res) => {
     payment.stripe_payment_intent_id = session.payment_intent || null;
     payment.updated_at = new Date().toISOString();
     writeJsonArray(PAYMENTS_FILE, payments);
-    await updateUserPhoneIfBlank(req.user?.id, checkoutJobPayload.phone);
+    await updateUserPhoneIfBlank(req.user?.id || null, checkoutJobPayload.phone);
 
     res.json({
       ok: true,
@@ -3283,9 +3781,13 @@ app.post("/api/payments/create-checkout-session", requireAuth, async (req, res) 
   try {
     const body = req.body || {};
     const paymentPhone = submittedPhone(body) || req.user?.phone || "";
+    const paymentEmail = normalizeEmailForClaim(body.email || body.customerEmail || req.user.email || "");
     if (!isValidLookingPhone(paymentPhone)) return rejectMissingPhone(res);
     const amount = Math.round(Number(body.amount || body.final_price || body.estimate || 0) * 100);
     if (amount <= 0) return res.status(400).json({ ok: false, error: "Checkout amount is required" });
+    if (body.job_id && req.user.role !== "admin") {
+      await attachCheckoutJobToUser(body.job_id, req.user, paymentEmail);
+    }
 
     const secretKey = stripeSecretKey();
     if (!secretKey) {
@@ -3298,7 +3800,7 @@ app.post("/api/payments/create-checkout-session", requireAuth, async (req, res) 
         amount: amount / 100,
         customer: {
           name: body.name || body.customerName || req.user.full_name || "",
-          email: body.email || body.customerEmail || req.user.email || "",
+          email: paymentEmail,
           phone: paymentPhone
         },
         status: "checkout_pending",
@@ -3325,6 +3827,8 @@ app.post("/api/payments/create-checkout-session", requireAuth, async (req, res) 
     params.set("metadata[job_id]", body.job_id || "");
     params.set("metadata[bid_request_id]", body.bid_request_id || "");
     params.set("metadata[customer_phone]", paymentPhone);
+    params.set("metadata[customer_email]", paymentEmail);
+    if (paymentEmail) params.set("customer_email", paymentEmail);
 
     const stripeRes = await fetch("https://api.stripe.com/v1/checkout/sessions", {
       method: "POST",
@@ -3346,7 +3850,7 @@ app.post("/api/payments/create-checkout-session", requireAuth, async (req, res) 
       amount: amount / 100,
       customer: {
         name: body.name || body.customerName || req.user.full_name || "",
-        email: body.email || body.customerEmail || req.user.email || "",
+        email: paymentEmail,
         phone: paymentPhone
       },
       status: "checkout_created",
@@ -3370,14 +3874,19 @@ async function ensurePaidPaymentAccount(payment = {}, session = {}) {
   if (!email) return null;
 
   const fullName = customer.name || metadata.customer_name || session.customer_details?.name || "";
-  const { user, created } = await findOrCreateCustomerUser({ email, fullName });
+  const paymentPhone = customer.phone || metadata.customer_phone || session.customer_details?.phone || "";
+  const { user, created } = await findOrCreateCustomerUser({ email, fullName, phone: paymentPhone });
   if (!user) return null;
-  await updateUserPhoneIfBlank(user.id, customer.phone || metadata.customer_phone || session.customer_details?.phone || "");
+  await updateUserPhoneIfBlank(user.id, paymentPhone);
+  await claimJobsForUserEmail(user.id, user.email || email);
 
   if (payment.job_id) {
+    const hasCustomerEmail = await ensureJobsCustomerEmailColumn();
     await pgdb.query(
-      "UPDATE jobs SET customer_user_id = COALESCE(customer_user_id, $2) WHERE id = $1",
-      [payment.job_id, user.id]
+      `UPDATE jobs
+       SET customer_user_id = COALESCE(customer_user_id, $2)${hasCustomerEmail ? ", customer_email = COALESCE(NULLIF(TRIM(customer_email), ''), $3)" : ""}
+       WHERE id = $1`,
+      hasCustomerEmail ? [payment.job_id, user.id, normalizeEmailForClaim(email)] : [payment.job_id, user.id]
     );
   }
 
@@ -3546,7 +4055,7 @@ app.get("/api/parcel/lookup", async (req, res) => {
 
 app.post("/api/auth/register", async (req, res) => {
   try {
-    const { email, password, fullName, role } = req.body || {};
+    const { email, password, fullName, firstName, lastName, phone, role } = req.body || {};
 
     if (!email || !password) {
       return res.status(400).json({ ok: false, error: "Missing email or password" });
@@ -3554,16 +4063,22 @@ app.post("/api/auth/register", async (req, res) => {
 
     const allowedRoles = new Set(["customer", "provider"]);
     const safeRole = allowedRoles.has(role) ? role : "customer";
+    await ensureUsersPhoneColumn();
+    const split = splitFullName(fullName);
+    const safeFirstName = String(firstName || split.firstName || "").trim();
+    const safeLastName = String(lastName || split.lastName || "").trim();
+    const safeFullName = composeFullName(safeFirstName, safeLastName, fullName);
 
     const result = await pgdb.query(
       `
-      INSERT INTO users (id, email, password_hash, full_name, role)
-      VALUES ($1, $2, $3, $4, $5)
-      RETURNING id, email, full_name, role, created_at
+      INSERT INTO users (id, email, password_hash, full_name, first_name, last_name, phone, role)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      RETURNING id, email, full_name, first_name, last_name, phone, role, active, created_at
       `,
-      [nanoid(10), String(email).toLowerCase().trim(), hashPassword(password), fullName || "", safeRole]
+      [nanoid(10), String(email).toLowerCase().trim(), hashPassword(password), safeFullName, safeFirstName, safeLastName, String(phone || "").trim(), safeRole]
     );
     await linkPasswordProvider(result.rows[0]);
+    await claimJobsForUserEmail(result.rows[0].id, result.rows[0].email);
 
     res.status(201).json({
       ok: true,
@@ -3581,6 +4096,7 @@ app.post("/api/auth/login", async (req, res) => {
   try {
     const { email, password } = req.body || {};
 
+    await ensureUsersPhoneColumn();
     const result = await pgdb.query(
       "SELECT * FROM users WHERE email = $1 LIMIT 1",
       [String(email || "").toLowerCase().trim()]
@@ -3591,10 +4107,14 @@ app.post("/api/auth/login", async (req, res) => {
     if (!user || user.password_hash !== hashPassword(password || "")) {
       return res.status(401).json({ ok: false, error: "Invalid login" });
     }
+    if (user.active === false || user.deleted_at) {
+      return res.status(403).json({ ok: false, error: "This account is inactive" });
+    }
 
     await linkPasswordProvider(user);
     const token = await createSessionForUser(user.id);
     setSessionCookie(req, res, token);
+    await claimJobsForUserEmail(user.id, user.email);
     const sessionUser = await userWithAvatar(user);
 
     res.json({
@@ -3632,6 +4152,9 @@ app.post("/api/auth/set-password", async (req, res) => {
     if (!user) {
       return res.status(404).json({ ok: false, error: "Account not found" });
     }
+    if (user.active === false || user.deleted_at) {
+      return res.status(403).json({ ok: false, error: "This account is inactive" });
+    }
 
     writeJsonArray(
       ACCOUNT_SETUP_TOKENS_FILE,
@@ -3641,6 +4164,7 @@ app.post("/api/auth/set-password", async (req, res) => {
     await linkPasswordProvider(user);
     const sessionToken = await createSessionForUser(user.id);
     setSessionCookie(req, res, sessionToken);
+    await claimJobsForUserEmail(user.id, user.email);
 
     res.json({
       ok: true,
@@ -3769,7 +4293,7 @@ app.get("/api/auth/facebook/callback", (req, res, next) => {
       return res.redirect(authErrorRedirect("facebook", "auth_failed", appOrigin));
     }
 
-    return req.logIn(user, (loginError) => {
+    return req.logIn(user, async (loginError) => {
       if (loginError) {
         console.warn("[Facebook OAuth][Passport] session login failed", {
           errorMessage: loginError.message,
@@ -3798,6 +4322,7 @@ app.get("/api/auth/facebook/callback", (req, res, next) => {
       delete req.session.facebookLoginSource;
       delete req.session.facebookLoginStep;
       delete req.session.facebookCallbackURL;
+      await claimJobsForUserEmail(user.id, user.email);
       return res.redirect(appRedirectUrl(`/?auth=success&view=quote&step=${encodeURIComponent(returnStep)}`, appOrigin));
     });
   })(req, res, next);
@@ -3888,6 +4413,7 @@ app.get("/auth/google/callback", async (req, res) => {
     const user = await findOrCreateUserForOAuth(profile);
     const token = await createSessionForUser(user.id);
     setSessionCookie(req, res, token);
+    await claimJobsForUserEmail(user.id, user.email);
     res.redirect(appRedirectUrl(stateCookie.returnTo));
   } catch (error) {
     console.warn("Google OAuth failed:", error.message);
@@ -4270,6 +4796,7 @@ app.put("/api/provider/profile", requireAuth, requireRole("provider"), async (re
   try {
     const body = req.body || {};
     const row = await ensureProviderProfileForUser(req.user, body);
+    await updateUserPhoneIfBlank(req.user.id, body.phone || row.phone || "");
     const area = providerAreaForRequest(req);
     area.provider_profile_id = row.id;
     area.profile_settings = {
@@ -4788,9 +5315,11 @@ function buildJobScopeSnapshot(body = {}, pricingBreakdown = null) {
 async function insertJobForUser(userId, body = {}, status = "open") {
   await ensureJobsScopeSnapshotColumn();
   await ensurePaymentColumns();
+  await ensureJobsCustomerEmailColumn();
   /* Compute pricing breakdown at insert time so it's snapshotted permanently */
   let pricingBreakdown = null;
   let estimateTotal = Number(body.budget || body.final_price || body.estimate || 0);
+  const customerEmail = normalizeEmailForClaim(body.customerEmail || body.email || body.contactEmail || "");
   try {
     if (Number(body.mowAreaSqft || body.areaSqft || 0) > 0) {
       const settings = await loadSettingsFromDb();
@@ -4820,6 +5349,7 @@ async function insertJobForUser(userId, body = {}, status = "open") {
       details,
       photos,
       scope_snapshot,
+      customer_email,
       status,
       payment_status,
       estimate_at_booking,
@@ -4827,7 +5357,7 @@ async function insertJobForUser(userId, body = {}, status = "open") {
     )
     VALUES (
       $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb, $16,
-      'unpaid', $17, $18::jsonb
+      $17, 'unpaid', $18, $19::jsonb
     )
     RETURNING *
     `,
@@ -4847,6 +5377,7 @@ async function insertJobForUser(userId, body = {}, status = "open") {
       buildJobDetails(body),
       JSON.stringify(Array.isArray(body.photos) ? body.photos : []),
       JSON.stringify(scopeSnapshot),
+      customerEmail,
       status,
       estimateTotal > 0 ? estimateTotal : null,
       pricingBreakdown ? JSON.stringify(pricingBreakdown) : null
@@ -4910,6 +5441,8 @@ app.post("/api/jobs", requireAuth, async (req, res) => {
     if (!isValidLookingPhone(phone)) return rejectMissingPhone(res);
     body.phone = phone;
     body.customerPhone = phone;
+    body.email = body.email || body.customerEmail || user.email || "";
+    body.customerEmail = body.customerEmail || body.email || user.email || "";
     const job = await insertJobForUser(user.id, body, "open");
     await updateUserPhoneIfBlank(user.id, phone);
 
@@ -5178,10 +5711,59 @@ app.get("/api/admin/jobs/:id/eligible-providers", requireAuth, requireRole("admi
 app.post("/api/admin/jobs/:id/assign-provider", requireAuth, requireRole("admin"), async (req, res) => {
   try {
     const providerUserId = req.body?.provider_user_id || req.body?.providerUserId;
-    if (!providerUserId) return res.status(400).json({ ok: false, error: "provider_user_id is required" });
+    const providerId = req.body?.provider_id || req.body?.providerId || null;
+    if (!providerUserId && !providerId) return res.status(400).json({ ok: false, error: "provider_user_id or provider_id is required" });
+    const provider = providerId
+      ? await pgdb.query("SELECT id, user_id FROM provider_profiles WHERE id = $1 LIMIT 1", [providerId])
+      : await pgdb.query("SELECT id, user_id FROM provider_profiles WHERE user_id = $1 LIMIT 1", [providerUserId]);
+    if (!provider.rows.length) return res.status(404).json({ ok: false, error: "Provider not found" });
     const result = await pgdb.query(
       "UPDATE jobs SET provider_user_id = $1, status = 'assigned' WHERE id = $2 RETURNING *",
-      [providerUserId, req.params.id]
+      [provider.rows[0].user_id, req.params.id]
+    );
+    if (!result.rows.length) return res.status(404).json({ ok: false, error: "Job not found" });
+    res.json({ ok: true, job: mapJobRow(result.rows[0]) });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.patch("/api/admin/jobs/:id/assign-provider", requireAuth, requireRole("admin"), async (req, res) => {
+  try {
+    const providerId = req.body?.provider_id || req.body?.providerId || "";
+    const providerUserId = req.body?.provider_user_id || req.body?.providerUserId || "";
+    if (!providerId && !providerUserId) {
+      const result = await pgdb.query(
+        "UPDATE jobs SET provider_user_id = NULL, status = 'open' WHERE id = $1 RETURNING *",
+        [req.params.id]
+      );
+      if (!result.rows.length) return res.status(404).json({ ok: false, error: "Job not found" });
+      return res.json({ ok: true, job: mapJobRow(result.rows[0]) });
+    }
+    const provider = providerId
+      ? await pgdb.query("SELECT id, user_id FROM provider_profiles WHERE id = $1 LIMIT 1", [providerId])
+      : await pgdb.query("SELECT id, user_id FROM provider_profiles WHERE user_id = $1 LIMIT 1", [providerUserId]);
+    if (!provider.rows.length) return res.status(404).json({ ok: false, error: "Provider not found" });
+    const result = await pgdb.query(
+      "UPDATE jobs SET provider_user_id = $1, status = CASE WHEN status IN ('completed','canceled','refunded') THEN status ELSE 'assigned' END WHERE id = $2 RETURNING *",
+      [provider.rows[0].user_id, req.params.id]
+    );
+    if (!result.rows.length) return res.status(404).json({ ok: false, error: "Job not found" });
+    res.json({ ok: true, job: mapJobRow(result.rows[0]) });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.patch("/api/admin/jobs/:id/attach-user", requireAuth, requireRole("admin"), async (req, res) => {
+  try {
+    const userId = req.body?.user_id || req.body?.userId;
+    if (!userId) return res.status(400).json({ ok: false, error: "user_id is required" });
+    const user = await pgdb.query("SELECT id FROM users WHERE id = $1 LIMIT 1", [userId]);
+    if (!user.rows.length) return res.status(404).json({ ok: false, error: "User not found" });
+    const result = await pgdb.query(
+      "UPDATE jobs SET customer_user_id = $2 WHERE id = $1 RETURNING *",
+      [req.params.id, userId]
     );
     if (!result.rows.length) return res.status(404).json({ ok: false, error: "Job not found" });
     res.json({ ok: true, job: mapJobRow(result.rows[0]) });
@@ -5290,6 +5872,82 @@ app.patch("/api/jobs/:id/status", requireAuth, async (req, res) => {
 
 /* -------------------- QUOTES (PostgreSQL-backed) -------------------- */
 
+function paymentForQuoteId(payments = [], quoteId = "") {
+  return payments.find((payment) => String(payment.quote_id || "") === String(quoteId || "")) || null;
+}
+
+function adminQuoteFromRow(row = {}, payments = []) {
+  const payment = paymentForQuoteId(payments, row.id);
+  const userFullName = row.customer_full_name || [row.customer_first_name, row.customer_last_name].filter(Boolean).join(" ");
+  const customerName = row.name || userFullName || payment?.customer?.name || "";
+  const customerEmail = row.email || row.customer_email || payment?.customer?.email || "";
+  const customerPhone = row.phone || row.customer_phone || payment?.customer?.phone || "";
+  const serviceType = row.service_type || "mowing";
+  const convertedJobId = row.converted_to_job_id || payment?.job_id || null;
+
+  return {
+    id: row.id,
+    customerUserId: row.customer_user_id || null,
+    customer: {
+      id: row.customer_user_id || null,
+      name: customerName,
+      userName: userFullName || "",
+      email: customerEmail,
+      phone: customerPhone,
+      firstName: row.customer_first_name || "",
+      lastName: row.customer_last_name || ""
+    },
+    name: row.name || customerName,
+    email: customerEmail,
+    phone: customerPhone,
+    address: row.address || "",
+    city: row.city || "",
+    state: row.state || "",
+    zip: row.zip || "",
+    serviceType,
+    serviceId: serviceType,
+    regionId: row.region_id || "",
+    estimate: Number(row.estimate || 0),
+    status: row.status || "new",
+    createdAt: row.created_at,
+    lotSqft: Number(row.lot_area_sqft || 0),
+    mowableSqft: Number(row.mow_area_sqft || 0),
+    lotAreaSqft: Number(row.lot_area_sqft || 0),
+    mowAreaSqft: Number(row.mow_area_sqft || 0),
+    lotSource: row.lot_source || "",
+    propertyType: row.property_type || "",
+    parcelId: row.parcel_id || "",
+    notes: row.notes || "",
+    scope: {
+      fenced: Boolean(row.fenced),
+      overgrown: Boolean(row.overgrown),
+      obstacles: Boolean(row.obstacles),
+      rushJob: Boolean(row.rush_job),
+      limitedAccess: Boolean(row.limited_access),
+      slopedTerrain: Boolean(row.sloped_terrain),
+      denseVegetation: Boolean(row.dense_vegetation),
+      gates: Boolean(row.gates)
+    },
+    payment: payment ? {
+      id: payment.id || null,
+      jobId: payment.job_id || null,
+      quoteId: payment.quote_id || null,
+      amount: payment.amount == null ? null : Number(payment.amount),
+      status: payment.status || "",
+      stripeCheckoutSessionId: payment.stripe_checkout_session_id || null,
+      paidAt: payment.paid_at || null,
+      createdAt: payment.created_at || null,
+      updatedAt: payment.updated_at || null
+    } : null,
+    paymentId: payment?.id || null,
+    paymentStatus: payment?.status || null,
+    paymentAmount: payment?.amount == null ? null : Number(payment.amount),
+    convertedToJobId: convertedJobId,
+    jobId: convertedJobId,
+    convertedAt: row.converted_at || null
+  };
+}
+
 app.get("/api/quotes", requireAuth, requireRole("admin"), async (_req, res) => {
   try {
     const result = await pgdb.query(
@@ -5301,16 +5959,47 @@ app.get("/api/quotes", requireAuth, requireRole("admin"), async (_req, res) => {
   }
 });
 
+app.get("/api/admin/quotes", requireAuth, requireRole("admin"), async (_req, res) => {
+  try {
+    await ensureUsersPhoneColumn();
+    const result = await pgdb.query(
+      `
+      SELECT
+        q.*,
+        u.full_name AS customer_full_name,
+        u.first_name AS customer_first_name,
+        u.last_name AS customer_last_name,
+        u.email AS customer_email,
+        u.phone AS customer_phone
+      FROM quotes q
+      LEFT JOIN users u ON u.id = q.customer_user_id
+      ORDER BY q.created_at DESC
+      LIMIT 500
+      `
+    );
+    const payments = readJsonArray(PAYMENTS_FILE);
+    const quotes = result.rows.map((row) => adminQuoteFromRow(row, payments));
+    res.json({ ok: true, source: "postgres:quotes", quotes, total: quotes.length });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // Customer: their own quotes by user_id or email
 app.get("/api/customer/quotes", requireAuth, async (req, res) => {
   try {
+    const email = normalizeEmailForClaim(req.user.email || "");
     const result = await pgdb.query(
       `SELECT * FROM quotes
        WHERE customer_user_id = $1
-          OR (email <> '' AND email = $2)
+          OR (
+            customer_user_id IS NULL
+            AND $2 <> ''
+            AND LOWER(TRIM(email)) = $2
+          )
        ORDER BY created_at DESC
        LIMIT 30`,
-      [req.user.id, req.user.email || ""]
+      [req.user.id, email]
     );
     res.json({ ok: true, quotes: result.rows });
   } catch (err) {
@@ -5345,14 +6034,14 @@ app.post("/api/quotes", optionalAuth, async (req, res) => {
       lotAreaSqft: Number(body.lotAreaSqft || 0),
       mowAreaSqft: Number(body.mowAreaSqft || 0),
       propertyType: body.propertyType || "standard",
-      fenced: Boolean(body.fenced),
-      overgrown: Boolean(body.overgrown),
-      obstacles: Boolean(body.obstacles),
-      rushJob: Boolean(body.rushJob),
-      limitedAccess: Boolean(body.limitedAccess),
-      slopedTerrain: Boolean(body.slopedTerrain),
-      denseVegetation: Boolean(body.denseVegetation),
-      gates: Boolean(body.gates),
+      fenced: isTrue(body.fenced),
+      overgrown: isTrue(body.overgrown),
+      obstacles: isTrue(body.obstacles),
+      rushJob: isTrue(body.rushJob),
+      limitedAccess: isTrue(body.limitedAccess),
+      slopedTerrain: isTrue(body.slopedTerrain),
+      denseVegetation: isTrue(body.denseVegetation),
+      gates: isTrue(body.gates),
       parcelId: body.parcelId || "",
       notes: body.notes || "",
       ...serviceFields,
@@ -5503,6 +6192,7 @@ app.post("/api/quotes/:id/convert-to-job", requireAuth, requireRole("admin"), as
       customerUserId = insertedUser.rows[0].id;
     }
     await updateUserPhoneIfBlank(customerUserId, quote.phone);
+    await ensureJobsCustomerEmailColumn();
 
     const serviceLabel = String(quote.service_type || "mowing")
       .replace(/_/g, " ")
@@ -5544,10 +6234,11 @@ app.post("/api/quotes/:id/convert-to-job", requireAuth, requireRole("admin"), as
         preferred_date,
         details,
         photos,
+        customer_email,
         status
       )
       VALUES (
-        $1, $2, NULL, $3, $4, $5, $6, $7, $8, $9, $10, NULL, $11, $12, 'open'
+        $1, $2, NULL, $3, $4, $5, $6, $7, $8, $9, $10, NULL, $11, $12, $13, 'open'
       )
       RETURNING *
       `,
@@ -5563,7 +6254,8 @@ app.post("/api/quotes/:id/convert-to-job", requireAuth, requireRole("admin"), as
         Number(quote.estimate || 0),
         quote.service_type || "mowing",
         detailsParts.join("\n"),
-        JSON.stringify([])
+        JSON.stringify([]),
+        normalizeEmailForClaim(quote.email || "")
       ]
     );
 
@@ -5604,9 +6296,21 @@ app.post("/api/quotes/:id/convert-to-job", requireAuth, requireRole("admin"), as
 app.get("/api/jobs/my", requireAuth, async (req, res) => {
   try {
     await ensureJobsScopeSnapshotColumn();
+    await ensureJobsCustomerEmailColumn();
+    const email = normalizeEmailForClaim(req.user.email || "");
     const result = await pgdb.query(
-      "SELECT * FROM jobs WHERE customer_user_id = $1 ORDER BY created_at DESC",
-      [req.user.id]
+      `
+      SELECT *
+      FROM jobs
+      WHERE customer_user_id = $1
+         OR (
+           customer_user_id IS NULL
+           AND $2 <> ''
+           AND LOWER(TRIM(customer_email)) = $2
+         )
+      ORDER BY created_at DESC
+      `,
+      [req.user.id, email]
     );
     res.json({ ok: true, jobs: result.rows.map(mapJobRow).map(sanitizeJobForOwner) });
   } catch (error) {
@@ -5669,6 +6373,7 @@ app.post("/api/jobs/:id/accept", requireAuth, requireRole("provider"), async (re
 app.post("/api/jobs/:id/create-checkout-session", requireAuth, async (req, res) => {
   try {
     await ensurePaymentColumns();
+    await ensureJobsCustomerEmailColumn();
     const jobResult = await pgdb.query("SELECT * FROM jobs WHERE id = $1 LIMIT 1", [req.params.id]);
     if (!jobResult.rows.length) return res.status(404).json({ ok: false, error: "Job not found" });
 
@@ -5687,10 +6392,12 @@ app.post("/api/jobs/:id/create-checkout-session", requireAuth, async (req, res) 
     assertStripeTestMode(secretKey);
 
     const job = mapJobRow(row);
+    const checkoutEmail = normalizeEmailForClaim(row.customer_email || req.user.email || "");
     const amountCents = Math.round(Number(row.estimate_at_booking || row.budget || 0) * 100);
     if (amountCents < 50) {
       return res.status(400).json({ ok: false, error: "Job has no valid price for checkout" });
     }
+    if (!isAdmin) await attachCheckoutJobToUser(job.id, req.user, checkoutEmail);
 
     const params = new URLSearchParams();
     params.set("mode", "payment");
@@ -5702,7 +6409,9 @@ app.post("/api/jobs/:id/create-checkout-session", requireAuth, async (req, res) 
     params.set("success_url", checkoutReturnUrl("success", { job_id: job.id }));
     params.set("cancel_url", checkoutReturnUrl("cancel", { job_id: job.id }));
     params.set("metadata[job_id]", job.id);
-    params.set("metadata[customer_user_id]", String(row.customer_user_id || ""));
+    params.set("metadata[customer_user_id]", String(row.customer_user_id || (!isAdmin ? req.user.id : "")));
+    params.set("metadata[customer_email]", checkoutEmail);
+    if (checkoutEmail) params.set("customer_email", checkoutEmail);
 
     const stripeRes = await fetch("https://api.stripe.com/v1/checkout/sessions", {
       method: "POST",
@@ -5719,8 +6428,8 @@ app.post("/api/jobs/:id/create-checkout-session", requireAuth, async (req, res) 
     }
 
     await pgdb.query(
-      "UPDATE jobs SET stripe_checkout_session_id = $1 WHERE id = $2",
-      [stripeSession.id, job.id]
+      "UPDATE jobs SET stripe_checkout_session_id = $1, customer_email = COALESCE(NULLIF(TRIM(customer_email), ''), $3) WHERE id = $2",
+      [stripeSession.id, job.id, checkoutEmail]
     );
 
     res.json({ ok: true, url: stripeSession.url, sessionId: stripeSession.id });
@@ -5733,31 +6442,174 @@ app.post("/api/jobs/:id/create-checkout-session", requireAuth, async (req, res) 
 
 const VALID_LEAD_STATUSES = new Set(["new", "quoted", "bidding", "scheduled", "completed", "canceled"]);
 const VALID_JOB_STATUSES = new Set(["payment_pending", "payment_failed", "paid", "open", "assigned", "scheduled", "in_progress", "completed", "canceled", "refunded"]);
+const VALID_PAYMENT_STATUSES = new Set(["unpaid", "deposit_paid", "paid", "pending", "failed", "refunded"]);
+const VALID_USER_ROLES = new Set(["customer", "provider", "admin"]);
 
-app.get("/api/admin/jobs", requireAuth, requireRole("admin"), (req, res) => {
+function paymentForJobId(payments = [], jobId = "") {
+  return payments.find((payment) => String(payment.job_id || "") === String(jobId || "")) || null;
+}
+
+function adminJobFromRow(row = {}, payments = []) {
+  const payment = paymentForJobId(payments, row.id);
+  return {
+    ...mapJobRow(row),
+    customerUserId: row.customer_user_id || null,
+    customerName: row.customer_name || "",
+    customerEmail: row.customer_email || payment?.customer?.email || "",
+    customerPhone: row.customer_phone || payment?.customer?.phone || "",
+    customerAttached: Boolean(row.customer_user_id),
+    providerId: row.provider_user_id || null,
+    providerUserId: row.provider_user_id || row.provider_user_id_from_profile || null,
+    providerName: row.provider_name || row.provider_owner_name || "",
+    providerEmail: row.provider_email || "",
+    paymentStatus: row.payment_status || payment?.status || "unpaid",
+    paymentAmount: payment?.amount || null,
+    stripeCheckoutSessionId: row.stripe_checkout_session_id || payment?.stripe_checkout_session_id || null,
+    createdAt: row.created_at || null,
+    updatedAt: row.updated_at || null
+  };
+}
+
+async function loadAdminDbJobs({ status = "", paymentStatus = "", search = "", limit = 250 } = {}) {
+  await ensureUsersPhoneColumn();
+  await ensurePaymentColumns();
+  const where = [];
+  const params = [];
+  if (status && VALID_JOB_STATUSES.has(status)) {
+    params.push(status);
+    where.push(`j.status = $${params.length}`);
+  }
+  if (paymentStatus && VALID_PAYMENT_STATUSES.has(paymentStatus)) {
+    params.push(paymentStatus);
+    where.push(`j.payment_status = $${params.length}`);
+  }
+  if (search) {
+    params.push(`%${String(search).trim()}%`);
+    where.push(`(
+      j.id ILIKE $${params.length}
+      OR j.address ILIKE $${params.length}
+      OR j.city ILIKE $${params.length}
+      OR u.email ILIKE $${params.length}
+      OR u.phone ILIKE $${params.length}
+      OR u.full_name ILIKE $${params.length}
+    )`);
+  }
+  params.push(Math.max(1, Math.min(Number(limit) || 250, 500)));
+  const result = await pgdb.query(
+    `
+    SELECT
+      j.*,
+      u.full_name AS customer_name,
+      u.email AS customer_email,
+      u.phone AS customer_phone,
+      pp.id AS provider_id,
+      pp.business_name AS provider_name,
+      pp.user_id AS provider_user_id_from_profile,
+      pu.full_name AS provider_owner_name,
+      pu.email AS provider_email
+    FROM jobs j
+    LEFT JOIN users u ON u.id = j.customer_user_id
+    LEFT JOIN provider_profiles pp ON pp.user_id = j.provider_user_id
+    LEFT JOIN users pu ON pu.id = pp.user_id
+    ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+    ORDER BY j.created_at DESC
+    LIMIT $${params.length}
+    `,
+    params
+  );
+  const payments = readJsonArray(PAYMENTS_FILE);
+  return result.rows.map((row) => adminJobFromRow(row, payments));
+}
+
+function userNameFields(row = {}) {
+  const split = splitFullName(row.full_name || "");
+  const firstName = row.first_name || split.firstName || "";
+  const lastName = row.last_name || split.lastName || "";
+  return {
+    firstName,
+    lastName,
+    fullName: composeFullName(firstName, lastName, row.full_name || "")
+  };
+}
+
+function normalizeAdminSelectedIds(ids) {
+  if (!Array.isArray(ids)) return [];
+  return [...new Set(ids.map((id) => String(id || "").trim()).filter(Boolean))];
+}
+
+async function adminPaidCompletedJobBlocks(userIds) {
+  const ids = normalizeAdminSelectedIds(userIds);
+  if (!ids.length) return new Map();
+  await ensurePaymentColumns();
+  const result = await pgdb.query(
+    `
+    SELECT
+      selected.user_id AS id,
+      COUNT(DISTINCT j.id)::int AS job_count,
+      ARRAY_AGG(DISTINCT j.id) AS job_ids
+    FROM jobs j
+    LEFT JOIN provider_profiles pp
+      ON pp.user_id = j.provider_user_id
+    JOIN unnest($1::text[]) AS selected(user_id)
+      ON j.customer_user_id = selected.user_id
+      OR j.provider_user_id = selected.user_id
+      OR pp.user_id = selected.user_id
+    WHERE COALESCE(j.payment_status, 'unpaid') = 'paid'
+       OR j.status IN ('paid', 'completed')
+       OR j.paid_at IS NOT NULL
+    GROUP BY selected.user_id
+    `,
+    [ids]
+  );
+  return new Map(result.rows.map((row) => [String(row.id), {
+    id: String(row.id),
+    jobCount: Number(row.job_count || 0),
+    jobIds: row.job_ids || []
+  }]));
+}
+
+async function softDeleteAdminUser(userId, adminUser) {
+  const result = await pgdb.query(
+    `
+    UPDATE users
+    SET active = false,
+        deleted_at = COALESCE(deleted_at, NOW()),
+        deleted_by = $2
+    WHERE id = $1
+      AND deleted_at IS NULL
+    RETURNING id, email, full_name, first_name, last_name, role, active, deleted_at, deleted_by
+    `,
+    [userId, String(adminUser?.id || adminUser?.email || "admin")]
+  );
+
+  if (result.rows.length) {
+    await pgdb.query("UPDATE provider_profiles SET active = false WHERE user_id = $1", [userId]).catch(() => {});
+    await pgdb.query("DELETE FROM sessions WHERE user_id = $1", [userId]).catch(() => {});
+  }
+
+  return result.rows[0] || null;
+}
+
+app.get("/api/admin/jobs", requireAuth, requireRole("admin"), async (req, res) => {
   try {
-    let leads = readLeads();
-
-    if (req.query.status && VALID_LEAD_STATUSES.has(req.query.status)) {
-      leads = leads.filter((l) => l.status === req.query.status);
-    }
-    if (req.query.regionId) {
-      leads = leads.filter((l) => l.regionId === req.query.regionId);
-    }
-    if (req.query.serviceType) {
-      leads = leads.filter((l) => l.serviceType === req.query.serviceType);
-    }
-
-    leads.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-
-    res.json({ ok: true, jobs: leads, total: leads.length });
+    const jobs = await loadAdminDbJobs({
+      status: req.query.status || "",
+      paymentStatus: req.query.paymentStatus || req.query.payment_status || "",
+      search: req.query.search || "",
+      limit: req.query.limit || 250
+    });
+    res.json({ ok: true, jobs, total: jobs.length, legacyLeads: readLeads().length });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
 });
 
-app.get("/api/admin/jobs/:id", requireAuth, requireRole("admin"), (req, res) => {
+app.get("/api/admin/jobs/:id", requireAuth, requireRole("admin"), async (req, res) => {
   try {
+    const jobs = await loadAdminDbJobs({ limit: 500 });
+    const job = jobs.find((item) => String(item.id) === String(req.params.id));
+    if (job) return res.json({ ok: true, job });
+
     const leads = readLeads();
     const lead = leads.find((l) => l.id === req.params.id);
     if (!lead) return res.status(404).json({ ok: false, error: "Lead not found" });
@@ -5876,9 +6728,26 @@ app.get("/api/admin/overview", requireAuth, requireRole("admin"), async (_req, r
       "SELECT COUNT(*) FROM jobs WHERE status = 'completed'"
     );
 
-    const latestJobs = await pgdb.query(
-      "SELECT * FROM jobs ORDER BY created_at DESC LIMIT 20"
-    );
+    const latestJobs = await pgdb.query("SELECT * FROM jobs ORDER BY created_at DESC LIMIT 8");
+
+    await ensureUsersPhoneColumn();
+    await ensurePaymentColumns();
+    const orphanJobs = await pgdb.query("SELECT COUNT(*) FROM jobs WHERE customer_user_id IS NULL");
+    const jobsMissingContact = await pgdb.query(`
+      SELECT COUNT(*) FROM jobs j
+      LEFT JOIN users u ON u.id = j.customer_user_id
+      WHERE COALESCE(TRIM(u.email), '') = '' OR COALESCE(TRIM(u.phone), '') = ''
+    `);
+    const paidJobsNotAttached = await pgdb.query(`
+      SELECT COUNT(*) FROM jobs
+      WHERE customer_user_id IS NULL
+        AND (payment_status = 'paid' OR status = 'paid' OR paid_at IS NOT NULL)
+    `);
+    const unpaidCompletedJobs = await pgdb.query(`
+      SELECT COUNT(*) FROM jobs
+      WHERE status = 'completed'
+        AND COALESCE(payment_status, 'unpaid') <> 'paid'
+    `);
 
     const byRegion = {};
     for (const row of quotesByRegion.rows) {
@@ -5895,12 +6764,104 @@ app.get("/api/admin/overview", requireAuth, requireRole("admin"), async (_req, r
         providers: Number(providerCount.rows[0].count),
         revenuePipeline: Number(revenueResult.rows[0].total)
       },
+      alerts: {
+        orphanJobs: Number(orphanJobs.rows[0].count),
+        jobsMissingContact: Number(jobsMissingContact.rows[0].count),
+        paidJobsNotAttached: Number(paidJobsNotAttached.rows[0].count),
+        unpaidCompletedJobs: Number(unpaidCompletedJobs.rows[0].count)
+      },
       quoteVolumeByRegion: byRegion,
       latestQuotes: latestQuotes.rows,
       latestJobs: latestJobs.rows
     });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+app.get("/api/admin/orphans", requireAuth, requireRole("admin"), async (_req, res) => {
+  try {
+    await ensureUsersPhoneColumn();
+    await ensurePaymentColumns();
+    const jobs = await loadAdminDbJobs({ limit: 500 });
+    const users = await pgdb.query(`
+      SELECT id, email, phone, full_name, first_name, last_name, role, COALESCE(active, true) AS active
+      FROM users
+      ORDER BY created_at DESC
+    `);
+    const byEmail = new Map();
+    const byPhone = new Map();
+    users.rows.forEach((user) => {
+      const email = String(user.email || "").toLowerCase().trim();
+      const phone = phoneDigits(user.phone || "");
+      if (email) byEmail.set(email, user);
+      if (phone) byPhone.set(phone, user);
+    });
+    const orphanJobs = jobs
+      .filter((job) => !job.customerUserId)
+      .map((job) => {
+        const email = String(job.customerEmail || "").toLowerCase().trim();
+        const phone = phoneDigits(job.customerPhone || "");
+        const matches = [byEmail.get(email), byPhone.get(phone)]
+          .filter(Boolean)
+          .filter((user, idx, arr) => arr.findIndex((item) => item.id === user.id) === idx)
+          .map((user) => ({ ...userNameFields(user), id: user.id, email: user.email, phone: user.phone, role: user.role, active: user.active !== false }));
+        return { ...job, suggestedUsers: matches };
+      });
+    const missingContactJobs = jobs.filter((job) => !String(job.customerEmail || "").trim() || !String(job.customerPhone || "").trim());
+    const paidJobsNotAttached = jobs.filter((job) => !job.customerUserId && (job.paymentStatus === "paid" || job.status === "paid" || job.paidAt));
+    const unpaidCompletedJobs = jobs.filter((job) => job.status === "completed" && job.paymentStatus !== "paid");
+    res.json({
+      ok: true,
+      alerts: {
+        orphanJobs: orphanJobs.length,
+        jobsMissingContact: missingContactJobs.length,
+        paidJobsNotAttached: paidJobsNotAttached.length,
+        unpaidCompletedJobs: unpaidCompletedJobs.length
+      },
+      orphanJobs,
+      missingContactJobs,
+      paidJobsNotAttached,
+      unpaidCompletedJobs
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.get("/api/admin/system", requireAuth, requireRole("admin"), async (_req, res) => {
+  try {
+    const db = await pgdb.query(`
+      SELECT
+        (SELECT COUNT(*)::int FROM users) AS users,
+        (SELECT COUNT(*)::int FROM jobs) AS jobs,
+        (SELECT COUNT(*)::int FROM provider_profiles) AS providers,
+        NOW() AS db_time
+    `);
+    const payments = readJsonArray(PAYMENTS_FILE);
+    const jobs = await loadAdminDbJobs({ limit: 500 });
+    const jobIds = new Set(jobs.map((job) => String(job.id)));
+    const stripeSessionMismatches = payments
+      .filter((payment) => payment.job_id && !jobIds.has(String(payment.job_id)))
+      .map((payment) => ({
+        id: payment.id,
+        job_id: payment.job_id,
+        stripe_checkout_session_id: payment.stripe_checkout_session_id,
+        status: payment.status,
+        amount: payment.amount
+      }));
+    res.json({
+      ok: true,
+      db: db.rows[0],
+      files: {
+        payments: payments.length,
+        leads: readLeads().length,
+        bidRequests: readJsonArray(BID_REQUESTS_FILE).length
+      },
+      stripeSessionMismatches
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
   }
 });
 
@@ -6020,6 +6981,582 @@ app.get("/api/admin/completed-jobs", requireAuth, requireRole("admin"), async (r
   }
 });
 
+/* ==================== ADMIN MANAGEMENT ==================== */
+
+// Ensure active columns exist on users and provider_profiles (idempotent)
+let adminActiveColumnsEnsured = false;
+async function ensureAdminActiveColumns() {
+  if (adminActiveColumnsEnsured) return;
+  try {
+    await ensureUsersPhoneColumn();
+    await pgdb.query("ALTER TABLE provider_profiles ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT true");
+    adminActiveColumnsEnsured = true;
+  } catch (err) {
+    console.warn("[Admin] Could not ensure active columns:", err.message);
+  }
+}
+
+// GET /api/admin/db-jobs — all DB jobs for management view
+app.get("/api/admin/db-jobs", requireAuth, requireRole("admin"), async (req, res) => {
+  try {
+    const jobs = await loadAdminDbJobs({
+      status: req.query.status || "",
+      paymentStatus: req.query.paymentStatus || req.query.payment_status || "",
+      search: req.query.search || "",
+      limit: req.query.limit || 250
+    });
+    res.json({ ok: true, jobs, total: jobs.length });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// PATCH /api/admin/jobs/:id — combined status + payment_status update
+app.patch("/api/admin/jobs/:id", requireAuth, requireRole("admin"), async (req, res) => {
+  try {
+    const { status, payment_status } = req.body || {};
+    if (!status && !payment_status) {
+      return res.status(400).json({ ok: false, error: "Provide status or payment_status" });
+    }
+
+    const allValid = new Set([...VALID_LEAD_STATUSES, ...VALID_JOB_STATUSES]);
+    const paymentValid = new Set(["unpaid", "deposit_paid", "paid"]);
+
+    if (status && !allValid.has(status)) {
+      return res.status(400).json({ ok: false, error: `Invalid status: ${status}` });
+    }
+    if (payment_status && !paymentValid.has(payment_status)) {
+      return res.status(400).json({ ok: false, error: `Invalid payment_status: ${payment_status}` });
+    }
+
+    // Try JSON leads first
+    const leads = readLeads();
+    const idx = leads.findIndex((l) => l.id === req.params.id);
+    if (idx !== -1) {
+      if (status) leads[idx].status = status;
+      if (payment_status) leads[idx].payment_status = payment_status;
+      leads[idx].updatedAt = new Date().toISOString();
+      writeLeads(leads);
+      return res.json({ ok: true, job: leads[idx] });
+    }
+
+    // Try DB job
+    await ensurePaymentColumns();
+    const sets = [];
+    const params = [req.params.id];
+    if (status) { sets.push(`status = $${params.length + 1}`); params.push(status); }
+    if (payment_status) { sets.push(`payment_status = $${params.length + 1}`); params.push(payment_status); }
+
+    const result = await pgdb.query(
+      `UPDATE jobs SET ${sets.join(", ")} WHERE id = $1 RETURNING *`,
+      params
+    );
+    if (!result.rows.length) {
+      return res.status(404).json({ ok: false, error: "Job not found" });
+    }
+    res.json({ ok: true, job: mapJobRow(result.rows[0]) });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// PATCH /api/admin/jobs/:id/assign — assign or unassign a provider by profile id
+app.patch("/api/admin/jobs/:id/assign", requireAuth, requireRole("admin"), async (req, res) => {
+  try {
+    const { provider_id } = req.body || {};
+    if (provider_id) {
+      const check = await pgdb.query("SELECT id, user_id FROM provider_profiles WHERE id = $1 LIMIT 1", [provider_id]);
+      if (!check.rows.length) return res.status(404).json({ ok: false, error: "Provider not found" });
+      const result = await pgdb.query(
+        "UPDATE jobs SET provider_user_id = $1, status = 'assigned' WHERE id = $2 RETURNING *",
+        [check.rows[0].user_id, req.params.id]
+      );
+      if (!result.rows.length) return res.status(404).json({ ok: false, error: "Job not found" });
+      return res.json({ ok: true, job: mapJobRow(result.rows[0]) });
+    } else {
+      const result = await pgdb.query(
+        "UPDATE jobs SET provider_user_id = NULL, status = 'pending' WHERE id = $1 RETURNING *",
+        [req.params.id]
+      );
+      if (!result.rows.length) return res.status(404).json({ ok: false, error: "Job not found" });
+      return res.json({ ok: true, job: mapJobRow(result.rows[0]) });
+    }
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// DELETE /api/admin/jobs/:id
+app.delete("/api/admin/jobs/:id", requireAuth, requireRole("admin"), async (req, res) => {
+  try {
+    const id = req.params.id;
+
+    // Try JSON leads first
+    const leads = readLeads();
+    const idx = leads.findIndex((l) => l.id === id);
+    if (idx !== -1) {
+      const [deleted] = leads.splice(idx, 1);
+      writeLeads(leads);
+      return res.json({ ok: true, deleted: deleted.id });
+    }
+
+    // Try DB job
+    const result = await pgdb.query("DELETE FROM jobs WHERE id = $1 RETURNING id", [id]);
+    if (!result.rows.length) {
+      return res.status(404).json({ ok: false, error: "Job not found" });
+    }
+    res.json({ ok: true, deleted: result.rows[0].id });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// POST /api/admin/jobs/delete-selected — delete only explicitly selected jobs
+app.post("/api/admin/jobs/delete-selected", requireAuth, requireRole("admin"), async (req, res) => {
+  try {
+    const { ids, confirm } = req.body || {};
+    if (confirm !== "DELETE_SELECTED_JOBS") {
+      return res.status(400).json({ ok: false, error: 'Send confirm:"DELETE_SELECTED_JOBS" to delete selected jobs' });
+    }
+
+    const selectedIds = normalizeAdminSelectedIds(ids);
+    if (!selectedIds.length) {
+      return res.status(400).json({ ok: false, error: "ids must be a non-empty array" });
+    }
+
+    let deletedCount = 0;
+    const selected = new Set(selectedIds);
+    const leads = readLeads();
+    const keptLeads = leads.filter((lead) => {
+      if (selected.has(String(lead.id))) {
+        deletedCount += 1;
+        return false;
+      }
+      return true;
+    });
+    if (keptLeads.length !== leads.length) writeLeads(keptLeads);
+
+    const dbResult = await pgdb.query("DELETE FROM jobs WHERE id = ANY($1::text[]) RETURNING id", [selectedIds]);
+    deletedCount += dbResult.rows.length;
+
+    res.json({ ok: true, deletedCount });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// POST /api/admin/jobs/cleanup — delete test/orphan jobs (requires confirm:"DELETE")
+app.post("/api/admin/jobs/cleanup", requireAuth, requireRole("admin"), async (req, res) => {
+  try {
+    const { confirm, deleteAll } = req.body || {};
+    if (confirm !== "DELETE") {
+      return res.status(400).json({ ok: false, error: 'Send { "confirm": "DELETE" } to confirm cleanup' });
+    }
+
+    let deletedLeads = 0;
+    let deletedDb = 0;
+
+    if (deleteAll) {
+      const leads = readLeads();
+      deletedLeads = leads.length;
+      writeLeads([]);
+      const dbResult = await pgdb.query("DELETE FROM jobs RETURNING id");
+      deletedDb = dbResult.rows.length;
+    } else {
+      // Remove only jobs that look like test entries (no real customer name, or "test" in email)
+      const leads = readLeads();
+      const kept = leads.filter((l) => {
+        const name = (l.customerName || "").toLowerCase();
+        const email = (l.customerEmail || "").toLowerCase();
+        return !(name.includes("test") || email.includes("test") || email.includes("dev") || !l.customerName);
+      });
+      deletedLeads = leads.length - kept.length;
+      writeLeads(kept);
+
+      const dbResult = await pgdb.query(`
+        DELETE FROM jobs
+        WHERE customer_user_id IS NULL
+           OR EXISTS (
+             SELECT 1 FROM users u
+             WHERE u.id = jobs.customer_user_id
+               AND (u.email ILIKE '%test%' OR u.email ILIKE '%dev%')
+           )
+        RETURNING id
+      `);
+      deletedDb = dbResult.rows.length;
+    }
+
+    res.json({ ok: true, deletedLeads, deletedDb, total: deletedLeads + deletedDb });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+/* ── ADMIN USERS MANAGEMENT ── */
+
+app.get("/api/admin/users", requireAuth, requireRole("admin"), async (req, res) => {
+  try {
+    await ensureAdminActiveColumns();
+    const where = [];
+    const params = [];
+    const role = String(req.query.role || "").trim();
+    const active = String(req.query.active || "").trim();
+    const search = String(req.query.search || "").trim();
+    if (role && VALID_USER_ROLES.has(role)) {
+      params.push(role);
+      where.push(`u.role = $${params.length}`);
+    }
+    if (active === "true" || active === "false") {
+      params.push(active === "true");
+      where.push(`COALESCE(u.active, true) = $${params.length}`);
+    }
+    if (search) {
+      params.push(`%${search}%`);
+      where.push(`(
+        u.email ILIKE $${params.length}
+        OR u.phone ILIKE $${params.length}
+        OR u.full_name ILIKE $${params.length}
+        OR u.first_name ILIKE $${params.length}
+        OR u.last_name ILIKE $${params.length}
+      )`);
+    }
+    const result = await pgdb.query(`
+      SELECT
+        u.id, u.email, u.full_name, u.first_name, u.last_name, u.phone, u.role, u.created_at,
+        u.deleted_at, u.deleted_by,
+        COALESCE(u.active, true) AS active,
+        COUNT(j.id)::int AS job_count
+      FROM users u
+      LEFT JOIN jobs j ON j.customer_user_id = u.id
+      WHERE u.deleted_at IS NULL
+        ${where.length ? `AND ${where.join(" AND ")}` : ""}
+      GROUP BY u.id
+      ORDER BY u.created_at DESC
+      LIMIT 500
+    `, params);
+    const users = result.rows.map((row) => ({ ...row, ...userNameFields(row), active: row.active !== false }));
+    res.json({ ok: true, users, total: users.length });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.get("/api/admin/users/:id", requireAuth, requireRole("admin"), async (req, res) => {
+  try {
+    await ensureAdminActiveColumns();
+    const result = await pgdb.query(
+      `
+      SELECT
+        u.id, u.email, u.full_name, u.first_name, u.last_name, u.phone, u.role, u.created_at,
+        u.deleted_at, u.deleted_by,
+        COALESCE(u.active, true) AS active,
+        COUNT(j.id)::int AS job_count
+      FROM users u
+      LEFT JOIN jobs j ON j.customer_user_id = u.id
+      WHERE u.id = $1
+        AND u.deleted_at IS NULL
+      GROUP BY u.id
+      LIMIT 1
+      `,
+      [req.params.id]
+    );
+    if (!result.rows.length) return res.status(404).json({ ok: false, error: "User not found" });
+    const user = { ...result.rows[0], ...userNameFields(result.rows[0]), active: result.rows[0].active !== false };
+    res.json({ ok: true, user });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.patch("/api/admin/users/:id", requireAuth, requireRole("admin"), async (req, res) => {
+  try {
+    await ensureAdminActiveColumns();
+    const body = req.body || {};
+    const existing = await pgdb.query("SELECT * FROM users WHERE id = $1 AND deleted_at IS NULL LIMIT 1", [req.params.id]);
+    if (!existing.rows.length) return res.status(404).json({ ok: false, error: "User not found" });
+
+    const firstName = body.first_name ?? body.firstName ?? existing.rows[0].first_name ?? "";
+    const lastName = body.last_name ?? body.lastName ?? existing.rows[0].last_name ?? "";
+    const fullName = composeFullName(firstName, lastName, existing.rows[0].full_name);
+    const role = body.role == null ? existing.rows[0].role : String(body.role || "").trim();
+    const active = body.active == null ? existing.rows[0].active !== false : Boolean(body.active);
+    if (!VALID_USER_ROLES.has(role)) return res.status(400).json({ ok: false, error: "Invalid role" });
+    if (String(req.user.id) === String(req.params.id) && (role !== "admin" || active === false)) {
+      return res.status(400).json({ ok: false, error: "Admins cannot demote or deactivate their own current session user" });
+    }
+
+    const result = await pgdb.query(
+      `
+      UPDATE users
+      SET
+        first_name = $2,
+        last_name = $3,
+        full_name = $4,
+        email = $5,
+        phone = $6,
+        role = $7,
+        active = $8
+      WHERE id = $1
+      RETURNING id, email, full_name, first_name, last_name, phone, role, active, created_at
+      `,
+      [
+        req.params.id,
+        String(firstName || "").trim(),
+        String(lastName || "").trim(),
+        fullName,
+        String(body.email ?? existing.rows[0].email ?? "").toLowerCase().trim(),
+        String(body.phone ?? existing.rows[0].phone ?? "").trim(),
+        role,
+        active
+      ]
+    );
+    res.json({ ok: true, user: { ...result.rows[0], ...userNameFields(result.rows[0]) } });
+  } catch (err) {
+    if (err.code === "23505") return res.status(400).json({ ok: false, error: "Email already exists" });
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.delete("/api/admin/users/:id", requireAuth, requireRole("admin"), async (req, res) => {
+  try {
+    await ensureAdminActiveColumns();
+    const userId = req.params.id;
+
+    if (String(req.user.id) === String(userId)) {
+      return res.status(400).json({ ok: false, error: "Admins cannot delete their own current session user" });
+    }
+
+    const existing = await pgdb.query(
+      "SELECT id, email, full_name, first_name, last_name, role FROM users WHERE id = $1 AND deleted_at IS NULL LIMIT 1",
+      [userId]
+    );
+    if (!existing.rows.length) return res.status(404).json({ ok: false, error: "User not found" });
+
+    const refs = await pgdb.query(
+      `
+      SELECT
+        COUNT(*) FILTER (WHERE j.customer_user_id = $1)::int AS customer_job_count,
+        COUNT(*) FILTER (WHERE j.provider_user_id = $1)::int AS provider_user_job_count,
+        COUNT(*) FILTER (WHERE pp.user_id IS NOT NULL)::int AS provider_profile_job_count
+      FROM jobs j
+      LEFT JOIN provider_profiles pp ON pp.user_id = j.provider_user_id AND pp.user_id = $1
+      `,
+      [userId]
+    );
+    const relatedJobs = refs.rows[0] || {};
+
+    const blockedJobs = await adminPaidCompletedJobBlocks([userId]);
+    const blocked = blockedJobs.get(String(userId));
+    if (blocked) {
+      return res.status(409).json({
+        ok: false,
+        error: "User has paid or completed jobs and cannot be deleted.",
+        blocked: blocked.jobIds,
+        blockedCount: blocked.jobCount
+      });
+    }
+
+    const result = await softDeleteAdminUser(userId, req.user);
+
+    res.json({
+      ok: true,
+      mode: "deactivated",
+      user: result ? { ...result, ...userNameFields(result) } : null,
+      relatedJobs
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.post("/api/admin/users/delete-selected", requireAuth, requireRole("admin"), async (req, res) => {
+  try {
+    await ensureAdminActiveColumns();
+    const { ids, confirm } = req.body || {};
+    if (confirm !== "DELETE_SELECTED_USERS") {
+      return res.status(400).json({ ok: false, error: 'Send confirm:"DELETE_SELECTED_USERS" to delete selected users' });
+    }
+
+    const selectedIds = normalizeAdminSelectedIds(ids);
+    if (!selectedIds.length) {
+      return res.status(400).json({ ok: false, error: "ids must be a non-empty array" });
+    }
+
+    const blocked = [];
+    const currentAdminId = String(req.user.id || "");
+    const paidCompletedBlocks = await adminPaidCompletedJobBlocks(selectedIds);
+    selectedIds.forEach((id) => {
+      if (currentAdminId && String(id) === currentAdminId) {
+        blocked.push({ id, reason: "current_admin", message: "Admins cannot delete their own current session user." });
+      } else if (paidCompletedBlocks.has(String(id))) {
+        const item = paidCompletedBlocks.get(String(id));
+        blocked.push({
+          id,
+          reason: "paid_or_completed_jobs",
+          message: "User has paid or completed jobs and cannot be deleted.",
+          jobCount: item.jobCount,
+          jobIds: item.jobIds
+        });
+      }
+    });
+
+    const blockedIds = new Set(blocked.map((item) => String(item.id)));
+    const safeIds = selectedIds.filter((id) => !blockedIds.has(String(id)));
+    let deletedCount = 0;
+    if (safeIds.length) {
+      const result = await pgdb.query(
+        `
+        UPDATE users
+        SET active = false,
+            deleted_at = COALESCE(deleted_at, NOW()),
+            deleted_by = $2
+        WHERE id = ANY($1::text[])
+          AND deleted_at IS NULL
+        RETURNING id
+        `,
+        [safeIds, String(req.user.id || req.user.email || "admin")]
+      );
+      deletedCount = result.rows.length;
+      await pgdb.query("UPDATE provider_profiles SET active = false WHERE user_id = ANY($1::text[])", [safeIds]).catch(() => {});
+      await pgdb.query("DELETE FROM sessions WHERE user_id = ANY($1::text[])", [safeIds]).catch(() => {});
+    }
+
+    res.json({
+      ok: true,
+      deletedCount,
+      blockedCount: blocked.length,
+      blocked
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.get("/api/admin/users/:id/jobs", requireAuth, requireRole("admin"), async (req, res) => {
+  try {
+    const result = await pgdb.query("SELECT * FROM jobs WHERE customer_user_id = $1 ORDER BY created_at DESC", [req.params.id]);
+    const payments = readJsonArray(PAYMENTS_FILE);
+    res.json({ ok: true, jobs: result.rows.map((row) => adminJobFromRow(row, payments)), total: result.rows.length });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.post("/api/admin/users/:id/attach-matching-jobs", requireAuth, requireRole("admin"), async (req, res) => {
+  try {
+    if (req.body?.confirm !== true) {
+      return res.status(400).json({ ok: false, error: "confirm:true is required before attaching matching orphan jobs" });
+    }
+    await ensureUsersPhoneColumn();
+    const userResult = await pgdb.query("SELECT id, email, phone FROM users WHERE id = $1 LIMIT 1", [req.params.id]);
+    if (!userResult.rows.length) return res.status(404).json({ ok: false, error: "User not found" });
+    const user = userResult.rows[0];
+    const email = String(user.email || "").toLowerCase().trim();
+    const phone = phoneDigits(user.phone || "");
+    const payments = readJsonArray(PAYMENTS_FILE);
+    const jobIds = payments
+      .filter((payment) => {
+        const paymentEmail = String(payment.customer?.email || "").toLowerCase().trim();
+        const paymentPhone = phoneDigits(payment.customer?.phone || "");
+        return payment.job_id && ((email && paymentEmail === email) || (phone && paymentPhone === phone));
+      })
+      .map((payment) => payment.job_id);
+    if (!jobIds.length) return res.json({ ok: true, attached: 0, jobIds: [] });
+    const result = await pgdb.query(
+      "UPDATE jobs SET customer_user_id = $1 WHERE customer_user_id IS NULL AND id = ANY($2::text[]) RETURNING id",
+      [req.params.id, jobIds]
+    );
+    res.json({ ok: true, attached: result.rows.length, jobIds: result.rows.map((row) => row.id) });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+/* ── ADMIN PROVIDERS MANAGEMENT ── */
+
+app.get("/api/admin/providers", requireAuth, requireRole("admin"), async (req, res) => {
+  try {
+    await ensureAdminActiveColumns();
+    const search = String(req.query.search || "").trim();
+    const active = String(req.query.active || "").trim();
+    const where = [];
+    const params = [];
+    if (active === "true" || active === "false") {
+      params.push(active === "true");
+      where.push(`COALESCE(pp.active, true) = $${params.length}`);
+    }
+    if (search) {
+      params.push(`%${search}%`);
+      where.push(`(
+        pp.business_name ILIKE $${params.length}
+        OR pp.phone ILIKE $${params.length}
+        OR u.email ILIKE $${params.length}
+        OR u.phone ILIKE $${params.length}
+        OR u.full_name ILIKE $${params.length}
+      )`);
+    }
+    const result = await pgdb.query(`
+      SELECT
+        pp.id, pp.user_id, pp.business_name, pp.phone,
+        u.email, u.phone AS user_phone, u.full_name AS owner_name, u.first_name, u.last_name,
+        COALESCE(pp.active, true) AS active,
+        pp.created_at,
+        COUNT(j.id)::int AS job_count,
+        COUNT(j.id) FILTER (WHERE j.status IN ('assigned','scheduled','in_progress','paid','open'))::int AS open_job_count,
+        COUNT(j.id) FILTER (WHERE j.status = 'completed')::int AS completed_job_count
+      FROM provider_profiles pp
+      JOIN users u ON u.id = pp.user_id
+      LEFT JOIN jobs j ON j.provider_user_id = pp.user_id
+      ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+      GROUP BY pp.id, u.email, u.phone, u.full_name, u.first_name, u.last_name
+      ORDER BY pp.created_at DESC
+      LIMIT 500
+    `, params);
+    const providers = result.rows.map((row) => ({ ...row, ...userNameFields(row), phone: row.phone || row.user_phone || "" }));
+    res.json({ ok: true, providers, total: providers.length });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.patch("/api/admin/providers/:id", requireAuth, requireRole("admin"), async (req, res) => {
+  try {
+    await ensureAdminActiveColumns();
+    const { active } = req.body || {};
+    if (active === undefined) {
+      return res.status(400).json({ ok: false, error: 'Provide { "active": true } or { "active": false }' });
+    }
+
+    const result = await pgdb.query(
+      "UPDATE provider_profiles SET active = $2 WHERE id = $1 RETURNING id, business_name, active",
+      [req.params.id, Boolean(active)]
+    );
+    if (!result.rows.length) {
+      return res.status(404).json({ ok: false, error: "Provider not found" });
+    }
+    res.json({ ok: true, provider: result.rows[0] });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.get("/api/admin/providers/:id/jobs", requireAuth, requireRole("admin"), async (req, res) => {
+  try {
+    const provider = await pgdb.query("SELECT id, user_id FROM provider_profiles WHERE id = $1 OR user_id = $1 LIMIT 1", [req.params.id]);
+    if (!provider.rows.length) return res.status(404).json({ ok: false, error: "Provider not found" });
+    const result = await pgdb.query(
+      "SELECT * FROM jobs WHERE provider_user_id = $1 ORDER BY created_at DESC",
+      [provider.rows[0].user_id]
+    );
+    const payments = readJsonArray(PAYMENTS_FILE);
+    res.json({ ok: true, jobs: result.rows.map((row) => adminJobFromRow(row, payments)), total: result.rows.length });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+/* ==================== END ADMIN MANAGEMENT ==================== */
+
 /* -------------------- CUSTOMER BOOKINGS / RECEIPTS -------------------- */
 
 app.get("/api/customer/bookings", requireAuth, async (req, res) => {
@@ -6034,7 +7571,7 @@ app.get("/api/customer/bookings", requireAuth, async (req, res) => {
       const payment = payments.find((p) => p.job_id === j.id);
       return { ...j, paymentAmount: payment?.amount || null, paymentStatus: payment?.status || null, paidAt: payment?.paid_at || null };
     });
-    res.json({ ok: true, jobs: jobs.map(sanitizeJobForPublic) });
+    res.json({ ok: true, jobs: jobs.map(sanitizeJobForOwner) });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
@@ -6197,10 +7734,39 @@ app.patch("/api/provider/jobs/:id/status", requireAuth, requireRole("provider"),
   }
 });
 
+/* -------------------- PARTIAL COMPOSITION -------------------- */
+
+const PARTIALS_DIR = path.join(__dirname, "..", "public", "partials");
+const INDEX_HTML_PATH = path.join(__dirname, "..", "public", "index.html");
+
+const partialCache = new Map();
+
+function loadPartial(name) {
+  if (partialCache.has(name)) return partialCache.get(name);
+  const filePath = path.join(PARTIALS_DIR, `${name}.html`);
+  const content = readFileSync(filePath, "utf8");
+  partialCache.set(name, content);
+  return content;
+}
+
+function composeHtml() {
+  let html = readFileSync(INDEX_HTML_PATH, "utf8");
+  html = html.replace(/<!--\s*PARTIAL:(\S+?)\s*-->/g, (_match, name) => {
+    try {
+      return loadPartial(name);
+    } catch {
+      console.warn(`[Partials] Could not load partial: ${name}`);
+      return "";
+    }
+  });
+  return html;
+}
+
 /* -------------------- SPA FALLBACK -------------------- */
 
 app.get("*", (_req, res) => {
-  res.sendFile(path.join(__dirname, "..", "public", "index.html"));
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.send(composeHtml());
 });
 
 app.listen(PORT, () => {
@@ -6208,4 +7774,5 @@ app.listen(PORT, () => {
   ensurePricingSchema().catch((err) => console.warn('[Startup] pricing schema ensure failed:', err.message));
   ensureJobsScopeSnapshotColumn().catch((err) => console.warn('[Startup] scope_snapshot column ensure failed:', err.message));
   ensurePaymentColumns().catch((err) => console.warn('[Startup] payment columns ensure failed:', err.message));
+  ensureAdminActiveColumns().catch((err) => console.warn('[Startup] admin active columns ensure failed:', err.message));
 });

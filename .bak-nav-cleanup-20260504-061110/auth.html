@@ -1,0 +1,68 @@
+<!-- Auth-gate modal: shown when a non-logged-in user tries to book a service -->
+<div id="authGateModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="authGateTitle" style="display:none">
+  <div class="modal-box">
+    <h3 id="authGateTitle">Create account to book this service</h3>
+    <p style="color:var(--muted);margin:0">Sign in or create a free account to book your lawn service and track job status.</p>
+    <div class="tab-row">
+      <button class="tab-btn active" id="gateLoginTab" type="button" onclick="showGateTab('login')">Login</button>
+      <button class="tab-btn" id="gateRegisterTab" type="button" onclick="showGateTab('register')">Sign Up</button>
+    </div>
+    <form id="gateLoginForm" class="stack" style="gap:12px">
+      <input name="email" type="email" placeholder="Email" autocomplete="email" required />
+      <input name="password" type="password" placeholder="Password" autocomplete="current-password" required />
+      <button class="btn primary" type="submit">Login &amp; Book</button>
+    </form>
+    <form id="gateRegisterForm" class="stack hidden" style="gap:12px">
+      <input name="fullName" placeholder="Full Name" required />
+      <input name="email" type="email" placeholder="Email" autocomplete="email" required />
+      <input name="phone" type="tel" placeholder="Phone" autocomplete="tel" />
+      <input name="password" type="password" placeholder="Password" autocomplete="new-password" required />
+      <button class="btn primary" type="submit">Create Account &amp; Book</button>
+    </form>
+    <button class="btn ghost" type="button" id="closeAuthGateBtn" style="width:100%">Cancel</button>
+  </div>
+</div>
+
+<div id="authPanel" class="auth-panel hidden">
+  <div class="auth-panel-head">
+    <span id="authPanelAvatar" class="account-avatar" aria-hidden="true">
+      <img data-avatar-img alt="" hidden />
+      <span data-avatar-initials>G</span>
+    </span>
+    <div>
+      <h3>Account</h3>
+      <div id="sessionStatus" class="session-chip">Guest mode</div>
+    </div>
+  </div>
+
+  <div id="authSignedInNotice">
+    <p class="meta" style="margin:0 0 10px">You are signed in. Use the button below to switch accounts.</p>
+    <button type="button" id="authPanelSignOutBtn" class="btn ghost" style="width:100%">Sign Out</button>
+  </div>
+
+  <div class="tabs">
+    <button onclick="showAuthTab('login')">Login</button>
+    <button onclick="showAuthTab('register')">Sign Up</button>
+  </div>
+
+  <a class="facebook-login-link" href="/api/auth/facebook?source=account">Continue with Facebook</a>
+
+  <form id="loginForm" class="auth-tab">
+    <input name="email" type="email" placeholder="Email" autocomplete="email" required />
+    <input name="password" type="password" placeholder="Password" autocomplete="current-password" required />
+    <button type="submit">Login</button>
+  </form>
+
+  <form id="registerForm" class="auth-tab hidden">
+    <input name="fullName" placeholder="Full Name" autocomplete="name" required />
+    <input name="email" type="email" placeholder="Email" autocomplete="email" required />
+    <input name="password" type="password" placeholder="Password" autocomplete="new-password" required />
+
+    <select name="role">
+      <option value="customer">Customer</option>
+      <option value="provider">Provider</option>
+    </select>
+
+    <button type="submit">Create Account</button>
+  </form>
+</div>

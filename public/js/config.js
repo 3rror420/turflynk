@@ -4,6 +4,17 @@
 const QUOTE_DRAFT_KEY = 'turflynk.quoteDraft.v5';
 const GOOGLE_LOGIN_ENABLED = false;
 
+function trackMetaEvent(eventName, params = {}) {
+  try {
+    if (!eventName || !window.fbq) return;
+    window.fbq('track', eventName, params || {});
+  } catch (error) {
+    console.warn('[Meta Pixel] event tracking failed', error);
+  }
+}
+
+window.trackMetaEvent = trackMetaEvent;
+
 const EPSG4326 = 'EPSG:4326';
 const EPSG26915 = '+proj=utm +zone=15 +datum=NAD83 +units=m +no_defs';
 const PARCEL_FIT_OPTIONS = { padding: [40, 40], maxZoom: 18 };
@@ -32,7 +43,7 @@ const SERVICE_CATALOG = [
     title: 'Instant Lawn Mowing',
     badge: 'Instant price',
     quoteType: 'instant_mow',
-    description: 'Standard mowing, normal edge trimming, and blowing clippings from hard surfaces.',
+    description: 'Standard mowing, basic trimming around normal edges, and blowing clippings from hard surfaces.',
   },
   {
     id: 'recurring_lawn_care',

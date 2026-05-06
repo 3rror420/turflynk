@@ -1,3 +1,6 @@
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import io
 import json
 import math
@@ -49,6 +52,8 @@ NAIP_PIXEL_SIZE_METERS = 0.6
 class DetectMowableRequest(BaseModel):
     parcelGeoJson: Dict[str, Any]
     parcelFeature: Optional[Dict[str, Any]] = None
+    detectionPreset: Optional[str] = None
+    detection_preset: Optional[str] = None
     center: Optional[Dict[str, float]] = None
     lat: Optional[float] = None
     lng: Optional[float] = None
@@ -57,6 +62,7 @@ class DetectMowableRequest(BaseModel):
     imageSource: Optional[Dict[str, Any]] = None
     address: Optional[str] = None
     debugArtifacts: bool = False
+    constraintGeoJson: Optional[Dict[str, Any]] = None
 
 
 def empty_feature_collection() -> Dict[str, Any]:
@@ -78,6 +84,21 @@ def optional_env_float(name: str) -> Optional[float]:
     return float(value)
 
 
+def detection_preset_for_area(parcel_area_sqft: float) -> str:
+    if parcel_area_sqft > 0 and parcel_area_sqft < 12000:
+        return "small_residential"
+    if parcel_area_sqft > 0 and parcel_area_sqft < 43560:
+        return "medium_residential"
+    return "large_rural"
+
+
+def normalize_detection_preset(value: Optional[str], parcel_area_sqft: float) -> str:
+    preset = str(value or "").strip()
+    if preset in {"small_residential", "medium_residential", "large_rural"}:
+        return preset
+    return detection_preset_for_area(parcel_area_sqft)
+
+
 def env_float(names: Tuple[str, ...], default: float) -> float:
     for name in names:
         value = os.environ.get(name)
@@ -87,6 +108,28 @@ def env_float(names: Tuple[str, ...], default: float) -> float:
 
 
 def log_naip_diagnostics(diagnostic: Dict[str, Any], reject_reason: str = "") -> None:
+    thresholds = diagnostic.get("thresholds") if isinstance(diagnostic.get("thresholds"), dict) else {}
+    thresholds_summary = {
+        "detectionMode": thresholds.get("detectionMode"),
+        "maxDetectedRatio": thresholds.get("maxDetectedRatio"),
+        "hardDetectedRatio": thresholds.get("hardDetectedRatio"),
+        "strongExclusionRatio": thresholds.get("strongExclusionRatio"),
+        "minComponentAreaSqft": thresholds.get("minComponentAreaSqft"),
+        "softFallback": thresholds.get("softFallback"),
+    } if thresholds else None
+    print(
+        "[Vision] ai_detect_summary "
+        f"preset={vision_log_value(diagnostic.get('detectionPreset'))} "
+        f"mode={vision_log_value(diagnostic.get('detectionMode') or diagnostic.get('detection_mode') or diagnostic.get('mode'))} "
+        f"areaSqft={vision_log_value(diagnostic.get('finalSelectedAreaSqft') or diagnostic.get('detectedAreaSqft'))} "
+        f"hardscapeExcludedRatio={vision_log_value(diagnostic.get('hardscapeExcludedRatio'))} "
+        f"features={vision_log_value(diagnostic.get('polygonCount'))} "
+        f"reason={reject_reason or diagnostic.get('reason') or 'none'}",
+        flush=True,
+    )
+    print(f"[Vision] detectionPreset={vision_log_value(diagnostic.get('detectionPreset'))}", flush=True)
+    if thresholds_summary:
+        print(f"[Vision] thresholdsSummary={vision_log_value(thresholds_summary)}", flush=True)
     print(f"[Vision] NAIP bbox={vision_log_value(diagnostic.get('bbox'))}", flush=True)
     print(f"[Vision] NAIP status={vision_log_value(diagnostic.get('status'))}", flush=True)
     print(f"[Vision] NAIP bytes={vision_log_value(diagnostic.get('bytes'))}", flush=True)
@@ -471,6 +514,7 @@ def geospatial_args(
     output_path: Path,
     *,
     debug_dir: Optional[Path] = None,
+    detection_preset: str = "large_rural",
 ) -> SimpleNamespace:
     return SimpleNamespace(
         imagery=str(imagery_path),
@@ -478,6 +522,7 @@ def geospatial_args(
         output=str(output_path),
         mask_output="",
         debug_dir=str(debug_dir or ""),
+        detection_preset=detection_preset,
         sam_mask="",
         combine="intersect",
         parcel_crs="EPSG:4326",
@@ -518,6 +563,12 @@ def is_effectively_full_parcel(detected_geom: BaseGeometry, parcel_geom: BaseGeo
 
 def naip_mode_from_geospatial(mode: str) -> str:
     value = str(mode or "").lower()
+    if "hardscape_exclusion_then_remainder" in value:
+        return "hardscape_exclusion_then_remainder"
+    if "hybrid_hardscape_light_vegetation_sanity" in value:
+        return "hybrid_hardscape_light_vegetation_sanity"
+    if "vegetation_ndvi" in value:
+        return "vegetation_ndvi"
     if "manmade_exclusion_then_vegetation" in value:
         return "manmade_exclusion_then_vegetation"
     return "naip_ndvi" if "ndvi" in value else "naip_rgb_basic"
@@ -538,9 +589,12 @@ def naip_diagnostics(
     detected_ratio = detected_area_sqft / parcel_area_sqft if parcel_area_sqft > 0 else 0
     diagnostic = {
         "reason": reason,
+        "detectionPreset": result.get("detectionPreset") or (extra or {}).get("detectionPreset"),
+        "thresholds": result.get("thresholds") or result.get("thresholdsUsed") or (extra or {}).get("thresholds"),
         "detectedRatio": detected_ratio,
         "confidence": confidence,
         "confidenceScore": result.get("confidenceScore", confidence),
+        "detectionMode": result.get("detectionMode") or result.get("detection_mode"),
         "detection_mode": result.get("detection_mode") or result.get("detectionMode"),
         "mode": mode,
         "bbox": (image_meta or {}).get("bbox"),
@@ -571,6 +625,11 @@ def naip_diagnostics(
         "vegetationCandidatePixels": result.get("vegetationCandidatePixels", 0),
         "validPixels": result.get("validPixels", 0),
         "hardscapeExcludedAreaSqft": result.get("hardscapeExcludedAreaSqft", 0),
+        "hardscapeExcludedRatio": result.get("hardscapeExcludedRatio", result.get("hardscapeExclusionRatio", 0)),
+        "hardscapeExclusionRatio": result.get("hardscapeExclusionRatio", result.get("hardscapeExcludedRatio", 0)),
+        "remainderAreaSqft": result.get("remainderAreaSqft", result.get("finalSelectedAreaSqft", round(detected_area_sqft, 2))),
+        "vegetationFilterApplied": result.get("vegetationFilterApplied"),
+        "retryReason": result.get("retryReason", ""),
         "vegetationCandidateAreaSqft": result.get("vegetationCandidateAreaSqft", 0),
         "finalSelectedAreaSqft": result.get("finalSelectedAreaSqft", round(detected_area_sqft, 2)),
         "hardscapeRules": result.get("hardscapeRules", {}),
@@ -634,13 +693,45 @@ def run_naip_mowable_detection(req: DetectMowableRequest) -> Dict[str, Any]:
     if parcel_geom.is_empty:
         return empty_naip_response("empty parcel geometry")
 
-    parcel_area_sqft = area_sqft(parcel_geom)
-    parcel_bounds = list(parcel_geom.bounds)
+    # If a constraint polygon was provided, intersect it with the parcel so detection
+    # runs only inside the user-selected area. Fall back to full parcel if invalid.
+    detection_geom = parcel_geom
+    print(f"[VISION] constraint received: {req.constraintGeoJson is not None}", flush=True)
+    print(f"[VISION] parcel_geom area: {parcel_geom.area}", flush=True)
+    if req.constraintGeoJson:
+        try:
+            constraint_geom = geometry_from_geojson(req.constraintGeoJson)
+            # Always buffer(0) both geometries before intersection to fix topology
+            # issues that cause silent empty results even when geometries visually overlap.
+            constraint_geom = constraint_geom.buffer(0)
+            parcel_geom_clean = parcel_geom.buffer(0)
+            if not constraint_geom.is_empty:
+                clipped = parcel_geom_clean.intersection(constraint_geom)
+                if not clipped.is_valid:
+                    clipped = clipped.buffer(0)
+                if clipped.is_empty:
+                    print("[VISION] constraint failed → falling back to parcel", flush=True)
+                elif area_sqft(clipped) > 10:
+                    detection_geom = clipped
+                    print(f"[Vision] constrained-selection area_sqft={round(area_sqft(detection_geom), 1)}", flush=True)
+                else:
+                    print("[VISION] constraint failed → falling back to parcel", flush=True)
+                    print(f"[Vision] constraint yielded empty intersection, falling back to full parcel", flush=True)
+            else:
+                print("[VISION] constraint is empty geometry, falling back to parcel", flush=True)
+        except Exception as exc:
+            print(f"[Vision] constraint parse failed, falling back to full parcel: {exc}", flush=True)
+    print(f"[VISION] detection_geom area: {detection_geom.area}", flush=True)
+
+    parcel_area_sqft = area_sqft(detection_geom)
+    requested_detection_preset = req.detectionPreset or req.detection_preset
+    detection_preset = normalize_detection_preset(requested_detection_preset, parcel_area_sqft)
+    parcel_bounds = list(detection_geom.bounds)
     is_large_parcel = parcel_area_sqft > 43560.0
-    image_bounds = padded_bbox(parcel_geom)
+    image_bounds = padded_bbox(parcel_geom)  # always fetch imagery for full parcel bounds
     requested_w, requested_h = bbox_image_size(image_bounds)
     pixel_size_m = float(os.environ.get("VISION_NAIP_PIXEL_SIZE_METERS") or NAIP_PIXEL_SIZE_METERS)
-    print(f"[Vision] parcel_area_sqft={round(parcel_area_sqft, 1)} is_large_parcel={is_large_parcel}", flush=True)
+    print(f"[Vision] parcel_area_sqft={round(parcel_area_sqft, 1)} detectionPreset={detection_preset} is_large_parcel={is_large_parcel}", flush=True)
     print(f"[Vision] parcel_bounds={parcel_bounds}", flush=True)
     print(f"[Vision] image_bounds={list(image_bounds)} requested_size={requested_w}x{requested_h} pixel_size_m={pixel_size_m}", flush=True)
 
@@ -659,6 +750,7 @@ def run_naip_mowable_detection(req: DetectMowableRequest) -> Dict[str, Any]:
 
     _base_diag: Dict[str, Any] = {
         "parcelAreaSqft": round(parcel_area_sqft, 2),
+        "detectionPreset": detection_preset,
         "parcelBounds": parcel_bounds,
         "imageBounds": list(image_bounds),
         "requestedImageWidth": requested_w,
@@ -673,7 +765,8 @@ def run_naip_mowable_detection(req: DetectMowableRequest) -> Dict[str, Any]:
         parcel_path = tmp_dir / "parcel.geojson"
         imagery_path = (debug_dir / "raw_naip.tif") if debug_dir else (tmp_dir / "naip.tif")
         output_path = (debug_dir / "polygon_output.geojson") if debug_dir else (tmp_dir / "mowable.geojson")
-        parcel_path.write_text(json.dumps(req.parcelGeoJson), encoding="utf-8")
+        detection_geojson = mapping(detection_geom) if detection_geom is not parcel_geom else req.parcelGeoJson
+        parcel_path.write_text(json.dumps(detection_geojson), encoding="utf-8")
         if debug_dir:
             shutil.copyfile(parcel_path, debug_dir / "parcel.geojson")
 
@@ -700,7 +793,7 @@ def run_naip_mowable_detection(req: DetectMowableRequest) -> Dict[str, Any]:
 
         try:
             result = mowable_geospatial.detect_mowable(
-                geospatial_args(parcel_path, imagery_path, output_path, debug_dir=debug_dir)
+                geospatial_args(parcel_path, imagery_path, output_path, debug_dir=debug_dir, detection_preset=detection_preset)
             )
             print(f"[Vision] detection complete features={result.get('features', 0)} confidence={result.get('confidence')} rejectReason={result.get('selectedCandidate', {}).get('rejectReason', '')}", flush=True)
         except SystemExit as exc:
@@ -775,6 +868,8 @@ def run_naip_mowable_detection(req: DetectMowableRequest) -> Dict[str, Any]:
                     "candidateScores": result.get("candidateScores", []),
                     "selectedCandidate": result.get("selectedCandidate", {}),
                     "parcelAreaSqft": round(parcel_area_sqft, 2),
+                    "detectionPreset": detection_preset,
+                    "thresholds": result.get("thresholds") or result.get("thresholdsUsed"),
                 },
             )
 
@@ -789,7 +884,7 @@ def run_naip_mowable_detection(req: DetectMowableRequest) -> Dict[str, Any]:
     confidence_score = (
         float(result_confidence_score)
         if isinstance(result_confidence_score, (int, float))
-        else confidence_for_detection(detected_geom, parcel_geom)
+        else confidence_for_detection(detected_geom, detection_geom)
     )
     confidence = str(result_confidence) if isinstance(result_confidence, str) else (
         "beta_high" if confidence_score >= 0.68 else "beta_medium" if confidence_score >= 0.42 else "beta_low"
@@ -804,7 +899,17 @@ def run_naip_mowable_detection(req: DetectMowableRequest) -> Dict[str, Any]:
         confidence=confidence,
         extra=_base_diag,
     )
-    if is_effectively_full_parcel(detected_geom, parcel_geom) and mode != "manmade_exclusion_then_vegetation":
+    hardscape_excluded_ratio = float(diagnostics.get("hardscapeExcludedRatio") or 0.0)
+    small_remainder_with_hardscape = (
+        detection_preset == "small_residential"
+        and diagnostics.get("detectionMode") == "hardscape_exclusion_then_remainder"
+        and hardscape_excluded_ratio > 0.0
+    )
+    if (
+        is_effectively_full_parcel(detected_geom, detection_geom)
+        and mode != "manmade_exclusion_then_vegetation"
+        and not small_remainder_with_hardscape
+    ):
         _base_diag["failureStage"] = "full_parcel_match"
         diagnostics["failureStage"] = "full_parcel_match"
         diagnostics["reason"] = "detected geometry matched the full parcel"
@@ -814,7 +919,14 @@ def run_naip_mowable_detection(req: DetectMowableRequest) -> Dict[str, Any]:
             diagnostic=diagnostics,
         )
 
-    diagnostics["reason"] = "no features" if not features else ""
+    selected_reject_reason = ""
+    if isinstance(result.get("selectedCandidate"), dict):
+        selected_reject_reason = str(result.get("selectedCandidate", {}).get("rejectReason") or "")
+    diagnostics["reason"] = (
+        selected_reject_reason
+        if detection_preset == "small_residential" and not features and selected_reject_reason
+        else ("no features" if not features else "")
+    )
     print(f"[Vision] final: features={len(features)} area_sqft={round(detected_area_sqft, 1)} confidence={confidence} reason={diagnostics['reason']}", flush=True)
     log_naip_diagnostics(diagnostics, diagnostics["reason"])
     area = round(detected_area_sqft, 2) if features else 0
@@ -822,7 +934,9 @@ def run_naip_mowable_detection(req: DetectMowableRequest) -> Dict[str, Any]:
         "ok": True,
         "source": "naip",
         "mode": mode,
-        "detection_mode": "manmade_exclusion_then_vegetation",
+        "detectionMode": result.get("detectionMode") or result.get("detection_mode") or mode,
+        "detection_mode": result.get("detection_mode") or result.get("detectionMode") or mode,
+        "detectionPreset": detection_preset,
         "confidence": confidence,
         "confidenceScore": confidence_score,
         "features": features,

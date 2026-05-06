@@ -35,6 +35,139 @@ DEFAULT_TEXTURE_PERCENTILE = 0.82
 MAX_COMPONENTS_TO_KEEP = 6
 SOFT_FALLBACK_RATIO = 0.02
 
+DETECTION_PRESET_THRESHOLDS: Dict[str, Dict[str, Any]] = {
+    "small_residential": {
+        "detectionMode": "hardscape_exclusion_then_remainder",
+        "ndviSweep": [0.32, 0.35, 0.38],
+        "visibleSweep": [9.0, 11.0, 13.0],
+        "brightnessSweep": [48.0, 56.0, 64.0],
+        "maxDetectedRatio": 0.80,
+        "hardDetectedRatio": 0.98,
+        "strongExclusionRatio": 0.06,
+        "minComponentAreaSqft": 120.0,
+        "maxComponents": 4,
+        "maxComponentRatio": 0.65,
+        "gsdCloseCap": 8,
+        "softFallback": False,
+        "lowConfidenceCandidate": False,
+        "hardscapeGrow": 2,
+        "hardscapeRules": {
+            "paleBrightnessMin": 128.0,
+            "paleSaturationMax": 58.0,
+            "neutralSaturationMax": 34.0,
+            "graySaturationMax": 30.0,
+            "darkShadowBrightnessMax": 42.0,
+            "whiteBrightnessMin": 184.0,
+        },
+        "vegetation": {
+            "saturationFloor": 8.0,
+            "excessGreenFloor": 6.0,
+            "greenRatioMin": 0.335,
+            "variMin": 0.025,
+            "brightnessMax": 205.0,
+            "greenSlack": 4.0,
+            "ndviDrop": 0.0,
+            "ndviSoftDrop": 0.03,
+            "ndviQuantile": 0.56,
+            "ndviCap": 0.38,
+            "townLawnDrop": 0.035,
+        },
+    },
+    "medium_residential": {
+        "detectionMode": "hybrid_hardscape_light_vegetation_sanity",
+        "ndviSweep": [0.28, 0.30, 0.33],
+        "visibleSweep": [6.0, 8.0, 10.0],
+        "brightnessSweep": [40.0, 48.0, 56.0],
+        "maxDetectedRatio": 0.75,
+        "hardDetectedRatio": 0.93,
+        "strongExclusionRatio": 0.04,
+        "minComponentAreaSqft": 100.0,
+        "maxComponents": MAX_COMPONENTS_TO_KEEP,
+        "maxComponentRatio": 0.75,
+        "gsdCloseCap": 10,
+        "softFallback": True,
+        "lowConfidenceCandidate": False,
+        "hardscapeGrow": 1,
+        "hardscapeRules": {
+            "paleBrightnessMin": 140.0,
+            "paleSaturationMax": 46.0,
+            "neutralSaturationMax": 26.0,
+            "graySaturationMax": 26.0,
+            "darkShadowBrightnessMax": 34.0,
+            "whiteBrightnessMin": 192.0,
+        },
+        "vegetation": {
+            "saturationFloor": 5.0,
+            "excessGreenFloor": 1.5,
+            "greenRatioMin": 0.32,
+            "variMin": 0.0,
+            "brightnessMax": 216.0,
+            "greenSlack": 8.0,
+            "ndviDrop": 0.04,
+            "ndviSoftDrop": 0.08,
+            "ndviQuantile": 0.50,
+            "ndviCap": 0.30,
+            "townLawnDrop": 0.055,
+        },
+    },
+    "large_rural": {
+        "detectionMode": "vegetation_ndvi",
+        "ndviSweep": DEFAULT_NDVI_SWEEP,
+        "visibleSweep": DEFAULT_VISIBLE_SWEEP,
+        "brightnessSweep": DEFAULT_BRIGHTNESS_SWEEP,
+        "maxDetectedRatio": 0.93,
+        "hardDetectedRatio": 0.97,
+        "strongExclusionRatio": 0.015,
+        "minComponentAreaSqft": 80.0,
+        "maxComponents": 12,
+        "maxComponentRatio": 0.90,
+        "gsdCloseCap": 15,
+        "softFallback": True,
+        "lowConfidenceCandidate": True,
+        "hardscapeGrow": 1,
+        "hardscapeRules": {
+            "paleBrightnessMin": 158.0,
+            "paleSaturationMax": 36.0,
+            "neutralSaturationMax": 20.0,
+            "graySaturationMax": 26.0,
+            "darkShadowBrightnessMax": 28.0,
+            "whiteBrightnessMin": 205.0,
+        },
+        "vegetation": {
+            "saturationFloor": 2.5,
+            "excessGreenFloor": -2.0,
+            "greenRatioMin": 0.31,
+            "variMin": 0.0,
+            "brightnessMax": 222.0,
+            "greenSlack": 12.0,
+            "ndviDrop": 0.08,
+            "ndviSoftDrop": 0.12,
+            "ndviQuantile": 0.48,
+            "ndviCap": 0.22,
+            "townLawnDrop": 0.06,
+        },
+    },
+}
+
+
+def detection_preset_for_area(parcel_area_sqft: float) -> str:
+    if parcel_area_sqft > 0 and parcel_area_sqft < 12000.0:
+        return "small_residential"
+    if parcel_area_sqft > 0 and parcel_area_sqft < 43560.0:
+        return "medium_residential"
+    return "large_rural"
+
+
+def normalize_detection_preset(value: Optional[str], parcel_area_sqft: float = 0.0) -> str:
+    preset = str(value or "").strip()
+    if preset in DETECTION_PRESET_THRESHOLDS:
+        return preset
+    return detection_preset_for_area(parcel_area_sqft)
+
+
+def preset_thresholds(name: str) -> Dict[str, Any]:
+    return DETECTION_PRESET_THRESHOLDS.get(name, DETECTION_PRESET_THRESHOLDS["large_rural"])
+
 
 def require_rasterio() -> Any:
     try:
@@ -219,7 +352,12 @@ def vegetation_from_bands(
     saturation_min: Optional[float],
     brightness_min: float,
     soft: bool = False,
+    detection_preset: str = "large_rural",
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
+    preset_name = normalize_detection_preset(detection_preset)
+    preset = preset_thresholds(preset_name)
+    vegetation_rules = preset["vegetation"]
+    hardscape_rules = preset["hardscapeRules"]
     valid = valid_data_mask(data)
     red = np.asarray(data[band_lookup[red_band]].filled(0), dtype=np.float32)
     green = np.asarray(data[band_lookup[green_band]].filled(0), dtype=np.float32)
@@ -231,8 +369,9 @@ def vegetation_from_bands(
     saturation = max_rgb - min_rgb
     excess_green = 2.0 * green - red - blue
     base_saturation_min = float(saturation_min) if saturation_min is not None else max(0.0, float(visible_threshold))
-    effective_saturation_min = max(2.5, base_saturation_min * (0.5 if soft else 0.75))
-    green_balanced = (green >= red - 12.0) & (green >= blue - 10.0)
+    effective_saturation_min = max(float(vegetation_rules["saturationFloor"]), base_saturation_min * (0.5 if soft else 0.75))
+    green_slack = float(vegetation_rules["greenSlack"]) + (4.0 if soft and preset_name != "small_residential" else 0.0)
+    green_balanced = (green >= red - green_slack) & (green >= blue - green_slack)
     greenish_valid = valid & green_balanced & (saturation > max(3.0, effective_saturation_min * 0.45))
     greenish_brightness = brightness[greenish_valid & np.isfinite(brightness)]
     if greenish_brightness.size:
@@ -248,18 +387,30 @@ def vegetation_from_bands(
     abs_gb = np.abs(green - blue)
     vari = ratio_index(green - red, green + red - blue)
     green_ratio = ratio_index(green, red + green + blue)
-    pale_hard_surface = (brightness > 158.0) & (saturation < 36.0)
+    pale_hard_surface = (brightness > float(hardscape_rules["paleBrightnessMin"])) & (saturation < float(hardscape_rules["paleSaturationMax"]))
     neutral_hard_surface = (
         (brightness > 76.0)
         & (brightness < 235.0)
-        & (saturation < 20.0)
+        & (saturation < float(hardscape_rules["neutralSaturationMax"]))
         & (abs_rg < 20.0)
         & (abs_gb < 24.0)
+    )
+    strict_hardscape = preset_name != "large_rural"
+    white_or_light_gray = strict_hardscape & (
+        (brightness > float(hardscape_rules["whiteBrightnessMin"]))
+        & (saturation < float(hardscape_rules["paleSaturationMax"]) + 8.0)
+    )
+    gray_hard_surface = strict_hardscape & (
+        (brightness > 45.0)
+        & (brightness < 238.0)
+        & (saturation < float(hardscape_rules["graySaturationMax"]))
+        & (abs_rg < 28.0)
+        & (abs_gb < 30.0)
     )
     tan_gravel_or_roof = (
         (brightness > 88.0)
         & (brightness < 215.0)
-        & (saturation < 44.0)
+        & (saturation < max(44.0, float(hardscape_rules["paleSaturationMax"])))
         & (red >= green - 6.0)
         & (green >= blue - 2.0)
         & (excess_green < 10.0)
@@ -269,8 +420,8 @@ def vegetation_from_bands(
         | ((brightness < 42.0) & (saturation < 18.0) & (texture_map < texture_threshold * 0.45))
     )
     very_dark_hard_shadow = (
-        (brightness < (22.0 if soft else 28.0))
-        & (saturation < 22.0)
+        (brightness < (max(22.0, float(hardscape_rules["darkShadowBrightnessMax"]) - 8.0) if soft else float(hardscape_rules["darkShadowBrightnessMax"])))
+        & (saturation < max(22.0, float(hardscape_rules["graySaturationMax"])))
         & (texture_map < texture_threshold * 0.7)
     )
     textured_bare_gravel = (
@@ -283,30 +434,32 @@ def vegetation_from_bands(
     hardscape_seed = (
         pale_hard_surface
         | neutral_hard_surface
+        | white_or_light_gray
+        | gray_hard_surface
         | tan_gravel_or_roof
         | blue_pool_or_water
         | very_dark_hard_shadow
         | textured_bare_gravel
     ) & valid
     hardscape = binary_close(hardscape_seed, 1) & valid
-    hardscape = grow_mask(hardscape, 1) & valid
+    hardscape = grow_mask(hardscape, int(preset["hardscapeGrow"])) & valid
     soft_surface = valid & ~hardscape
 
-    excess_green_min = max(-6.0 if soft else -2.0, float(visible_threshold) * (0.12 if soft else 0.2))
+    excess_green_min = max(float(vegetation_rules["excessGreenFloor"]) - (4.0 if soft else 0.0), float(visible_threshold) * (0.12 if soft else 0.2))
     rgb_residential_green = (
         green_balanced
         & (excess_green > excess_green_min)
-        & (green_ratio > 0.31)
+        & (green_ratio > (float(vegetation_rules["greenRatioMin"]) - (0.01 if soft else 0.0)))
         & (brightness >= max(28.0, dynamic_brightness_min - (18.0 if soft else 14.0)))
-        & (brightness < 222.0)
+        & (brightness < (float(vegetation_rules["brightnessMax"]) + (8.0 if soft else 0.0)))
         & (saturation > max(3.0, effective_saturation_min * 0.35))
     )
     vari_green = (
-        (vari > (-0.025 if soft else 0.0))
+        (vari > (float(vegetation_rules["variMin"]) - (0.025 if soft else 0.0)))
         & green_balanced
         & (brightness > 32.0)
-        & (brightness < 220.0)
-        & (saturation > 3.0)
+        & (brightness < (float(vegetation_rules["brightnessMax"]) + (6.0 if soft else 0.0)))
+        & (saturation > max(3.0, effective_saturation_min * 0.25))
     )
     dark_tree_shadow = (
         (brightness < max(30.0, dynamic_brightness_min - 22.0))
@@ -318,13 +471,13 @@ def vegetation_from_bands(
         nir = np.asarray(data[band_lookup[nir_band]].filled(0), dtype=np.float32)
         ndvi = ratio_index(nir - red, nir + red)
         ndvi_values = ndvi[valid & np.isfinite(ndvi)]
-        requested_ndvi_threshold = max(0.12, float(ndvi_threshold) - (0.12 if soft else 0.08))
+        requested_ndvi_threshold = max(0.12, float(ndvi_threshold) - (float(vegetation_rules["ndviSoftDrop"]) if soft else float(vegetation_rules["ndviDrop"])))
         if ndvi_values.size:
-            adaptive = float(np.quantile(ndvi_values, 0.42 if soft else 0.48))
-            effective_ndvi_threshold = max(0.10, min(max(requested_ndvi_threshold, adaptive), 0.22))
+            adaptive = float(np.quantile(ndvi_values, 0.42 if soft else float(vegetation_rules["ndviQuantile"])))
+            effective_ndvi_threshold = max(0.10, min(max(requested_ndvi_threshold, adaptive), float(vegetation_rules["ndviCap"])))
         else:
             effective_ndvi_threshold = requested_ndvi_threshold
-        town_lawn_ndvi_threshold = max(0.06, effective_ndvi_threshold - (0.08 if soft else 0.06))
+        town_lawn_ndvi_threshold = max(0.06, effective_ndvi_threshold - (float(vegetation_rules["townLawnDrop"]) + (0.025 if soft else 0.0)))
         ndvi_vegetation = (ndvi >= effective_ndvi_threshold) | ((ndvi >= town_lawn_ndvi_threshold) & (rgb_residential_green | vari_green))
         mask = (ndvi_vegetation | rgb_residential_green | vari_green) & soft_surface & ~dark_tree_shadow
         accepted_texture = texture_map[mask & np.isfinite(texture_map)]
@@ -350,12 +503,8 @@ def vegetation_from_bands(
             "vegetationCandidatePixels": int(np.count_nonzero(mask)),
             "validPixels": int(np.count_nonzero(valid)),
             "detectionMode": "manmade_exclusion_then_vegetation",
-            "hardscapeRules": {
-                "paleBrightnessMin": 158.0,
-                "paleSaturationMax": 36.0,
-                "neutralSaturationMax": 20.0,
-                "darkShadowBrightnessMax": 22.0 if soft else 28.0,
-            },
+            "detectionPreset": preset_name,
+            "hardscapeRules": hardscape_rules,
             "softMask": bool(soft),
         }
 
@@ -382,12 +531,8 @@ def vegetation_from_bands(
         "vegetationCandidatePixels": int(np.count_nonzero(mask)),
         "validPixels": int(np.count_nonzero(valid)),
         "detectionMode": "manmade_exclusion_then_vegetation",
-        "hardscapeRules": {
-            "paleBrightnessMin": 158.0,
-            "paleSaturationMax": 36.0,
-            "neutralSaturationMax": 20.0,
-            "darkShadowBrightnessMax": 22.0 if soft else 28.0,
-        },
+        "detectionPreset": preset_name,
+        "hardscapeRules": hardscape_rules,
         "softMask": bool(soft),
     }
 
@@ -574,6 +719,91 @@ def analysis_context_from_bands(
         "hardSurface": hard_surface,
         "accessZone": grow_mask(hard_surface, 12),
         "hardSurfacePixels": int(np.count_nonzero(hard_surface)),
+    }
+
+
+def build_hardscape_subtract_mask(
+    data: np.ma.MaskedArray,
+    band_lookup: Dict[int, int],
+    *,
+    red_band: int,
+    green_band: int,
+    blue_band: int,
+    nir_band: Optional[int],
+    valid_pixels: np.ndarray,
+    analysis_context: Dict[str, Any],
+    detection_preset: str,
+    preset: Dict[str, Any],
+    relaxed: bool = False,
+) -> Tuple[np.ndarray, Dict[str, Any]]:
+    red = np.asarray(data[band_lookup[red_band]].filled(0), dtype=np.float32)
+    green = np.asarray(data[band_lookup[green_band]].filled(0), dtype=np.float32)
+    blue = np.asarray(data[band_lookup[blue_band]].filled(0), dtype=np.float32)
+    brightness = (red + green + blue) / 3.0
+    saturation = np.maximum.reduce([red, green, blue]) - np.minimum.reduce([red, green, blue])
+    excess_green = 2.0 * green - red - blue
+    rules = preset["hardscapeRules"]
+
+    small = detection_preset == "small_residential"
+    roof_brightness_min = (150.0 if small else 142.0) if relaxed else (125.0 if small else 135.0)
+    asphalt_brightness_min = (58.0 if small else 62.0) if relaxed else (45.0 if small else 58.0)
+    tan_brightness_min = (90.0 if small else 88.0) if relaxed else (65.0 if small else 80.0)
+    pale_sat_limit = max(36.0 if relaxed else 44.0, float(rules["paleSaturationMax"]) - (12.0 if relaxed else 0.0))
+    gray_sat_limit = max(20.0 if relaxed else 26.0, float(rules["graySaturationMax"]) - (8.0 if relaxed else 0.0))
+    tan_sat_limit = max(34.0 if relaxed else 50.0, float(rules["paleSaturationMax"]) - (10.0 if relaxed else 0.0))
+    excess_green_limit = 8.0 if relaxed and small else (16.0 if small else 10.0)
+
+    roof = (brightness > roof_brightness_min) & (saturation < pale_sat_limit) & valid_pixels
+    asphalt = (
+        (brightness > asphalt_brightness_min)
+        & (brightness < (210.0 if relaxed else 218.0))
+        & (saturation < gray_sat_limit)
+        & (np.abs(red - green) < (18.0 if relaxed else 24.0))
+        & (np.abs(green - blue) < (20.0 if relaxed else 28.0))
+    ) & valid_pixels
+    tan = (
+        (brightness > tan_brightness_min)
+        & (brightness < (214.0 if relaxed else 224.0))
+        & (saturation < tan_sat_limit)
+        & (excess_green < excess_green_limit)
+        & (red >= green - (6.0 if relaxed else 10.0))
+    ) & valid_pixels
+    extreme = np.zeros_like(valid_pixels, dtype=bool)
+    if detection_preset in {"small_residential", "medium_residential"}:
+        extreme = (
+            ((brightness > (float(rules["whiteBrightnessMin"]) + (10.0 if relaxed else 0.0))) & (saturation < pale_sat_limit + (4.0 if relaxed else 10.0)))
+            | ((brightness < (float(rules["darkShadowBrightnessMax"]) - (4.0 if relaxed else 0.0))) & (saturation < gray_sat_limit + 4.0))
+            | ((brightness > (55.0 if relaxed else 45.0)) & (brightness < (230.0 if relaxed else 238.0)) & (saturation < gray_sat_limit))
+        ) & valid_pixels
+
+    context_hard_surface = analysis_context["hardSurface"] & valid_pixels
+    if relaxed:
+        context_hard_surface = context_hard_surface & (
+            (brightness > 92.0)
+            & (brightness < 220.0)
+            & (saturation < max(18.0, gray_sat_limit))
+        )
+
+    hardscape = (roof | asphalt | tan | extreme | context_hard_surface) & valid_pixels
+    if nir_band:
+        nir = np.asarray(data[band_lookup[nir_band]].filled(0), dtype=np.float32)
+        denominator = nir + red
+        ndvi = np.zeros_like(red, dtype=np.float32)
+        np.divide(nir - red, denominator, out=ndvi, where=np.abs(denominator) > 1e-6)
+        hardscape = (
+            hardscape
+            | ((ndvi < (0.06 if relaxed else 0.10)) & (brightness > (145.0 if relaxed else 125.0)) & (saturation < (30.0 if relaxed else 38.0)) & valid_pixels)
+            | ((ndvi < (0.08 if relaxed else 0.12)) & (brightness > (66.0 if relaxed else 52.0)) & (saturation < (22.0 if relaxed else 30.0)) & valid_pixels)
+        ) & valid_pixels
+
+    hardscape = binary_close(hardscape, 1 if relaxed else 2) & valid_pixels
+    hardscape = grow_mask(hardscape, max(0, int(preset["hardscapeGrow"]) - (1 if relaxed else 0))) & valid_pixels
+    return hardscape, {
+        "relaxed": bool(relaxed),
+        "roofPixels": int(np.count_nonzero(roof)),
+        "drivewaySidewalkPatioPixels": int(np.count_nonzero(asphalt | tan | context_hard_surface)),
+        "extremeNeutralPixels": int(np.count_nonzero(extreme)),
+        "hardscapeRules": rules,
     }
 
 
@@ -981,6 +1211,9 @@ def evaluate_mask_candidate(
     context: Dict[str, Any],
     min_component_area_sqft: float,
     max_component_ratio: float,
+    max_detected_ratio: float = 0.93,
+    hard_detected_ratio: float = 0.97,
+    strong_exclusion_ratio: float = 0.015,
     mask_pixel_count_before_filtering: Optional[int] = None,
     mask_before_filter: Optional[np.ndarray] = None,
     fallback_mode: bool = False,
@@ -1039,10 +1272,16 @@ def evaluate_mask_candidate(
     hardscape_pixels = int(diagnostics.get("hardscapePixels") or 0)
     valid_pixels = int(diagnostics.get("validPixels") or mowable.size or 0)
     vegetation_candidate_pixels = int(diagnostics.get("vegetationCandidatePixels") or np.count_nonzero(mowable))
+    hardscape_exclusion_ratio = hardscape_pixels / valid_pixels if valid_pixels > 0 else 0.0
     has_exclusion_evidence = (
         bool(rejected_components)
         or hardscape_pixels > max(8, valid_pixels * 0.015)
         or (0.0 < detected_ratio < 0.92 and parcel_similarity < 0.95)
+    )
+    has_strong_exclusion_evidence = (
+        bool(rejected_components)
+        or hole_count_removed > 0
+        or hardscape_exclusion_ratio >= strong_exclusion_ratio
     )
     confidence = confidence_for_candidate(
         detected_ratio=detected_ratio,
@@ -1060,9 +1299,11 @@ def evaluate_mask_candidate(
         reject_reason = "fallback detection below mowable area floor"
     elif len(merged_geoms) > 30 and largest_component_share < 0.35 and average_component_score < 0.34:
         reject_reason = "high-fragmentation canopy-like detection"
-    elif detected_ratio > 0.97 or parcel_similarity >= 0.99:
+    elif detected_ratio > hard_detected_ratio or parcel_similarity >= 0.99:
         reject_reason = "parcel-sized geometry"
-    elif detected_ratio > 0.93 and not has_exclusion_evidence:
+    elif detected_ratio > max_detected_ratio and not has_strong_exclusion_evidence:
+        reject_reason = "near-whole-parcel detection without strong exclusion evidence"
+    elif detected_ratio > max_detected_ratio and not has_exclusion_evidence:
         reject_reason = "high ratio without exclusions"
 
     candidate = {
@@ -1101,9 +1342,15 @@ def evaluate_mask_candidate(
         "vegetationCandidatePixels": vegetation_candidate_pixels,
         "validPixels": valid_pixels,
         "hardscapeExcludedAreaSqft": round(parcel_area_sqft * (hardscape_pixels / valid_pixels), 2) if valid_pixels > 0 else 0.0,
+        "hardscapeExclusionRatio": round(float(hardscape_exclusion_ratio), 4),
+        "hardscapeExcludedRatio": round(float(hardscape_exclusion_ratio), 4),
         "vegetationCandidateAreaSqft": round(parcel_area_sqft * (vegetation_candidate_pixels / valid_pixels), 2) if valid_pixels > 0 else 0.0,
         "finalSelectedAreaSqft": round(detected_area_sqft, 2),
+        "detectionPreset": diagnostics.get("detectionPreset"),
         "detectionMode": diagnostics.get("detectionMode", "manmade_exclusion_then_vegetation"),
+        "vegetationFilterApplied": diagnostics.get("vegetationFilterApplied", True),
+        "retryReason": diagnostics.get("retryReason", ""),
+        "remainderAreaSqft": round(detected_area_sqft, 2),
         "hardscapeRules": diagnostics.get("hardscapeRules", {}),
         "textureScore": diagnostics.get("textureScore", 0.0),
         "brightnessRange": diagnostics.get("brightnessRange", [0.0, 0.0]),
@@ -1112,6 +1359,7 @@ def evaluate_mask_candidate(
         "averageComponentScore": round(float(average_component_score), 4),
         "parcelSimilarity": parcel_similarity,
         "hasExclusionEvidence": has_exclusion_evidence,
+        "hasStrongExclusionEvidence": has_strong_exclusion_evidence,
         "fallbackMode": bool(fallback_mode),
         "rejectReason": reject_reason,
         "geoms": geoms,
@@ -1300,6 +1548,26 @@ def detect_mowable(args: argparse.Namespace) -> Dict[str, Any]:
             imagery_mode = f"sam-mask-{args.combine}-{imagery_mode}"
 
         parcel_area_sqft = area_sqft(parcel_raster, raster_crs)
+        detection_preset = normalize_detection_preset(getattr(args, "detection_preset", ""), parcel_area_sqft)
+        preset = preset_thresholds(detection_preset)
+        mode = preset["detectionMode"]
+        thresholds_used = {
+            "detectionPreset": detection_preset,
+            "detectionMode": preset["detectionMode"],
+            "ndviSweep": preset["ndviSweep"],
+            "visibleSweep": preset["visibleSweep"],
+            "brightnessSweep": preset["brightnessSweep"],
+            "maxDetectedRatio": preset["maxDetectedRatio"],
+            "hardDetectedRatio": preset["hardDetectedRatio"],
+            "strongExclusionRatio": preset["strongExclusionRatio"],
+            "minComponentAreaSqft": preset["minComponentAreaSqft"],
+            "maxComponentRatio": preset["maxComponentRatio"],
+            "maxComponents": preset["maxComponents"],
+            "softFallback": preset["softFallback"],
+            "lowConfidenceCandidate": preset["lowConfidenceCandidate"],
+            "hardscapeRules": preset["hardscapeRules"],
+            "vegetation": preset["vegetation"],
+        }
         valid_pixels = valid_data_mask(data)
         analysis_context = analysis_context_from_bands(
             data,
@@ -1310,55 +1578,62 @@ def detect_mowable(args: argparse.Namespace) -> Dict[str, Any]:
             nir_band=nir_band,
             brightness_min=args.brightness_min,
         )
-        # Enhanced hardscape mask subtracted from every final mowable mask after morphological ops.
-        # Needed because binary_close and background-sieve can re-introduce house/driveway pixels.
-        _hs_r = np.asarray(data[band_lookup[args.red_band]].filled(0), dtype=np.float32)
-        _hs_g = np.asarray(data[band_lookup[args.green_band]].filled(0), dtype=np.float32)
-        _hs_b = np.asarray(data[band_lookup[args.blue_band]].filled(0), dtype=np.float32)
-        _hs_br = (_hs_r + _hs_g + _hs_b) / 3.0
-        _hs_sat = np.maximum.reduce([_hs_r, _hs_g, _hs_b]) - np.minimum.reduce([_hs_r, _hs_g, _hs_b])
-        _hs_eg = 2.0 * _hs_g - _hs_r - _hs_b
-        # Roofs/concrete: high brightness, low saturation
-        _hs_roof = (_hs_br > 135.0) & (_hs_sat < 44.0) & valid_pixels
-        # Asphalt/road/driveway: neutral gray across all brightness ranges
-        _hs_asphalt = (
-            (_hs_br > 58.0) & (_hs_br < 218.0) & (_hs_sat < 26.0)
-            & (np.abs(_hs_r - _hs_g) < 24.0) & (np.abs(_hs_g - _hs_b) < 28.0)
-        ) & valid_pixels
-        # Tan gravel/concrete/flat roofs: low excess green, red-dominant or neutral
-        _hs_tan = (
-            (_hs_br > 80.0) & (_hs_br < 224.0) & (_hs_sat < 50.0)
-            & (_hs_eg < 10.0) & (_hs_r >= _hs_g - 10.0)
-        ) & valid_pixels
-        hardscape_subtract_mask = (_hs_roof | _hs_asphalt | _hs_tan | analysis_context["hardSurface"]) & valid_pixels
-        if nir_band:
-            _hs_nir = np.asarray(data[band_lookup[nir_band]].filled(0), dtype=np.float32)
-            _hs_nd = _hs_nir + _hs_r
-            _hs_ndvi = np.zeros_like(_hs_r, dtype=np.float32)
-            np.divide(_hs_nir - _hs_r, _hs_nd, out=_hs_ndvi, where=np.abs(_hs_nd) > 1e-6)
-            hardscape_subtract_mask = (
-                hardscape_subtract_mask
-                | ((_hs_ndvi < 0.10) & (_hs_br > 125.0) & (_hs_sat < 38.0) & valid_pixels)
-                | ((_hs_ndvi < 0.12) & (_hs_br > 52.0) & (_hs_sat < 30.0) & valid_pixels)
-            ) & valid_pixels
-        hardscape_subtract_mask = binary_close(hardscape_subtract_mask, 2) & valid_pixels
-        hardscape_subtract_mask = grow_mask(hardscape_subtract_mask, 1) & valid_pixels
+        # Enhanced hardscape mask subtracted from final mowable masks. On small lots
+        # it becomes the primary signal: hardscape first, parcel remainder second.
+        hardscape_retry_reason = ""
+        hardscape_subtract_mask, hardscape_mask_details = build_hardscape_subtract_mask(
+            data,
+            band_lookup,
+            red_band=args.red_band,
+            green_band=args.green_band,
+            blue_band=args.blue_band,
+            nir_band=nir_band,
+            valid_pixels=valid_pixels,
+            analysis_context=analysis_context,
+            detection_preset=detection_preset,
+            preset=preset,
+        )
+        valid_pixel_count = int(np.count_nonzero(valid_pixels))
+        hardscape_excluded_ratio = (int(np.count_nonzero(hardscape_subtract_mask)) / valid_pixel_count) if valid_pixel_count > 0 else 0.0
+        if detection_preset == "small_residential" and hardscape_excluded_ratio > 0.70:
+            hardscape_retry_reason = "hardscapeExcludedRatio above 0.70; relaxed hardscape thresholds"
+            hardscape_subtract_mask, hardscape_mask_details = build_hardscape_subtract_mask(
+                data,
+                band_lookup,
+                red_band=args.red_band,
+                green_band=args.green_band,
+                blue_band=args.blue_band,
+                nir_band=nir_band,
+                valid_pixels=valid_pixels,
+                analysis_context=analysis_context,
+                detection_preset=detection_preset,
+                preset=preset,
+                relaxed=True,
+            )
+            hardscape_excluded_ratio = (int(np.count_nonzero(hardscape_subtract_mask)) / valid_pixel_count) if valid_pixel_count > 0 else 0.0
         _hs_total_px = int(np.count_nonzero(hardscape_subtract_mask))
-        print(f"[Vision] hardscape_subtract_mask total_px={_hs_total_px} of {int(np.count_nonzero(valid_pixels))} valid", flush=True)
-        ndvi_values = unique_float_sequence(args.ndvi_threshold, DEFAULT_NDVI_SWEEP)
-        visible_values = unique_float_sequence(args.visible_threshold, DEFAULT_VISIBLE_SWEEP)
-        brightness_values = unique_float_sequence(args.brightness_min, DEFAULT_BRIGHTNESS_SWEEP)
+        print(f"[Vision] hardscape_subtract_mask total_px={_hs_total_px} of {valid_pixel_count} valid ratio={round(hardscape_excluded_ratio, 4)} retryReason={hardscape_retry_reason or 'none'}", flush=True)
+        if detection_preset == "large_rural":
+            ndvi_values = unique_float_sequence(args.ndvi_threshold, preset["ndviSweep"])
+            visible_values = unique_float_sequence(args.visible_threshold, preset["visibleSweep"])
+            brightness_values = unique_float_sequence(args.brightness_min, preset["brightnessSweep"])
+        else:
+            ndvi_values = unique_float_sequence(None, preset["ndviSweep"])
+            visible_values = unique_float_sequence(None, preset["visibleSweep"])
+            brightness_values = unique_float_sequence(None, preset["brightnessSweep"])
         opening_iterations = max(0, int(args.opening_iterations or 0))
         selected: Optional[Dict[str, Any]] = None
         candidate_results: List[Dict[str, Any]] = []
         fallback_soft_mask_used = False
         soft_candidate: Optional[Dict[str, Any]] = None
-        is_large_parcel = parcel_area_sqft > 43560.0
+        is_large_parcel = detection_preset == "large_rural"
         min_component_area_sqft = max(
             float(args.min_area_sqft),
+            float(preset["minComponentAreaSqft"]),
             min(500.0 if is_large_parcel else 250.0, parcel_area_sqft * 0.001),
         )
-        effective_max_components = 12 if is_large_parcel else MAX_COMPONENTS_TO_KEEP
+        effective_max_components = int(preset["maxComponents"])
+        effective_max_component_ratio = min(float(args.max_component_ratio), float(preset["maxComponentRatio"]))
         # Adaptive morphological closing based on ground sample distance (GSD).
         # For 1m NAIP: ~6 px filling (~6m gaps); caps at 10 px to avoid over-merging.
         try:
@@ -1367,80 +1642,178 @@ def detect_mowable(args: argparse.Namespace) -> Dict[str, Any]:
             pixel_size_m = pixel_size_units * 111320.0 if is_geo_crs else pixel_size_units
         except Exception:
             pixel_size_m = 1.0
-        gsd_close_iters = max(6, min(15, int(round(8.0 / max(pixel_size_m, 0.3)))))
+        gsd_close_iters = max(6, min(int(preset["gsdCloseCap"]), int(round(8.0 / max(pixel_size_m, 0.3)))))
         merge_distance_m = max(5.0, min(10.0, pixel_size_m * 10.0))
-        print(f"[Vision] parcel_area_sqft={round(parcel_area_sqft, 1)} is_large_parcel={is_large_parcel} min_component_area_sqft={round(min_component_area_sqft, 1)} max_components={effective_max_components} pixel_size_m={round(pixel_size_m, 3)} gsd_close_iters={gsd_close_iters} merge_distance_m={round(merge_distance_m, 1)}", flush=True)
+        max_detected_ratio = float(preset["maxDetectedRatio"])
+        hard_detected_ratio = float(preset["hardDetectedRatio"])
+        print(f"[Vision] parcel_area_sqft={round(parcel_area_sqft, 1)} detectionPreset={detection_preset} is_large_parcel={is_large_parcel} min_component_area_sqft={round(min_component_area_sqft, 1)} max_components={effective_max_components} max_component_ratio={effective_max_component_ratio} pixel_size_m={round(pixel_size_m, 3)} gsd_close_iters={gsd_close_iters} merge_distance_m={round(merge_distance_m, 1)}", flush=True)
+        threshold_summary = {
+            "detectionMode": thresholds_used["detectionMode"],
+            "maxDetectedRatio": thresholds_used["maxDetectedRatio"],
+            "hardDetectedRatio": thresholds_used["hardDetectedRatio"],
+            "strongExclusionRatio": thresholds_used["strongExclusionRatio"],
+            "minComponentAreaSqft": thresholds_used["minComponentAreaSqft"],
+            "softFallback": thresholds_used["softFallback"],
+        }
+        print(f"[Vision] preset threshold summary={json.dumps(threshold_summary, default=str, separators=(',', ':'))}", flush=True)
 
-        for ndvi_threshold in ndvi_values:
-            for visible_threshold in visible_values:
-                for brightness_min in brightness_values:
-                    vegetation, diagnostics = vegetation_from_bands(
-                        data,
-                        band_lookup,
-                        red_band=args.red_band,
-                        green_band=args.green_band,
-                        blue_band=args.blue_band,
-                        nir_band=nir_band,
-                        ndvi_threshold=ndvi_threshold,
-                        visible_threshold=visible_threshold,
-                        saturation_min=args.saturation_min,
-                        brightness_min=brightness_min,
-                    )
+        if detection_preset == "small_residential":
+            remainder_mask = valid_pixels & ~hardscape_subtract_mask
+            hardscape_evidence_exists = _hs_total_px > max(0, min(8, valid_pixel_count))
+            remainder_diagnostics = {
+                "ndviThreshold": None,
+                "ndviUpperLimit": None,
+                "rgbFilterUsed": False,
+                "visibleThreshold": None,
+                "excessGreenMin": None,
+                "saturationMin": None,
+                "brightnessMin": None,
+                "dynamicBrightnessMin": None,
+                "brightnessRange": finite_range(analysis_context["brightness"][valid_pixels]),
+                "textureScore": 0.0,
+                "textureThreshold": round(float(analysis_context.get("textureThreshold") or 0.0), 3),
+                "canopyRejectedPixels": 0,
+                "canopyHintPixels": 0,
+                "townLawnExtensionPixels": 0,
+                "hardscapePixels": _hs_total_px,
+                "hardscapeSeedPixels": _hs_total_px,
+                "waterOrPoolPixels": 0,
+                "vegetationCandidatePixels": 0,
+                "validPixels": valid_pixel_count,
+                "hardscapeRules": hardscape_mask_details,
+                "detectionMode": preset["detectionMode"],
+                "detectionPreset": detection_preset,
+                "vegetationFilterApplied": False,
+                "retryReason": hardscape_retry_reason,
+                "softMask": False,
+            }
+            remainder_candidate = evaluate_mask_candidate(
+                remainder_mask,
+                remainder_diagnostics,
+                transform=transform,
+                raster_crs=raster_crs,
+                parcel_raster=parcel_raster,
+                parcel_area_sqft=parcel_area_sqft,
+                context=analysis_context,
+                min_component_area_sqft=min_component_area_sqft,
+                max_component_ratio=0.995,
+                max_detected_ratio=0.995,
+                hard_detected_ratio=0.995,
+                strong_exclusion_ratio=float(preset["strongExclusionRatio"]),
+                mask_pixel_count_before_filtering=int(np.count_nonzero(remainder_mask)),
+                mask_before_filter=remainder_mask,
+                fallback_mode=False,
+                max_components=effective_max_components,
+                merge_distance_m=merge_distance_m,
+                min_hole_sqft=120.0,
+            )
+            remainder_ratio = float(remainder_candidate["detectedRatio"])
+            if (
+                remainder_candidate["rejectReason"] == "parcel-sized geometry"
+                and hardscape_evidence_exists
+                and remainder_ratio <= 0.995
+            ):
+                remainder_candidate["rejectReason"] = ""
+            if remainder_ratio > 0.80 and not hardscape_evidence_exists:
+                remainder_candidate["rejectReason"] = "near-whole-parcel remainder without hardscape evidence"
+            if hardscape_evidence_exists and not remainder_candidate["rejectReason"]:
+                remainder_candidate["confidence"] = max(float(remainder_candidate["confidence"]), 0.48)
+            remainder_candidate["score"] = score_candidate(remainder_candidate) if not remainder_candidate["rejectReason"] else round(score_candidate(remainder_candidate) - 0.5, 4)
+            remainder_candidate["requestedNdviThreshold"] = None
+            remainder_candidate["hardscapePixelsBeforeSubtract"] = _hs_total_px
+            remainder_candidate["hardscapePixelsSubtracted"] = _hs_total_px
+            remainder_candidate["finalPixelsAfterHardscapeSubtract"] = int(np.count_nonzero(remainder_mask))
+            remainder_candidate["hardscapeExcludedRatio"] = round(float(hardscape_excluded_ratio), 4)
+            remainder_candidate["remainderAreaSqft"] = remainder_candidate["detectedAreaSqft"]
+            remainder_candidate["vegetationPixels"] = 0
+            remainder_candidate["rawVegetationPixels"] = 0
+            remainder_candidate["vegetationCandidatePixels"] = 0
+            remainder_candidate["vegetationCandidateAreaSqft"] = 0
+            remainder_candidate["vegetationFilterApplied"] = False
+            remainder_candidate["retryReason"] = hardscape_retry_reason
+            candidate_results.append(remainder_candidate)
+        else:
+            for ndvi_threshold in ndvi_values:
+                for visible_threshold in visible_values:
+                    for brightness_min in brightness_values:
+                        vegetation, diagnostics = vegetation_from_bands(
+                            data,
+                            band_lookup,
+                            red_band=args.red_band,
+                            green_band=args.green_band,
+                            blue_band=args.blue_band,
+                            nir_band=nir_band,
+                            ndvi_threshold=ndvi_threshold,
+                            visible_threshold=visible_threshold,
+                            saturation_min=args.saturation_min,
+                            brightness_min=brightness_min,
+                            detection_preset=detection_preset,
+                        )
 
-                    mowable = vegetation
-                    if sam_mask is not None:
-                        mowable = vegetation & sam_mask if args.combine == "intersect" else vegetation | sam_mask
+                        diagnostics["detectionMode"] = preset["detectionMode"]
+                        diagnostics["vegetationFilterApplied"] = True
+                        diagnostics["retryReason"] = hardscape_retry_reason
+                        mowable = vegetation
+                        if sam_mask is not None:
+                            mowable = vegetation & sam_mask if args.combine == "intersect" else vegetation | sam_mask
 
-                    pre_filter_mowable = mowable.copy()
-                    raw_mask_pixel_count = int(np.count_nonzero(mowable))
-                    if opening_iterations:
-                        mowable = binary_open(mowable, opening_iterations) & valid_pixels
-                    mowable = binary_close(mowable, gsd_close_iters) & valid_pixels
+                        pre_filter_mowable = mowable.copy()
+                        raw_mask_pixel_count = int(np.count_nonzero(mowable))
+                        if opening_iterations:
+                            mowable = binary_open(mowable, opening_iterations) & valid_pixels
+                        mowable = binary_close(mowable, gsd_close_iters) & valid_pixels
 
-                    if args.sieve_size > 0:
-                        mowable = sieve(mowable.astype(np.uint8), size=args.sieve_size).astype(bool)
-                        mowable = binary_close(mowable, max(2, gsd_close_iters // 2)) & valid_pixels
-                        background = (~mowable) & valid_pixels
-                        cleaned_background = sieve(
-                            background.astype(np.uint8),
-                            size=max(int(args.sieve_size) * 6, 256),
-                        ).astype(bool)
-                        mowable = (~cleaned_background) & valid_pixels
+                        if args.sieve_size > 0:
+                            mowable = sieve(mowable.astype(np.uint8), size=args.sieve_size).astype(bool)
+                            mowable = binary_close(mowable, max(2, gsd_close_iters // 2)) & valid_pixels
+                            background = (~mowable) & valid_pixels
+                            cleaned_background = sieve(
+                                background.astype(np.uint8),
+                                size=max(int(args.sieve_size) * 6, 256),
+                            ).astype(bool)
+                            mowable = (~cleaned_background) & valid_pixels
 
-                    _hs_px_before = int(np.count_nonzero(mowable & hardscape_subtract_mask))
-                    mowable = mowable & ~hardscape_subtract_mask & valid_pixels
-                    candidate = evaluate_mask_candidate(
-                        mowable,
-                        diagnostics,
-                        transform=transform,
-                        raster_crs=raster_crs,
-                        parcel_raster=parcel_raster,
-                        parcel_area_sqft=parcel_area_sqft,
-                        context=analysis_context,
-                        min_component_area_sqft=min_component_area_sqft,
-                        max_component_ratio=args.max_component_ratio,
-                        mask_pixel_count_before_filtering=raw_mask_pixel_count,
-                        mask_before_filter=pre_filter_mowable,
-                        fallback_mode=False,
-                        max_components=effective_max_components,
-                        merge_distance_m=merge_distance_m,
-                    )
-                    candidate["requestedNdviThreshold"] = round(float(ndvi_threshold), 3)
-                    candidate["hardscapePixelsBeforeSubtract"] = _hs_px_before
-                    candidate["hardscapePixelsSubtracted"] = _hs_px_before
-                    candidate["finalPixelsAfterHardscapeSubtract"] = int(np.count_nonzero(mowable))
-                    candidate_results.append(candidate)
+                        _hs_px_before = int(np.count_nonzero(mowable & hardscape_subtract_mask))
+                        mowable = mowable & ~hardscape_subtract_mask & valid_pixels
+                        candidate = evaluate_mask_candidate(
+                            mowable,
+                            diagnostics,
+                            transform=transform,
+                            raster_crs=raster_crs,
+                            parcel_raster=parcel_raster,
+                            parcel_area_sqft=parcel_area_sqft,
+                            context=analysis_context,
+                            min_component_area_sqft=min_component_area_sqft,
+                            max_component_ratio=effective_max_component_ratio,
+                            max_detected_ratio=max_detected_ratio,
+                            hard_detected_ratio=hard_detected_ratio,
+                            strong_exclusion_ratio=float(preset["strongExclusionRatio"]),
+                            mask_pixel_count_before_filtering=raw_mask_pixel_count,
+                            mask_before_filter=pre_filter_mowable,
+                            fallback_mode=False,
+                            max_components=effective_max_components,
+                            merge_distance_m=merge_distance_m,
+                        )
+                        candidate["requestedNdviThreshold"] = round(float(ndvi_threshold), 3)
+                        candidate["hardscapePixelsBeforeSubtract"] = _hs_px_before
+                        candidate["hardscapePixelsSubtracted"] = _hs_px_before
+                        candidate["finalPixelsAfterHardscapeSubtract"] = int(np.count_nonzero(mowable))
+                        candidate["hardscapeExcludedRatio"] = round(float(hardscape_excluded_ratio), 4)
+                        candidate["remainderAreaSqft"] = candidate["detectedAreaSqft"]
+                        candidate["vegetationFilterApplied"] = True
+                        candidate["retryReason"] = hardscape_retry_reason
+                        candidate_results.append(candidate)
 
         preferred = [
             candidate for candidate in candidate_results
             if not candidate["rejectReason"]
-            and 0.05 <= float(candidate["detectedRatio"]) <= 0.55
+            and 0.05 <= float(candidate["detectedRatio"]) <= min(0.55, max_detected_ratio)
             and float(candidate["confidence"]) >= 0.35
         ]
         allowed_high = [
             candidate for candidate in candidate_results
             if not candidate["rejectReason"]
-            and 0.55 < float(candidate["detectedRatio"]) <= 0.90
+            and 0.55 < float(candidate["detectedRatio"]) <= max_detected_ratio
             and float(candidate["confidence"]) >= 0.35
         ]
         allowed_low = [
@@ -1454,7 +1827,7 @@ def detect_mowable(args: argparse.Namespace) -> Dict[str, Any]:
         strict_selected = selected
         strict_detected_ratio = float(strict_selected["detectedRatio"]) if strict_selected else 0.0
 
-        if selected is None or selected["rejectReason"] or strict_detected_ratio < SOFT_FALLBACK_RATIO:
+        if bool(preset["softFallback"]) and (selected is None or selected["rejectReason"] or strict_detected_ratio < SOFT_FALLBACK_RATIO):
             soft_vegetation, soft_diagnostics = vegetation_from_bands(
                 data,
                 band_lookup,
@@ -1467,7 +1840,11 @@ def detect_mowable(args: argparse.Namespace) -> Dict[str, Any]:
                 saturation_min=args.saturation_min,
                 brightness_min=args.brightness_min,
                 soft=True,
+                detection_preset=detection_preset,
             )
+            soft_diagnostics["detectionMode"] = preset["detectionMode"]
+            soft_diagnostics["vegetationFilterApplied"] = True
+            soft_diagnostics["retryReason"] = hardscape_retry_reason
             soft_mowable = soft_vegetation & ~analysis_context["hardSurface"]
             if sam_mask is not None:
                 soft_mowable = soft_mowable & sam_mask if args.combine == "intersect" else soft_mowable | sam_mask
@@ -1493,7 +1870,10 @@ def detect_mowable(args: argparse.Namespace) -> Dict[str, Any]:
                 parcel_area_sqft=parcel_area_sqft,
                 context=analysis_context,
                 min_component_area_sqft=min_component_area_sqft,
-                max_component_ratio=args.max_component_ratio,
+                max_component_ratio=effective_max_component_ratio,
+                max_detected_ratio=max_detected_ratio,
+                hard_detected_ratio=hard_detected_ratio,
+                strong_exclusion_ratio=float(preset["strongExclusionRatio"]),
                 mask_pixel_count_before_filtering=soft_raw_mask_pixel_count,
                 mask_before_filter=soft_pre_filter_mowable,
                 fallback_mode=True,
@@ -1515,7 +1895,7 @@ def detect_mowable(args: argparse.Namespace) -> Dict[str, Any]:
                 fallback_soft_mask_used = True
 
         low_confidence_candidate_returned = False
-        if selected and selected["rejectReason"]:
+        if selected and selected["rejectReason"] and bool(preset["lowConfidenceCandidate"]):
             candidate_pixel_count = int(selected.get("vegetationCandidatePixels") or selected.get("rawVegetationPixels") or 0)
             rough_candidate_geoms: List[BaseGeometry] = []
             if not selected.get("geoms") and candidate_pixel_count > 0:
@@ -1544,7 +1924,7 @@ def detect_mowable(args: argparse.Namespace) -> Dict[str, Any]:
             vegetation_pixels = int(np.count_nonzero(rasterize_geometries(geoms, out_shape=data.shape[1:], transform=transform))) if rough_candidate_geoms else int(selected["vegetationPixels"])
             mask_diagnostics = selected["diagnostics"]
             mowable = rasterize_geometries(geoms, out_shape=data.shape[1:], transform=transform) & valid_pixels if low_confidence_candidate_returned else np.zeros(data.shape[1:], dtype=bool)
-        elif selected:
+        elif selected and not selected["rejectReason"]:
             geoms = selected["geoms"]
             component_areas = selected["componentAreas"]
             rejected_components = selected["rejectedComponents"]
@@ -1577,7 +1957,9 @@ def detect_mowable(args: argparse.Namespace) -> Dict[str, Any]:
                 "vegetationCandidatePixels": 0,
                 "validPixels": int(np.count_nonzero(valid_pixels)),
                 "hardscapeRules": {},
-                "detectionMode": "manmade_exclusion_then_vegetation",
+                "detectionMode": preset["detectionMode"],
+                "vegetationFilterApplied": detection_preset != "small_residential",
+                "retryReason": hardscape_retry_reason,
                 "softMask": False,
             }
             mowable = np.zeros(data.shape[1:], dtype=bool)
@@ -1597,6 +1979,18 @@ def detect_mowable(args: argparse.Namespace) -> Dict[str, Any]:
                 confidence = "beta_low"
                 reject_reason = "AI Detect mostly failed; selected most of parcel for manual review"
 
+        if detection_preset == "small_residential":
+            mode = "hardscape_exclusion_then_remainder"
+            mask_diagnostics["detectionPreset"] = "small_residential"
+            mask_diagnostics["detectionMode"] = mode
+            mask_diagnostics["vegetationFilterApplied"] = False
+            mask_diagnostics["retryReason"] = mask_diagnostics.get("retryReason", hardscape_retry_reason)
+            if selected:
+                selected["detectionPreset"] = "small_residential"
+                selected["detectionMode"] = mode
+                selected["vegetationFilterApplied"] = False
+                selected["retryReason"] = selected.get("retryReason", hardscape_retry_reason)
+
         if args.mask_output:
             write_mask(Path(args.mask_output), mowable, transform=transform, crs=raster_crs)
 
@@ -1604,7 +1998,8 @@ def detect_mowable(args: argparse.Namespace) -> Dict[str, Any]:
             "source": "vision_service_geospatial",
             "mode": mode,
             "imageryMode": imagery_mode,
-            "detection_mode": "manmade_exclusion_then_vegetation",
+            "detection_mode": mask_diagnostics.get("detectionMode", mode),
+            "detectionPreset": detection_preset,
             "ndviThreshold": mask_diagnostics["ndviThreshold"],
             "townLawnNdviThreshold": mask_diagnostics.get("townLawnNdviThreshold"),
             "ndviUpperLimit": mask_diagnostics["ndviUpperLimit"],
@@ -1615,6 +2010,7 @@ def detect_mowable(args: argparse.Namespace) -> Dict[str, Any]:
             "brightnessMin": mask_diagnostics["brightnessMin"],
             "dynamicBrightnessMin": mask_diagnostics["dynamicBrightnessMin"],
             "textureScore": mask_diagnostics["textureScore"],
+            "vegetationFilterApplied": mask_diagnostics.get("vegetationFilterApplied", detection_preset != "small_residential"),
         }
         write_geojson(geoms, source_crs=raster_crs, output_path=Path(args.output), properties=properties)
         if debug_dir:
@@ -1640,6 +2036,10 @@ def detect_mowable(args: argparse.Namespace) -> Dict[str, Any]:
 
     detected_area_sqft = sum(area_sqft(geom, raster_crs) for geom in geoms) if geoms else 0
     detected_ratio = detected_area_sqft / parcel_area_sqft if parcel_area_sqft > 0 else 0
+    if detection_preset == "small_residential":
+        mode = "hardscape_exclusion_then_remainder"
+        mask_diagnostics["detectionMode"] = mode
+        mask_diagnostics["vegetationFilterApplied"] = False
     selected_confidence = float(selected["confidence"]) if selected else 0.0
     if low_confidence_candidate_returned:
         selected_confidence = min(max(selected_confidence, 0.36), 0.38)
@@ -1653,8 +2053,20 @@ def detect_mowable(args: argparse.Namespace) -> Dict[str, Any]:
         }
         for candidate in sorted(candidate_results, key=lambda item: float(item["score"]), reverse=True)
     ]
+    print(
+        "[Vision] geospatial_summary "
+        f"preset={detection_preset} mode={mask_diagnostics.get('detectionMode', mode)} "
+        f"vegetationFilterApplied={mask_diagnostics.get('vegetationFilterApplied', detection_preset != 'small_residential')} "
+        f"areaSqft={round(detected_area_sqft, 2)} ratio={round(detected_ratio, 4)} "
+        f"hardscapeExcludedRatio={selected.get('hardscapeExcludedRatio', 0) if selected else 0} "
+        f"features={len(geoms)} rejectReason={selected.get('rejectReason', '') if selected else 'no candidates'}",
+        flush=True,
+    )
     return {
         "features": len(geoms),
+        "detectionPreset": detection_preset,
+        "thresholds": thresholds_used,
+        "thresholdsUsed": thresholds_used,
         "parcelAreaSqft": round(parcel_area_sqft, 2),
         "areaSqft": round(detected_area_sqft, 2),
         "detectedAreaSqm": round(detected_area_sqft / SQFT_PER_SQM, 2),
@@ -1662,7 +2074,8 @@ def detect_mowable(args: argparse.Namespace) -> Dict[str, Any]:
         "confidence": confidence_label,
         "confidenceScore": round(selected_confidence, 3),
         "mode": mode,
-        "detection_mode": "manmade_exclusion_then_vegetation",
+        "detectionMode": mask_diagnostics.get("detectionMode", mode),
+        "detection_mode": mask_diagnostics.get("detectionMode", mode),
         "imageryMode": imagery_mode,
         "rasterBands": raster_bands,
         "rasterBandCount": raster_bands,
@@ -1698,6 +2111,11 @@ def detect_mowable(args: argparse.Namespace) -> Dict[str, Any]:
         "vegetationCandidatePixels": mask_diagnostics.get("vegetationCandidatePixels", 0),
         "validPixels": mask_diagnostics.get("validPixels", 0),
         "hardscapeExcludedAreaSqft": selected.get("hardscapeExcludedAreaSqft", 0) if selected else 0,
+        "hardscapeExclusionRatio": selected.get("hardscapeExclusionRatio", 0) if selected else 0,
+        "hardscapeExcludedRatio": selected.get("hardscapeExcludedRatio", selected.get("hardscapeExclusionRatio", 0)) if selected else 0,
+        "remainderAreaSqft": selected.get("remainderAreaSqft", round(detected_area_sqft, 2)) if selected else 0,
+        "vegetationFilterApplied": mask_diagnostics.get("vegetationFilterApplied", detection_preset != "small_residential"),
+        "retryReason": mask_diagnostics.get("retryReason", hardscape_retry_reason),
         "vegetationCandidateAreaSqft": selected.get("vegetationCandidateAreaSqft", 0) if selected else 0,
         "finalSelectedAreaSqft": round(detected_area_sqft, 2),
         "hardscapeRules": mask_diagnostics.get("hardscapeRules", {}),
@@ -1731,6 +2149,7 @@ def detect_mowable(args: argparse.Namespace) -> Dict[str, Any]:
             "rejectReason": selected.get("rejectReason") if selected else "no candidates",
             "parcelSimilarity": selected.get("parcelSimilarity") if selected else None,
             "hasExclusionEvidence": selected.get("hasExclusionEvidence") if selected else False,
+            "hasStrongExclusionEvidence": selected.get("hasStrongExclusionEvidence") if selected else False,
             "largestComponentShare": selected.get("largestComponentShare") if selected else None,
             "averageCompactness": selected.get("averageCompactness") if selected else None,
             "averageComponentScore": selected.get("averageComponentScore") if selected else None,
@@ -1748,6 +2167,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", required=True, help="Output mowable GeoJSON path.")
     parser.add_argument("--mask-output", default="", help="Optional output mask GeoTIFF path.")
     parser.add_argument("--debug-dir", default="", help="Optional folder for debug imagery and mask artifacts.")
+    parser.add_argument("--detection-preset", choices=["small_residential", "medium_residential", "large_rural"], default="", help="Parcel-size preset for vegetation and guardrail thresholds.")
     parser.add_argument("--sam-mask", default="", help="Optional SAMGeo/SAM 2 binary mask GeoTIFF on the same area.")
     parser.add_argument("--combine", choices=["intersect", "union"], default="intersect", help="How to combine vegetation and SAM masks.")
     parser.add_argument("--parcel-crs", default="EPSG:4326", help="CRS for the parcel GeoJSON.")

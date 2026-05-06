@@ -1,0 +1,145 @@
+.weather-scheduler-strip {
+  margin: 14px 0 18px;
+  padding: 14px;
+  border: 1px solid rgba(47, 111, 24, 0.18);
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(247, 252, 244, 0.96), rgba(255,255,255,0.96));
+  box-shadow: 0 8px 24px rgba(18, 49, 12, 0.08);
+}
+
+.weather-scheduler-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: baseline;
+  margin-bottom: 10px;
+}
+
+.weather-scheduler-head strong {
+  color: #245c18;
+  font-size: 0.98rem;
+}
+
+.weather-scheduler-head span {
+  color: #55705a;
+  font-size: 0.82rem;
+}
+
+.weather-scheduler-row {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(86px, 1fr));
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.weather-day-card {
+  min-width: 86px;
+  border: 1px solid rgba(22, 61, 18, 0.12);
+  border-radius: 14px;
+  padding: 9px 8px;
+  text-align: center;
+  background: #fff;
+}
+
+.weather-day-name {
+  font-weight: 800;
+  color: #25491f;
+  font-size: 0.82rem;
+}
+
+.weather-day-date {
+  color: #6a786a;
+  font-size: 0.72rem;
+  margin-top: 1px;
+}
+
+.weather-day-icon {
+  font-size: 1.45rem;
+  line-height: 1;
+  margin: 7px 0 5px;
+}
+
+.weather-day-temp {
+  font-weight: 800;
+  font-size: 0.95rem;
+}
+
+.weather-day-rain,
+.weather-day-risk {
+  font-size: 0.72rem;
+  color: #607060;
+}
+
+.weather-risk-low {
+  border-color: rgba(70, 140, 50, 0.25);
+}
+
+.weather-risk-medium {
+  border-color: rgba(214, 157, 37, 0.42);
+  background: #fffaf0;
+}
+
+.weather-risk-high {
+  border-color: rgba(190, 63, 45, 0.38);
+  background: #fff5f2;
+}
+
+@media (max-width: 760px) {
+  .weather-scheduler-head {
+    display: block;
+  }
+
+  .weather-scheduler-row {
+    display: flex;
+  }
+
+  .weather-day-card {
+    flex: 0 0 92px;
+  }
+}
+
+
+.weather-day-select {
+  margin-top: 8px;
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: #24451f;
+  cursor: pointer;
+}
+
+.weather-day-select input {
+  width: 16px;
+  height: 16px;
+  accent-color: #3f7f29;
+}
+
+.weather-day-card:has(.weather-day-select input:checked) {
+  outline: 2px solid rgba(63, 127, 41, 0.75);
+  box-shadow: 0 8px 18px rgba(63, 127, 41, 0.18);
+}
+
+.weather-days-source-hidden {
+  display: none !important;
+}
+
+.weather-scheduler-head strong {
+  text-transform: none;
+}
+
+
+/* Weather card checkbox cleanup */
+.weather-day-select {
+  font-size: 0 !important;
+  line-height: 1 !important;
+  margin-top: 8px !important;
+}
+
+.weather-day-select input {
+  font-size: initial !important;
+  margin: 0 !important;
+}

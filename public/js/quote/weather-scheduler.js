@@ -1,0 +1,192 @@
+(function () {
+  "use strict";
+
+  const DAY_NAMES = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+
+  function fmtDay(dateStr) {
+    const d = new Date(dateStr + "T12:00:00");
+    return d.toLocaleDateString(undefined, { weekday: "short" });
+  }
+
+  function fmtDate(dateStr) {
+    const d = new Date(dateStr + "T12:00:00");
+    return d.toLocaleDateString(undefined, { month: "numeric", day: "numeric" });
+  }
+
+  function getRiskLabel(day) {
+    if (day.mowRisk === "high") return "Rain risk";
+    if (day.mowRisk === "medium") return "Watch";
+    return "Good";
+  }
+
+  function getLatLon() {
+    const selectors = [
+      ["#propertyLat", "#propertyLon"],
+      ["#parcelLat", "#parcelLon"],
+      ["input[name='lat']", "input[name='lon']"],
+      ["input[name='latitude']", "input[name='longitude']"]
+    ];
+
+    for (const [latSel, lonSel] of selectors) {
+      const latEl = document.querySelector(latSel);
+      const lonEl = document.querySelector(lonSel);
+      const lat = Number(latEl && latEl.value);
+      const lon = Number(lonEl && lonEl.value);
+      if (Number.isFinite(lat) && Number.isFinite(lon)) return { lat, lon };
+    }
+
+    if (window.state && window.state.map && typeof window.state.map.getCenter === "function") {
+      const c = window.state.map.getCenter();
+      if (c && Number.isFinite(c.lat) && Number.isFinite(c.lng)) {
+        return { lat: c.lat, lon: c.lng };
+      }
+    }
+
+    if (window.map && typeof window.map.getCenter === "function") {
+      const c = window.map.getCenter();
+      if (c && Number.isFinite(c.lat) && Number.isFinite(c.lng)) {
+        return { lat: c.lat, lon: c.lng };
+      }
+    }
+
+    return null;
+  }
+
+  function findScheduleAnchor() {
+    const preferred = document.querySelector(
+      "#preferredDays, #preferred-days, [data-preferred-days], .preferred-days, .service-days, .schedule-days"
+    );
+    if (preferred) return preferred;
+
+    const labels = Array.from(document.querySelectorAll("label"));
+    const dayLabel = labels.find(l => DAY_NAMES.some(d => l.textContent.trim().toLowerCase().startsWith(d)));
+    return dayLabel ? dayLabel.parentElement : null;
+  }
+
+
+
+  function findOriginalDayInput(dayKey) {
+    const longMap = {
+      sun: "sunday",
+      mon: "monday",
+      tue: "tuesday",
+      wed: "wednesday",
+      thu: "thursday",
+      fri: "friday",
+      sat: "saturday"
+    };
+
+    const longDay = longMap[dayKey] || dayKey;
+    const inputs = Array.from(document.querySelectorAll("input[type='checkbox']"));
+
+    return inputs.find(input => {
+      const haystack = [
+        input.id,
+        input.name,
+        input.value,
+        input.getAttribute("data-day"),
+        input.closest("label")?.textContent,
+        document.querySelector(`label[for="${input.id}"]`)?.textContent
+      ].filter(Boolean).join(" ").toLowerCase();
+
+      return haystack.includes(dayKey) || haystack.includes(longDay);
+    }) || null;
+  }
+
+  function renderForecast(days) {
+    const anchor = findScheduleAnchor();
+    if (!anchor || !Array.isArray(days) || !days.length) return;
+
+    let wrap = document.getElementById("mownwaWeatherScheduler");
+    if (!wrap) {
+      wrap = document.createElement("div");
+      wrap.id = "mownwaWeatherScheduler";
+      wrap.className = "weather-scheduler-strip";
+      anchor.parentElement.insertBefore(wrap, anchor);
+    }
+
+    wrap.innerHTML = `
+      <div class="weather-scheduler-head">
+        <strong>Preferred days of the week</strong>
+        <span>7-day forecast included to help pick service days.</span>
+      </div>
+      <div class="weather-scheduler-row"></div>
+    `;
+
+    const row = wrap.querySelector(".weather-scheduler-row");
+
+    days.slice(0, 7).forEach(day => {
+      const dayKey = new Date(day.date + "T12:00:00")
+        .toLocaleDateString("en-US", { weekday: "long" })
+        .toLowerCase()
+        .slice(0, 3);
+
+      const originalInput = findOriginalDayInput(dayKey);
+      const checkboxId = `weatherPreferred_${day.date}`;
+
+      const card = document.createElement("label");
+      card.className = `weather-day-card weather-risk-${day.mowRisk || "low"}`;
+      card.setAttribute("for", checkboxId);
+      card.innerHTML = `
+        <div class="weather-day-name">${fmtDay(day.date)}</div>
+        <div class="weather-day-date">${fmtDate(day.date)}</div>
+        <div class="weather-day-icon">${
+          String(day.icon || "").startsWith("/weather-icons/")
+            ? `<img src="${day.icon}" alt="${day.summary || "Weather"}" loading="lazy">`
+            : (day.icon || "🌦️")
+        }</div>
+        <div class="weather-day-temp">${day.highF ?? day.high ?? "--"}°</div>
+        <div class="weather-day-rain">${day.rainChance ?? 0}% rain</div>
+        <div class="weather-day-risk">${getRiskLabel(day)}</div>
+        <input id="${checkboxId}" class="weather-card-checkbox" type="checkbox" aria-label="Preferred ${fmtDay(day.date)}">
+      `;
+
+      const cardInput = card.querySelector("input");
+      if (originalInput) {
+        cardInput.checked = !!originalInput.checked;
+        cardInput.addEventListener("change", () => {
+          originalInput.checked = cardInput.checked;
+          originalInput.dispatchEvent(new Event("change", { bubbles: true }));
+          originalInput.dispatchEvent(new Event("input", { bubbles: true }));
+        });
+      }
+
+      row.appendChild(card);
+    });
+
+    if (anchor) {
+      anchor.classList.add("weather-days-source-hidden");
+    }
+  }
+
+
+  async function loadWeather() {
+    const pos = getLatLon();
+    if (!pos) return;
+
+    try {
+      const res = await fetch(`/api/weather?lat=${encodeURIComponent(pos.lat)}&lon=${encodeURIComponent(pos.lon)}`);
+      const data = await res.json();
+      if (!res.ok || !data.ok) return;
+      renderForecast(data.days);
+    } catch (err) {
+      console.warn("[weather-scheduler] failed:", err);
+    }
+  }
+
+  window.MowNWAWeatherScheduler = {
+    refresh: loadWeather
+  };
+
+  document.addEventListener("DOMContentLoaded", () => {
+    setTimeout(loadWeather, 1200);
+  });
+
+  document.addEventListener("click", (ev) => {
+    const t = ev.target;
+    if (!t) return;
+    if (t.closest("#quoteEstimateBtn, #calculateEstimateBtn, #confirmParcelBtn, #selectParcelBtn")) {
+      setTimeout(loadWeather, 900);
+    }
+  });
+})();

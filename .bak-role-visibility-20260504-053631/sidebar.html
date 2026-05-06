@@ -1,0 +1,65 @@
+<aside class="sidebar">
+      <div class="brand-block">
+        <div class="brand">MowNWA</div>
+        <div class="tag">Fast lawn mowing quotes in Northwest Arkansas. No signup required to estimate.</div>
+      </div>
+
+      <nav class="side-nav" aria-label="Main">
+
+        <!-- GET SERVICE — always visible -->
+        <div class="drawer-section">
+          <h4 class="drawer-section-label">Get Service</h4>
+          <button class="nav-btn" data-view="quote">Get Lawn Quote</button>
+        </div>
+
+        <!-- SERVICES — always visible -->
+        <div class="drawer-section">
+          <h4 class="drawer-section-label">Services</h4>
+          <button class="nav-btn" data-view="quote" data-service-type="mowing">Mowing</button>
+          <button class="nav-btn" data-view="quote" data-service-type="mowing_edging">Mowing + Edging</button>
+          <button class="nav-btn" data-view="quote" data-service-type="yard_cleanup">Yard Cleanup</button>
+          <button class="nav-btn" data-view="quote" data-service-type="leaf_cleanup">Leaf Cleanup</button>
+          <button class="nav-btn" data-view="quote" data-service-type="brush_cleanup">Brush Cleanup</button>
+        </div>
+
+        <!-- MY ACCOUNT — shown only when logged in -->
+        <div class="drawer-section customer-logged-in-nav" style="display:none">
+          <h4 class="drawer-section-label">My Account</h4>
+          <button type="button" class="nav-btn" onclick="showAccountPanel('quotes')">My Quotes</button>
+          <button type="button" class="nav-btn" onclick="showAccountPanel('jobs')">My Jobs</button>
+          <button type="button" class="nav-btn" data-account-panel>Account Settings</button>
+          <button type="button" class="nav-btn" onclick="handleAccountLogout()">Sign Out</button>
+        </div>
+
+        <!-- Provider — shown to provider or admin role -->
+        <div class="drawer-section provider-only-nav" style="display:none">
+          <h4 class="drawer-section-label">Provider</h4>
+          <button class="nav-btn provider-only-nav" data-view="providers" data-provider-section="dashboard">Provider Area</button>
+        </div>
+
+        <!-- Admin — shown to admin role only -->
+        <div class="drawer-section admin-only-nav" style="display:none">
+          <h4 class="drawer-section-label">Admin</h4>
+          <button class="nav-btn admin-only-nav" data-view="admin" style="display:none">Admin</button>
+          <button class="nav-btn admin-only-nav" data-view="admin" data-scroll-target="adminRecentActivityPanel" style="display:none">Recent Activity</button>
+          <button class="nav-btn admin-only-nav" data-view="admin" data-scroll-target="adminRecentJobsPanel" style="display:none">Recent Jobs</button>
+        </div>
+
+        <!-- INFO — always visible -->
+        <div class="drawer-section">
+          <h4 class="drawer-section-label">Info</h4>
+          <button class="nav-btn" data-view="dashboard" data-scroll-target="coverageGrid">Service Area</button>
+          <button type="button" class="nav-btn" onclick="this.nextElementSibling.hidden=!this.nextElementSibling.hidden">Contact</button>
+          <div class="drawer-section">
+            <a href="https://wa.me/1XXXXXXXXXX?text=Hi%20I%20have%20a%20question%20about%20my%20quote" target="_blank" rel="noopener" class="nav-btn" style="text-decoration:none">WhatsApp</a>
+            <a href="https://m.me/YOUR_PAGE_NAME" target="_blank" rel="noopener" class="nav-btn" style="text-decoration:none">Messenger</a>
+          </div>
+        </div>
+
+      </nav>
+
+      <div class="sidebar-card">
+        <div class="sidebar-stat"><strong id="regionCountStat">0</strong><span>Regions</span></div>
+        <div class="sidebar-stat"><strong id="serviceCountStat">0</strong><span>Services</span></div>
+      </div>
+    </aside>

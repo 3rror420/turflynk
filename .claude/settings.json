@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(sudo chmod *)",
+      "Bash(git -C /var/www/turflynk-arkansas-quote-ready-fixed-v3 diff --stat)",
+      "Bash(awk 'NR>=2835 && NR<=3040' /var/www/turflynk-arkansas-quote-ready-fixed-v3/public/styles.css)",
+      "Bash(python3 -c ' *)"
+    ]
+  }
+}
