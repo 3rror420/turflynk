@@ -26,6 +26,10 @@ function adminText(value, fallback = '-') {
   return text ? escapeHtml(text) : `<span class="admin-muted">${escapeHtml(fallback)}</span>`;
 }
 
+function adminUiIcon(name, label) {
+  return `<img src="/assets/icons/lucide/${name}.svg" alt="" class="ui-icon"><span class="ui-label">${escapeHtml(label)}</span>`;
+}
+
 function adminDate(value) {
   if (!value) return '-';
   const d = new Date(value);
@@ -35,6 +39,13 @@ function adminDate(value) {
 function adminPayBadge(status) {
   const value = String(status || 'unpaid');
   return `<span class="admin-pill pay-${escapeHtml(value)}">${escapeHtml(value.replace(/_/g, ' '))}</span>`;
+}
+
+function adminPaymentMethodLabel(method) {
+  const value = String(method || '').trim();
+  if (!value) return '';
+  const label = value === 'onsite_cash_check' ? 'Pay Onsite' : value.replace(/_/g, ' ');
+  return `<div class="admin-meta">${escapeHtml(label)}</div>`;
 }
 
 function adminActiveBadge(active) {
@@ -64,6 +75,43 @@ function adminAttachmentBadge(job) {
     : '<span class="admin-pill is-warning">Unattached</span>';
 }
 
+function adminJobPhotoUrls(job = {}, category = 'before') {
+  const key = category === 'after' ? 'afterPhotoUrls' : 'beforePhotoUrls';
+  return Array.isArray(job[key]) ? job[key] : [];
+}
+
+function adminJobPhotoThumbs(job = {}, category = 'before') {
+  const urls = adminJobPhotoUrls(job, category);
+  if (!urls.length) return '<div class="admin-muted">No photos yet.</div>';
+  return urls.map((url, index) => `
+    <div class="job-photo-thumb">
+      <a href="${escapeHtml(url)}" target="_blank" rel="noopener">
+        <img src="${escapeHtml(url)}" alt="${escapeHtml(`${category} photo ${index + 1}`)}" />
+      </a>
+      <button class="btn secondary small ui-icon-btn" type="button" data-admin-remove-job-photo="${escapeHtml(category)}" data-url="${escapeHtml(url)}">${adminUiIcon('trash', 'Remove')}</button>
+    </div>
+  `).join('');
+}
+
+function adminJobPhotoSection(job = {}, category = 'before', label = 'Before Photos') {
+  return `
+    <section class="job-photo-section">
+      <div class="job-photo-section-head">
+        <strong>${escapeHtml(label)}</strong>
+        <label class="btn secondary small job-photo-upload">
+          Upload
+          <input type="file" multiple accept="image/*" data-admin-job-photo-upload="${escapeHtml(category)}" />
+        </label>
+      </div>
+      <div class="job-photo-grid">${adminJobPhotoThumbs(job, category)}</div>
+    </section>
+  `;
+}
+
+function adminMergePhotoUrls(existing = [], incoming = []) {
+  return [...new Set([...(Array.isArray(existing) ? existing : []), ...(Array.isArray(incoming) ? incoming : [])].filter(Boolean))];
+}
+
 function adminTable(headers, rows) {
   if (!rows.length) return '<div class="admin-empty">No records found.</div>';
   return `
@@ -72,6 +120,36 @@ function adminTable(headers, rows) {
       <tbody>${rows.map((row) => `<tr>${row.map((cell) => `<td>${cell}</td>`).join('')}</tr>`).join('')}</tbody>
     </table>
   `;
+}
+
+function adminFieldErrorHtml(field) {
+  return `<div class="admin-field-error" data-field-error="${escapeHtml(field)}" hidden></div>`;
+}
+
+function clearAdminFormErrors(form) {
+  if (!form) return;
+  form.querySelectorAll('.admin-field-error').forEach((el) => {
+    el.hidden = true;
+    el.textContent = '';
+  });
+  form.querySelectorAll('.admin-field-invalid').forEach((el) => el.classList.remove('admin-field-invalid'));
+}
+
+function showAdminFormError(form, error) {
+  const field = error?.field || error?.data?.field || '';
+  const message = prettyApiError(error);
+  const input = field ? form?.elements?.[field] : null;
+  const errorEl = field ? form?.querySelector(`[data-field-error="${field}"]`) : null;
+  if (input) {
+    input.classList.add('admin-field-invalid');
+    input.focus();
+  }
+  if (errorEl) {
+    errorEl.textContent = message;
+    errorEl.hidden = false;
+  } else {
+    showError(message);
+  }
 }
 
 function adminSelectedIds(wrapId, selector, buttonId, countId) {
@@ -160,7 +238,8 @@ async function loadAdmin() {
         ['Paid unattached', a.paidJobsNotAttached || 0, 'Paid jobs not attached to users.'],
         ['Unpaid completed', a.unpaidCompletedJobs || 0, 'Completed jobs still marked unpaid.'],
       ].map(([label, count, detail]) => `
-        <button class="admin-alert-card" type="button" data-open-system="true">
+        <button class="admin-alert-card ui-icon-btn" type="button" data-open-system="true">
+          <img src="/assets/icons/lucide/triangle-alert.svg" alt="" class="ui-icon">
           <strong>${count}</strong>
           <span>${escapeHtml(label)}</span>
           <small>${escapeHtml(detail)}</small>
@@ -198,7 +277,7 @@ async function loadAdminMgmtJobs() {
   adminState.orphans = orphansData;
 
   const statusOptions = ['payment_pending','payment_failed','paid','open','assigned','scheduled','in_progress','completed','canceled','refunded'];
-  const paymentOptions = ['unpaid','deposit_paid','paid','pending','failed','refunded'];
+  const paymentOptions = ['unpaid','checkout_pending','onsite_pending','deposit_paid','paid','pending','failed','refunded'];
   const rows = adminState.jobs.map((job) => {
     const customer = `
       <strong>${adminText(job.customerName, 'No name')}</strong>
@@ -209,19 +288,25 @@ async function loadAdminMgmtJobs() {
     const address = [job.address, job.city, job.state, job.zip].filter(Boolean).join(', ');
     const statusSelect = `<select class="admin-job-status" data-job-id="${escapeHtml(job.id)}">${statusOptions.map((s) => `<option value="${s}" ${job.status === s ? 'selected' : ''}>${s.replace(/_/g, ' ')}</option>`).join('')}</select>`;
     const paymentSelect = `<select class="admin-job-payment" data-job-id="${escapeHtml(job.id)}">${paymentOptions.map((p) => `<option value="${p}" ${job.paymentStatus === p ? 'selected' : ''}>${p.replace(/_/g, ' ')}</option>`).join('')}</select>`;
+    const markPaid = job.paymentStatus === 'onsite_pending'
+      ? `<button class="btn secondary small admin-job-mark-paid ui-icon-btn" data-job-id="${escapeHtml(job.id)}" type="button">${adminUiIcon('badge-dollar-sign', 'Mark Paid')}</button>`
+      : '';
+    const paymentCell = `${adminPayBadge(job.paymentStatus)}${adminPaymentMethodLabel(job.paymentMethod)}${paymentSelect}${markPaid ? `<div style="margin-top:6px">${markPaid}</div>` : ''}`;
     const providerSelect = `<select class="admin-job-provider" data-job-id="${escapeHtml(job.id)}">${adminProviderOptions(job.providerId)}</select>`;
-    const attach = job.customerUserId ? '' : `<button class="btn secondary small admin-job-attach" data-job-id="${escapeHtml(job.id)}" type="button">Attach</button>`;
+    const attach = job.customerUserId ? '' : `<button class="btn secondary small admin-job-attach ui-icon-btn" data-job-id="${escapeHtml(job.id)}" type="button">${adminUiIcon('user', 'Attach')}</button>`;
     return [
       `<input class="admin-job-select" type="checkbox" data-id="${escapeHtml(job.id)}" aria-label="Select job ${escapeHtml(job.id)}" />`,
       `<code>${escapeHtml(job.id)}</code>`,
       customer,
       adminText(address),
       `${money(job.estimateAtBooking || job.budget || job.paymentAmount || 0)}`,
-      paymentSelect,
+      paymentCell,
       statusSelect,
       providerSelect,
       adminDate(job.createdAt),
-      `<button class="btn secondary small admin-job-view" data-job-id="${escapeHtml(job.id)}" type="button">View</button>${attach}`,
+      `<button class="btn secondary small admin-job-view ui-icon-btn" data-job-id="${escapeHtml(job.id)}" type="button">${adminUiIcon('eye', 'View')}</button>
+       <button class="btn secondary small admin-job-edit ui-icon-btn" data-job-id="${escapeHtml(job.id)}" type="button">${adminUiIcon('pencil', 'Edit Job')}</button>
+       ${attach}`,
     ];
   });
   wrap.innerHTML = adminTable(['Select','ID','Customer','Address','Price','Payment','Status','Provider','Created','Actions'], rows);
@@ -244,6 +329,22 @@ function wireJobTable(wrap) {
       loadAdminMgmtJobs().catch(() => {});
     });
   });
+  wrap.querySelectorAll('.admin-job-mark-paid').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      try {
+        await api(`/api/admin/jobs/${encodeURIComponent(btn.dataset.jobId)}/payment`, {
+          method: 'PATCH',
+          body: JSON.stringify({ payment_status: 'paid' })
+        });
+        showToast('Payment marked paid', 'success');
+        loadAdminMgmtJobs().catch(() => {});
+      } catch (error) {
+        showError(prettyApiError(error));
+        btn.disabled = false;
+      }
+    });
+  });
   wrap.querySelectorAll('.admin-job-provider').forEach((sel) => {
     sel.addEventListener('change', async () => {
       await api(`/api/admin/jobs/${encodeURIComponent(sel.dataset.jobId)}/assign-provider`, {
@@ -256,6 +357,7 @@ function wireJobTable(wrap) {
   });
   wrap.querySelectorAll('.admin-job-select').forEach((input) => input.addEventListener('change', updateAdminJobSelection));
   wrap.querySelectorAll('.admin-job-view').forEach((btn) => btn.addEventListener('click', () => showAdminJobDetails(btn.dataset.jobId)));
+  wrap.querySelectorAll('.admin-job-edit').forEach((btn) => btn.addEventListener('click', () => showAdminJobEditor(btn.dataset.jobId)));
   wrap.querySelectorAll('.admin-job-attach').forEach((btn) => btn.addEventListener('click', () => showAdminJobAttach(btn.dataset.jobId)));
 }
 
@@ -273,7 +375,10 @@ function showAdminJobDetails(jobId) {
   panel.innerHTML = `
     <div class="admin-detail-head">
       <h3>Job ${escapeHtml(job.id)}</h3>
-      <button class="btn secondary small" type="button" data-close-detail>Close</button>
+      <div class="admin-detail-actions">
+        <button class="btn secondary small ui-icon-btn" type="button" data-edit-job>${adminUiIcon('pencil', 'Edit Job')}</button>
+        <button class="btn secondary small ui-icon-btn" type="button" data-close-detail>${adminUiIcon('x', 'Close')}</button>
+      </div>
     </div>
     <div class="admin-detail-grid">
       <div><span>Customer</span><strong>${adminText(job.customerName)}</strong><small>${adminText(job.customerEmail)}<br>${adminText(job.customerPhone)}</small></div>
@@ -281,11 +386,170 @@ function showAdminJobDetails(jobId) {
       <div><span>Address</span><strong>${adminText(address)}</strong></div>
       <div><span>Price</span><strong>${money(job.estimateAtBooking || job.budget || job.paymentAmount || 0)}</strong></div>
       <div><span>Status</span><strong>${adminText(job.status)}</strong></div>
-      <div><span>Payment</span><strong>${adminText(job.paymentStatus)}</strong></div>
+      <div><span>Payment</span><strong>${adminText(job.paymentStatus)}</strong><small>${adminText(job.paymentMethod)}</small></div>
     </div>
+    <div class="job-photo-manager">
+      ${adminJobPhotoSection(job, 'before', 'Before Photos')}
+      ${adminJobPhotoSection(job, 'after', 'After Photos')}
+    </div>
+    ${typeof renderJobScopeSnapshot === 'function' ? renderJobScopeSnapshot(job, job) : ''}
     ${job.details ? `<pre class="admin-detail-pre">${escapeHtml(job.details)}</pre>` : ''}
   `;
   panel.querySelector('[data-close-detail]')?.addEventListener('click', () => panel.classList.add('hidden'));
+  panel.querySelector('[data-edit-job]')?.addEventListener('click', () => showAdminJobEditor(job.id));
+  if (typeof initJobScopeSnapshotMaps === 'function') initJobScopeSnapshotMaps(panel);
+  wireAdminJobPhotoControls(panel, job);
+}
+
+async function showAdminJobEditor(jobId) {
+  const panel = byId('adminJobDetailPanel');
+  if (!panel) return;
+  let job = adminState.jobs.find((item) => String(item.id) === String(jobId));
+  try {
+    const data = await api(`/api/admin/jobs/${encodeURIComponent(jobId)}`);
+    job = data.job || job;
+  } catch {}
+  if (!job) return showError('Job not found in the current list. Refresh and try again.');
+
+  const statusOptions = ['payment_pending','payment_failed','cod_verification_pending','paid','open','assigned','scheduled','in_progress','completed','canceled','refunded'];
+  const paymentOptions = ['unpaid','checkout_pending','checkout_created','onsite_pending','deposit_paid','paid','pending','failed','refunded'];
+  panel.classList.remove('hidden');
+  panel.innerHTML = `
+    <div class="admin-detail-head">
+      <h3>Edit Job ${escapeHtml(job.id)}</h3>
+      <button class="btn secondary small ui-icon-btn" type="button" data-close-detail>${adminUiIcon('x', 'Close')}</button>
+    </div>
+    <form id="adminJobEditForm" class="admin-edit-form admin-job-edit-form">
+      <label><span>Customer name</span><input name="customerName" value="${escapeHtml(job.customerName || '')}" /></label>
+      <label><span>Email</span><input name="email" type="email" value="${escapeHtml(job.customerEmail || '')}" />${adminFieldErrorHtml('email')}</label>
+      <label><span>Phone</span><input name="phone" type="tel" inputmode="tel" autocomplete="tel" value="${escapeHtml(job.customerPhone || '')}" />${adminFieldErrorHtml('phone')}</label>
+      <label><span>Service address</span><input name="address" value="${escapeHtml(job.address || '')}" /></label>
+      <label><span>City</span><input name="city" value="${escapeHtml(job.city || '')}" /></label>
+      <label><span>State</span><input name="state" maxlength="2" value="${escapeHtml(job.state || '')}" /></label>
+      <label><span>Zip</span><input name="zip" value="${escapeHtml(job.zip || '')}" /></label>
+      <label><span>Status</span><select name="status">${statusOptions.map((s) => `<option value="${s}" ${job.status === s ? 'selected' : ''}>${s.replace(/_/g, ' ')}</option>`).join('')}</select></label>
+      <label><span>Payment</span><select name="payment_status">${paymentOptions.map((p) => `<option value="${p}" ${job.paymentStatus === p ? 'selected' : ''}>${p.replace(/_/g, ' ')}</option>`).join('')}</select></label>
+      <label class="admin-form-wide"><span>Notes</span><textarea name="details" rows="6">${escapeHtml(job.details || '')}</textarea></label>
+      <div class="admin-form-actions">
+        <button class="btn primary small ui-icon-btn" type="submit">${adminUiIcon('save', 'Save Job')}</button>
+        <button class="btn secondary small ui-icon-btn" type="button" data-cancel-job-edit>${adminUiIcon('x', 'Cancel')}</button>
+      </div>
+    </form>
+  `;
+  panel.querySelector('[data-close-detail]')?.addEventListener('click', () => panel.classList.add('hidden'));
+  panel.querySelector('[data-cancel-job-edit]')?.addEventListener('click', () => showAdminJobDetails(job.id));
+  byId('adminJobEditForm')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    clearAdminFormErrors(form);
+    const submit = form.querySelector('[type="submit"]');
+    if (submit) submit.disabled = true;
+    try {
+      const result = await api(`/api/admin/jobs/${encodeURIComponent(job.id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          customerName: form.elements.customerName.value,
+          customerEmail: form.elements.email.value,
+          customerPhone: form.elements.phone.value,
+          address: form.elements.address.value,
+          city: form.elements.city.value,
+          state: form.elements.state.value,
+          zip: form.elements.zip.value,
+          status: form.elements.status.value,
+          payment_status: form.elements.payment_status.value,
+          details: form.elements.details.value,
+        }),
+      });
+      const index = adminState.jobs.findIndex((item) => String(item.id) === String(job.id));
+      if (index !== -1 && result.job) adminState.jobs[index] = result.job;
+      showToast('Job saved', 'success');
+      await loadAdminMgmtJobs();
+      showAdminJobDetails(job.id);
+    } catch (error) {
+      showAdminFormError(form, error);
+      if (submit) submit.disabled = false;
+    }
+  });
+}
+
+async function uploadAdminJobPhotoFiles(job, category, files) {
+  if (!files.length) return;
+  const fd = new FormData();
+  fd.append('jobId', job.id);
+  fd.append('category', category);
+  files.forEach((file) => fd.append('photos', file));
+  const uploadRes = await fetch('/api/upload', { method: 'POST', body: fd });
+  const uploadText = await uploadRes.text();
+  let uploadData = null;
+  try {
+    uploadData = JSON.parse(uploadText);
+  } catch {
+    throw new Error(`Upload did not return JSON: ${uploadText.slice(0, 120)}`);
+  }
+  if (!uploadRes.ok || !uploadData.ok) throw new Error(uploadData?.error || 'Upload failed');
+  const uploadedUrls = (uploadData.files || []).map((file) => file.url).filter(Boolean);
+  const beforePhotoUrls = category === 'before'
+    ? adminMergePhotoUrls(adminJobPhotoUrls(job, 'before'), uploadedUrls)
+    : adminJobPhotoUrls(job, 'before');
+  const afterPhotoUrls = category === 'after'
+    ? adminMergePhotoUrls(adminJobPhotoUrls(job, 'after'), uploadedUrls)
+    : adminJobPhotoUrls(job, 'after');
+  const result = await api(`/api/admin/jobs/${encodeURIComponent(job.id)}/photos`, {
+    method: 'PATCH',
+    body: JSON.stringify({ beforePhotoUrls, afterPhotoUrls }),
+  });
+  Object.assign(job, result.job || {}, {
+    beforePhotoUrls: result.beforePhotoUrls || beforePhotoUrls,
+    afterPhotoUrls: result.afterPhotoUrls || afterPhotoUrls,
+  });
+}
+
+async function saveAdminJobPhotoRemoval(job, category, url) {
+  const beforePhotoUrls = category === 'before'
+    ? adminJobPhotoUrls(job, 'before').filter((item) => item !== url)
+    : adminJobPhotoUrls(job, 'before');
+  const afterPhotoUrls = category === 'after'
+    ? adminJobPhotoUrls(job, 'after').filter((item) => item !== url)
+    : adminJobPhotoUrls(job, 'after');
+  const result = await api(`/api/admin/jobs/${encodeURIComponent(job.id)}/photos`, {
+    method: 'PATCH',
+    body: JSON.stringify({ beforePhotoUrls, afterPhotoUrls }),
+  });
+  Object.assign(job, result.job || {}, {
+    beforePhotoUrls: result.beforePhotoUrls || beforePhotoUrls,
+    afterPhotoUrls: result.afterPhotoUrls || afterPhotoUrls,
+  });
+}
+
+function wireAdminJobPhotoControls(panel, job) {
+  panel.querySelectorAll('[data-admin-job-photo-upload]').forEach((input) => {
+    input.addEventListener('change', async () => {
+      const files = Array.from(input.files || []);
+      if (!files.length) return;
+      input.disabled = true;
+      try {
+        await uploadAdminJobPhotoFiles(job, input.dataset.adminJobPhotoUpload, files);
+        showToast('Job photos uploaded', 'success');
+        showAdminJobDetails(job.id);
+      } catch (error) {
+        showError(prettyApiError(error));
+        input.disabled = false;
+      }
+    });
+  });
+  panel.querySelectorAll('[data-admin-remove-job-photo]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      try {
+        await saveAdminJobPhotoRemoval(job, btn.dataset.adminRemoveJobPhoto, btn.dataset.url);
+        showToast('Job photo removed', 'success');
+        showAdminJobDetails(job.id);
+      } catch (error) {
+        showError(prettyApiError(error));
+        btn.disabled = false;
+      }
+    });
+  });
 }
 
 function showAdminJobAttach(jobId) {
@@ -297,12 +561,12 @@ function showAdminJobAttach(jobId) {
   panel.innerHTML = `
     <div class="admin-detail-head">
       <h3>Attach Job ${escapeHtml(job.id)}</h3>
-      <button class="btn secondary small" type="button" data-close-detail>Close</button>
+      <button class="btn secondary small ui-icon-btn" type="button" data-close-detail>${adminUiIcon('x', 'Close')}</button>
     </div>
     <p class="section-copy">Suggested matches are based on email or phone. Choose a user and confirm before attaching.</p>
-    ${suggestions.length ? `<div class="admin-suggestions">${suggestions.map((u) => `<button class="btn secondary small admin-suggest-user" data-user-id="${escapeHtml(u.id)}" type="button">${escapeHtml([u.firstName, u.lastName].filter(Boolean).join(' ') || u.email)} (${escapeHtml(u.email || u.phone || '')})</button>`).join('')}</div>` : '<div class="admin-empty">No email or phone match found.</div>'}
+    ${suggestions.length ? `<div class="admin-suggestions">${suggestions.map((u) => `<button class="btn secondary small admin-suggest-user ui-icon-btn" data-user-id="${escapeHtml(u.id)}" type="button">${adminUiIcon('user', `${[u.firstName, u.lastName].filter(Boolean).join(' ') || u.email} (${u.email || u.phone || ''})`)}</button>`).join('')}</div>` : '<div class="admin-empty">No email or phone match found.</div>'}
     <label><span>User</span><select id="adminAttachUserSelect"><option value="">Select user</option>${adminUserOptions()}</select></label>
-    <button class="btn primary small" id="adminAttachUserConfirm" type="button">Attach Selected User</button>
+    <button class="btn primary small ui-icon-btn" id="adminAttachUserConfirm" type="button">${adminUiIcon('user', 'Attach Selected User')}</button>
   `;
   panel.querySelector('[data-close-detail]')?.addEventListener('click', () => panel.classList.add('hidden'));
   panel.querySelectorAll('.admin-suggest-user').forEach((btn) => {
@@ -421,7 +685,7 @@ function renderAdminQuotes() {
       money(quote.estimate || 0),
       adminText(quote.status || 'new'),
       contact,
-      `<button class="btn secondary small admin-quote-view" data-quote-id="${escapeHtml(quote.id)}" type="button">View Details</button>${linkage ? `<div class="admin-meta">${linkage}</div>` : ''}`,
+      `<button class="btn secondary small admin-quote-view ui-icon-btn" data-quote-id="${escapeHtml(quote.id)}" type="button">${adminUiIcon('eye', 'View Details')}</button>${linkage ? `<div class="admin-meta">${linkage}</div>` : ''}`,
     ];
   });
   wrap.innerHTML = adminTable(['Date','Customer','Address','Service','Estimate','Status','Phone/email','Actions'], rows);
@@ -475,7 +739,7 @@ function showAdminQuoteDetails(quoteId) {
   panel.innerHTML = `
     <div class="admin-detail-head">
       <h3>Quote ${escapeHtml(quote.id)}</h3>
-      <button class="btn secondary small" type="button" data-close-detail>Close</button>
+      <button class="btn secondary small ui-icon-btn" type="button" data-close-detail>${adminUiIcon('x', 'Close')}</button>
     </div>
     <div class="admin-detail-grid">
       <div><span>Customer</span><strong>${adminText(customer.name || quote.name)}</strong><small>${adminText(quote.email || customer.email)}<br>${adminText(quote.phone || customer.phone)}</small></div>
@@ -518,8 +782,8 @@ async function loadAdminMgmtUsers() {
       ? `<input class="admin-user-select" type="checkbox" data-id="${escapeHtml(u.id)}" aria-label="Select user ${escapeHtml(u.id)}" disabled title="You cannot delete your own account" />`
       : `<input class="admin-user-select" type="checkbox" data-id="${escapeHtml(u.id)}" aria-label="Select user ${escapeHtml(u.id)}" />`;
     const deleteButton = isSelf
-      ? '<button class="btn secondary small" type="button" disabled title="You cannot delete your own account">Delete</button>'
-      : `<button class="btn secondary small admin-user-delete" data-user-id="${escapeHtml(u.id)}" type="button">Delete</button>`;
+      ? `<button class="btn secondary small ui-icon-btn" type="button" disabled title="You cannot delete your own account">${adminUiIcon('trash', 'Delete')}</button>`
+      : `<button class="btn secondary small admin-user-delete ui-icon-btn" data-user-id="${escapeHtml(u.id)}" type="button">${adminUiIcon('trash', 'Delete')}</button>`;
     return [
       selectBox,
       adminText(first),
@@ -529,9 +793,10 @@ async function loadAdminMgmtUsers() {
       adminText(u.role || 'customer'),
       adminActiveBadge(u.active),
       String(u.job_count || 0),
-      `<button class="btn secondary small admin-user-view" data-user-id="${escapeHtml(u.id)}" type="button">View</button>
-       <button class="btn secondary small admin-user-jobs" data-user-id="${escapeHtml(u.id)}" type="button">Jobs</button>
-       <button class="btn secondary small admin-user-toggle" data-user-id="${escapeHtml(u.id)}" data-active="${u.active !== false ? '1' : '0'}" type="button">${u.active !== false ? 'Deactivate' : 'Activate'}</button>
+      `<button class="btn secondary small admin-user-view ui-icon-btn" data-user-id="${escapeHtml(u.id)}" type="button">${adminUiIcon('eye', 'View')}</button>
+       <button class="btn secondary small admin-user-edit ui-icon-btn" data-user-id="${escapeHtml(u.id)}" type="button">${adminUiIcon('pencil', 'Edit')}</button>
+       <button class="btn secondary small admin-user-jobs ui-icon-btn" data-user-id="${escapeHtml(u.id)}" type="button">${adminUiIcon('clipboard-check', 'Jobs')}</button>
+       <button class="btn secondary small admin-user-toggle ui-icon-btn" data-user-id="${escapeHtml(u.id)}" data-active="${u.active !== false ? '1' : '0'}" type="button">${adminUiIcon(u.active !== false ? 'x' : 'circle-check', u.active !== false ? 'Deactivate' : 'Activate')}</button>
        ${deleteButton}`,
     ];
   });
@@ -539,6 +804,7 @@ async function loadAdminMgmtUsers() {
   updateAdminUserSelection();
   wrap.querySelectorAll('.admin-user-select').forEach((input) => input.addEventListener('change', updateAdminUserSelection));
   wrap.querySelectorAll('.admin-user-view').forEach((btn) => btn.addEventListener('click', () => showAdminUserEditor(btn.dataset.userId)));
+  wrap.querySelectorAll('.admin-user-edit').forEach((btn) => btn.addEventListener('click', () => showAdminUserEditor(btn.dataset.userId)));
   wrap.querySelectorAll('.admin-user-jobs').forEach((btn) => btn.addEventListener('click', () => showAdminUserJobs(btn.dataset.userId)));
   wrap.querySelectorAll('.admin-user-delete').forEach((btn) => btn.addEventListener('click', () => showAdminUserDeleteConfirm(btn.dataset.userId)));
   wrap.querySelectorAll('.admin-user-toggle').forEach((btn) => {
@@ -592,8 +858,8 @@ function showAdminUserDeleteConfirm(userId) {
       <p>Delete ${escapeHtml(label)} (${escapeHtml(email)})?</p>
       <p class="meta">This deactivates the account and keeps job history intact.</p>
       <div class="admin-form-actions">
-        <button class="btn secondary small" type="button" data-cancel-delete-user>Cancel</button>
-        <button class="btn primary small" type="button" data-confirm-delete-user>Yes, delete this user</button>
+        <button class="btn secondary small ui-icon-btn" type="button" data-cancel-delete-user>${adminUiIcon('x', 'Cancel')}</button>
+        <button class="btn primary small ui-icon-btn" type="button" data-confirm-delete-user>${adminUiIcon('trash', 'Yes, delete this user')}</button>
       </div>
     </div>
   `;
@@ -651,18 +917,18 @@ async function showAdminUserEditor(userId) {
   panel.innerHTML = `
     <div class="admin-detail-head">
       <h3>Edit User</h3>
-      <button class="btn secondary small" type="button" data-close-detail>Close</button>
+      <button class="btn secondary small ui-icon-btn" type="button" data-close-detail>${adminUiIcon('x', 'Close')}</button>
     </div>
     <form id="adminUserEditForm" class="admin-edit-form">
       <label><span>First name</span><input name="firstName" value="${escapeHtml(u.firstName || u.first_name || '')}" /></label>
       <label><span>Last name</span><input name="lastName" value="${escapeHtml(u.lastName || u.last_name || '')}" /></label>
-      <label><span>Email</span><input name="email" type="email" value="${escapeHtml(u.email || '')}" /></label>
-      <label><span>Phone</span><input name="phone" type="tel" inputmode="tel" autocomplete="tel" value="${escapeHtml(u.phone || '')}" /></label>
+      <label><span>Email</span><input name="email" type="email" value="${escapeHtml(u.email || '')}" />${adminFieldErrorHtml('email')}</label>
+      <label><span>Phone</span><input name="phone" type="tel" inputmode="tel" autocomplete="tel" value="${escapeHtml(u.phone || '')}" />${adminFieldErrorHtml('phone')}</label>
       <label><span>Role</span><select name="role"><option value="customer" ${u.role === 'customer' ? 'selected' : ''}>Customer</option><option value="provider" ${u.role === 'provider' ? 'selected' : ''}>Provider</option><option value="admin" ${u.role === 'admin' ? 'selected' : ''}>Admin</option></select></label>
       <label><span>Status</span><select name="active"><option value="true" ${u.active !== false ? 'selected' : ''}>Active</option><option value="false" ${u.active === false ? 'selected' : ''}>Inactive</option></select></label>
       <div class="admin-form-actions">
-        <button class="btn primary small" type="submit">Save User</button>
-        <button class="btn secondary small" id="adminAttachMatchingJobsBtn" type="button">Attach Matching Orphan Jobs</button>
+        <button class="btn primary small ui-icon-btn" type="submit">${adminUiIcon('save', 'Save User')}</button>
+        <button class="btn secondary small ui-icon-btn" id="adminAttachMatchingJobsBtn" type="button">${adminUiIcon('clipboard-check', 'Attach Matching Orphan Jobs')}</button>
       </div>
     </form>
     <div id="adminUserJobsList"></div>
@@ -671,19 +937,28 @@ async function showAdminUserEditor(userId) {
   byId('adminUserEditForm')?.addEventListener('submit', async (event) => {
     event.preventDefault();
     const form = event.currentTarget;
-    await api(`/api/admin/users/${encodeURIComponent(userId)}`, {
-      method: 'PATCH',
-      body: JSON.stringify({
-        firstName: form.elements.firstName.value,
-        lastName: form.elements.lastName.value,
-        email: form.elements.email.value,
-        phone: form.elements.phone.value,
-        role: form.elements.role.value,
-        active: form.elements.active.value === 'true',
-      }),
-    });
-    showToast('User saved', 'success');
-    await loadAdminMgmtUsers();
+    clearAdminFormErrors(form);
+    const submit = form.querySelector('[type="submit"]');
+    if (submit) submit.disabled = true;
+    try {
+      await api(`/api/admin/users/${encodeURIComponent(userId)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          firstName: form.elements.firstName.value,
+          lastName: form.elements.lastName.value,
+          email: form.elements.email.value,
+          phone: form.elements.phone.value,
+          role: form.elements.role.value,
+          active: form.elements.active.value === 'true',
+        }),
+      });
+      showToast('User saved', 'success');
+      await loadAdminMgmtUsers();
+    } catch (error) {
+      showAdminFormError(form, error);
+    } finally {
+      if (submit) submit.disabled = false;
+    }
   });
   byId('adminAttachMatchingJobsBtn')?.addEventListener('click', async () => {
     if (!confirm('Attach orphan jobs that match this user email or phone?')) return;
@@ -704,7 +979,7 @@ async function showAdminUserJobs(userId) {
   panel.innerHTML = `
     <div class="admin-detail-head">
       <h3>User Jobs</h3>
-      <button class="btn secondary small" type="button" data-close-detail>Close</button>
+      <button class="btn secondary small ui-icon-btn" type="button" data-close-detail>${adminUiIcon('x', 'Close')}</button>
     </div>
     ${adminTable(['ID','Address','Price','Payment','Status','Created'], (data.jobs || []).map((job) => [
       `<code>${escapeHtml(job.id)}</code>`,
@@ -736,8 +1011,8 @@ async function loadAdminMgmtProviders() {
     adminActiveBadge(p.active),
     String(p.open_job_count || 0),
     String(p.completed_job_count || 0),
-    `<button class="btn secondary small admin-provider-jobs" data-provider-id="${escapeHtml(p.id)}" type="button">Jobs</button>
-     <button class="btn secondary small admin-provider-toggle" data-provider-id="${escapeHtml(p.id)}" data-active="${p.active !== false ? '1' : '0'}" type="button">${p.active !== false ? 'Deactivate' : 'Activate'}</button>`,
+    `<button class="btn secondary small admin-provider-jobs ui-icon-btn" data-provider-id="${escapeHtml(p.id)}" type="button">${adminUiIcon('clipboard-check', 'Jobs')}</button>
+     <button class="btn secondary small admin-provider-toggle ui-icon-btn" data-provider-id="${escapeHtml(p.id)}" data-active="${p.active !== false ? '1' : '0'}" type="button">${adminUiIcon(p.active !== false ? 'x' : 'circle-check', p.active !== false ? 'Deactivate' : 'Activate')}</button>`,
   ]);
   wrap.innerHTML = adminTable(['Provider','Email','Phone','Status','Open','Completed','Actions'], rows);
   wrap.querySelectorAll('.admin-provider-toggle').forEach((btn) => {
@@ -761,7 +1036,7 @@ async function showAdminProviderJobs(providerId) {
   panel.innerHTML = `
     <div class="admin-detail-head">
       <h3>Provider Jobs</h3>
-      <button class="btn secondary small" type="button" data-close-detail>Close</button>
+      <button class="btn secondary small ui-icon-btn" type="button" data-close-detail>${adminUiIcon('x', 'Close')}</button>
     </div>
     ${adminTable(['ID','Customer','Address','Price','Payment','Status','Created'], (data.jobs || []).map((job) => [
       `<code>${escapeHtml(job.id)}</code>`,
@@ -878,7 +1153,7 @@ function renderServicePricingTable() {
     `<input class="admin-service-price-input" data-field="ratePer1000Sqft" type="number" min="0" step="0.01" value="${escapeHtml(service.ratePer1000Sqft ?? 0)}" aria-label="Rate per 1000 square feet for ${escapeHtml(service.label || service.id)}" />`,
     `<input class="admin-service-price-input" data-field="minimumPrice" type="number" min="0" step="0.01" value="${escapeHtml(service.minimumPrice ?? 0)}" aria-label="Minimum price for ${escapeHtml(service.label || service.id)}" />`,
     `<input class="admin-service-active-input" data-field="active" type="checkbox" ${service.active !== false ? 'checked' : ''} aria-label="Active service ${escapeHtml(service.label || service.id)}" />`,
-    `<button class="btn primary small admin-service-save" type="button">Save</button>`,
+    `<button class="btn primary small admin-service-save ui-icon-btn" type="button">${adminUiIcon('save', 'Save')}</button>`,
   ]);
   wrap.innerHTML = adminTable(['Service','Base Fee','Rate / 1k sq ft','Minimum Price','Active','Save button'], rows);
   wrap.querySelectorAll('tbody tr').forEach((row, index) => {

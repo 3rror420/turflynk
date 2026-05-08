@@ -42,11 +42,11 @@
                     <label><span>ZIP</span><input name="zip" inputmode="numeric" autocomplete="postal-code" /></label>
                   </div>
                   <div class="tool-row address-tools" id="addressToolRow">
-                    <button class="btn primary" type="button" id="locateAddressBtn">Find Property</button>
-                    <button class="btn ghost" type="button" id="clearQuoteDraftBtn">Reset</button>
+                    <button class="btn primary ui-icon-btn" type="button" id="locateAddressBtn"><img src="/assets/icons/lucide/search.svg" alt="" class="ui-icon"><span class="ui-label">Find Property</span></button>
+                    <button class="btn ghost ui-icon-btn" type="button" id="clearQuoteDraftBtn"><img src="/assets/icons/lucide/rotate-ccw.svg" alt="" class="ui-icon"><span class="ui-label">Reset</span></button>
                   </div>
                   <div class="gps-location-row">
-                    <button class="btn ghost gps-btn" type="button" id="useLocationBtn" data-use-current-location>Use Current Location</button>
+                    <button class="btn ghost gps-btn ui-icon-btn" type="button" id="useLocationBtn" data-use-current-location><img src="/assets/icons/lucide/locate-fixed.svg" alt="" class="ui-icon"><span class="ui-label">Use Current Location</span></button>
                     <p class="gps-helper-text">Works best when you're at the property.</p>
                   </div>
                   <div id="gpsStatusMsg" class="gps-status hidden"></div>
@@ -65,10 +65,10 @@
                     <div><span>Mowable</span><strong id="mowAreaAcresDisplay">Draw next</strong></div>
                   </div>
                   <div class="hero-actions">
-                    <button class="btn primary" type="button" id="continueToDrawBtn">Yes, use this property</button>
-                    <button class="btn secondary" type="button" id="lookupParcelBtn">Search again</button>
-                    <button class="btn ghost" type="button" id="selectParcelBtn">Select Different Parcel</button>
-                    <button class="btn ghost" type="button" id="propertyManualQuoteBtn">Request in-person quote</button>
+                    <button class="btn primary ui-icon-btn" type="button" id="continueToDrawBtn"><img src="/assets/icons/lucide/circle-check.svg" alt="" class="ui-icon"><span class="ui-label">Yes, use this property</span></button>
+                    <button class="btn secondary ui-icon-btn" type="button" id="lookupParcelBtn"><img src="/assets/icons/lucide/search.svg" alt="" class="ui-icon"><span class="ui-label">Search again</span></button>
+                    <button class="btn ghost ui-icon-btn" type="button" id="selectParcelBtn"><img src="/assets/icons/lucide/map-pin.svg" alt="" class="ui-icon"><span class="ui-label">Select Different Parcel</span></button>
+                    <button class="btn ghost ui-icon-btn" type="button" id="propertyManualQuoteBtn"><img src="/assets/icons/lucide/user.svg" alt="" class="ui-icon"><span class="ui-label">Request in-person quote</span></button>
                   </div>
                 </div>
               </div>
@@ -84,48 +84,48 @@
                 <div id="useThisParcelBar" class="use-parcel-bar hidden">
                   <span id="useThisParcelAddr" class="use-parcel-addr"></span>
                   <div class="use-parcel-actions">
-                    <button class="btn primary small" type="button" id="useThisParcelConfirmBtn">Use This Parcel</button>
-                    <button class="btn ghost small" type="button" id="useThisParcelCancelBtn">Cancel</button>
+                    <button class="btn primary small ui-icon-btn" type="button" id="useThisParcelConfirmBtn"><img src="/assets/icons/lucide/map-pin.svg" alt="" class="ui-icon"><span class="ui-label">Use This Parcel</span></button>
+                    <button class="btn ghost small ui-icon-btn" type="button" id="useThisParcelCancelBtn"><img src="/assets/icons/lucide/x.svg" alt="" class="ui-icon"><span class="ui-label">Cancel</span></button>
                   </div>
                 </div>
                 <div class="map-credit">Map powered by MapLibre. Tiles &copy; Esri.</div>
               </div>
 
-              <button class="btn secondary map-tools-toggle hidden" type="button" id="mapToolsToggle">Adjust Area</button>
+              <button class="btn secondary map-tools-toggle hidden ui-icon-btn" type="button" id="mapToolsToggle"><img src="/assets/icons/lucide/map.svg" alt="" class="ui-icon"><span class="ui-label">Adjust Area</span></button>
               <div class="map-tools-panel" id="mapToolsPanel">
                 <div class="map-tools-status">
                   <div id="mowEditorMode" class="status-chip">Mode: Ready</div>
-                  <button class="app-icon-btn" type="button" id="closeMapTools">Close</button>
+                  <button class="app-icon-btn ui-icon-btn" type="button" id="closeMapTools"><img src="/assets/icons/lucide/x.svg" alt="" class="ui-icon"><span class="ui-label">Close</span></button>
                 </div>
                 <div class="tool-row major-tools">
-                  <button class="btn primary" type="button" id="lassoYardBtn">Draw Area</button>
-                  <button class="btn secondary" type="button" id="drawMowableBtn">Redraw</button>
-                  <button class="btn secondary" type="button" id="editMowableBtn">Edit Area</button>
-                  <button class="btn secondary utility-only" type="button" id="cutMowableBtn">Cut Out</button>
-                  <button class="btn secondary" type="button" id="deleteMowableBtn">Delete Area</button>
-                  <button class="btn ghost" type="button" id="clearMowAreaBtn">Clear</button>
-                  <button class="btn ghost utility-only" type="button" id="undoCutBtn">Undo Cut</button>
-                  <button class="btn secondary hidden" type="button" id="aiDetectMowableBtn" disabled>AI Detect Yard (Beta)</button>
-                  <button class="btn secondary" type="button" id="finishLassoBtn">Finish</button>
-                  <button class="btn secondary" type="button" id="useParcelShapeBtn">Use Parcel</button>
-                  <button class="btn primary" type="button" id="saveAreaBtn">Save</button>
-                  <button class="btn secondary" type="button" id="cancelEditAreaBtn">Cancel</button>
-                  <button class="btn secondary" type="button" id="aiRefineMowableBtn" style="display:none;">AI Refine Area</button>
-                  <button class="btn secondary" id="applyAiCutoutsBtn" style="display:none;">Apply Cutouts</button>
-                  <button class="btn secondary" type="button" id="editAiCutoutsBtn" style="display:none;">Edit AI Cutouts</button>
+                  <button class="btn primary ui-icon-btn" type="button" id="lassoYardBtn"><img src="/assets/icons/lucide/pencil.svg" alt="" class="ui-icon"><span class="ui-label">Draw Area</span></button>
+                  <button class="btn secondary ui-icon-btn" type="button" id="drawMowableBtn"><img src="/assets/icons/lucide/pencil.svg" alt="" class="ui-icon"><span class="ui-label">Redraw</span></button>
+                  <button class="btn secondary ui-icon-btn" type="button" id="editMowableBtn"><img src="/assets/icons/lucide/ruler.svg" alt="" class="ui-icon"><span class="ui-label">Edit Area</span></button>
+                  <button class="btn secondary utility-only ui-icon-btn" type="button" id="cutMowableBtn"><img src="/assets/icons/lucide/x.svg" alt="" class="ui-icon"><span class="ui-label">Cut Out</span></button>
+                  <button class="btn secondary ui-icon-btn" type="button" id="deleteMowableBtn"><img src="/assets/icons/lucide/trash.svg" alt="" class="ui-icon"><span class="ui-label">Delete Area</span></button>
+                  <button class="btn ghost ui-icon-btn" type="button" id="clearMowAreaBtn"><img src="/assets/icons/lucide/rotate-ccw.svg" alt="" class="ui-icon"><span class="ui-label">Clear</span></button>
+                  <button class="btn ghost utility-only ui-icon-btn" type="button" id="undoCutBtn"><img src="/assets/icons/lucide/undo.svg" alt="" class="ui-icon"><span class="ui-label">Undo Cut</span></button>
+                  <button class="btn secondary hidden ui-icon-btn" type="button" id="aiDetectMowableBtn" disabled><img src="/assets/icons/lucide/crosshair.svg" alt="" class="ui-icon"><span class="ui-label">AI Detect Yard (Beta)</span></button>
+                  <button class="btn secondary ui-icon-btn" type="button" id="finishLassoBtn"><img src="/assets/icons/lucide/check.svg" alt="" class="ui-icon"><span class="ui-label">Finish</span></button>
+                  <button class="btn secondary ui-icon-btn" type="button" id="useParcelShapeBtn"><img src="/assets/icons/lucide/map-pin.svg" alt="" class="ui-icon"><span class="ui-label">Use Parcel</span></button>
+                  <button class="btn primary ui-icon-btn" type="button" id="saveAreaBtn"><img src="/assets/icons/lucide/save.svg" alt="" class="ui-icon"><span class="ui-label">Save</span></button>
+                  <button class="btn secondary ui-icon-btn" type="button" id="cancelEditAreaBtn"><img src="/assets/icons/lucide/x.svg" alt="" class="ui-icon"><span class="ui-label">Cancel</span></button>
+                  <button class="btn secondary ui-icon-btn" type="button" id="aiRefineMowableBtn" style="display:none;"><img src="/assets/icons/lucide/crosshair.svg" alt="" class="ui-icon"><span class="ui-label">AI Refine Area</span></button>
+                  <button class="btn secondary ui-icon-btn" id="applyAiCutoutsBtn" style="display:none;"><img src="/assets/icons/lucide/check.svg" alt="" class="ui-icon"><span class="ui-label">Apply Cutouts</span></button>
+                  <button class="btn secondary ui-icon-btn" type="button" id="editAiCutoutsBtn" style="display:none;"><img src="/assets/icons/lucide/ruler.svg" alt="" class="ui-icon"><span class="ui-label">Edit AI Cutouts</span></button>
                   <div id="aiDetectGrassStatus" style="display:none;"></div>
                 </div>
               </div>
 
               <div class="draw-action-bar">
-                <button class="btn secondary" type="button" data-quote-back="property">Back</button>
-                <button class="btn primary" type="button" id="drawContinueBtn">Next</button>
+                <button class="btn secondary ui-icon-btn" type="button" data-quote-back="property"><img src="/assets/icons/lucide/arrow-left.svg" alt="" class="ui-icon"><span class="ui-label">Back</span></button>
+                <button class="btn primary ui-icon-btn" type="button" id="drawContinueBtn"><img src="/assets/icons/lucide/check.svg" alt="" class="ui-icon"><span class="ui-label">Next</span></button>
               </div>
             </section>
 
             <section class="quote-flow-screen hidden" id="quoteEstimateScreen" data-quote-step-panel="estimate" hidden>
               <div class="flow-screen-head">
-                <button class="flow-back-btn" type="button" data-quote-back="draw">Back</button>
+                <button class="flow-back-btn ui-icon-btn" type="button" data-quote-back="draw"><img src="/assets/icons/lucide/arrow-left.svg" alt="" class="ui-icon"><span class="ui-label">Back</span></button>
                 <div>
                   <h2>Your Quote</h2>
                   <p>Review your quote details and service options.</p>
@@ -240,22 +240,24 @@
                 <input type="hidden" name="gates" value="" />
               </section>
 
-              <button class="btn primary request-service-cta hidden" type="button" id="requestServiceBtn">
-                <span>Book This Service</span>
-                <small>You'll confirm details on the next step</small>
+              <button class="btn primary request-service-cta hidden ui-icon-btn" type="button" id="requestServiceBtn">
+                <img src="/assets/icons/lucide/credit-card.svg" alt="" class="ui-icon">
+                <span class="ui-label">Book This Service</span>
+                <small class="ui-helper">You'll confirm details on the next step</small>
               </button>
-              <button class="btn secondary manual-quote-cta hidden" type="button" id="manualQuoteBtn">
-                <span>Request In-Person Quote</span>
-                <small>Want us to check it in person? No payment required.</small>
+              <button class="btn secondary manual-quote-cta hidden ui-icon-btn" type="button" id="manualQuoteBtn">
+                <img src="/assets/icons/lucide/user.svg" alt="" class="ui-icon">
+                <span class="ui-label">Request In-Person Quote</span>
+                <small class="ui-helper">Want us to check it in person? No payment required.</small>
               </button>
               <p class="meta hidden" id="checkoutTestModeNote" style="margin:8px 0 0">Stripe test checkout enabled. Use card 4242 4242 4242 4242.</p>
-              <button class="btn primary" type="submit" id="getEstimateBtn">Recalculate</button>
+              <button class="btn primary ui-icon-btn" type="submit" id="getEstimateBtn"><img src="/assets/icons/lucide/calculator.svg" alt="" class="ui-icon"><span class="ui-label">Recalculate</span></button>
             </section>
           </form>
 
           <section id="manualQuotePanel" class="quote-flow-screen lead-request-panel manual-quote-panel hidden" hidden>
             <div class="flow-screen-head">
-              <button class="flow-back-btn" type="button" id="closeManualQuotePanel">Back</button>
+              <button class="flow-back-btn ui-icon-btn" type="button" id="closeManualQuotePanel"><img src="/assets/icons/lucide/arrow-left.svg" alt="" class="ui-icon"><span class="ui-label">Back</span></button>
               <div>
                 <h2>Request In-Person Quote</h2>
                 <p>Want us to check it in person? No payment required.</p>
@@ -271,37 +273,38 @@
                 <p class="meta">Use an account to keep this request connected to your booking history.</p>
               </div>
               <div class="quote-auth-actions">
-                <button class="social-auth-btn google" type="button" data-social-auth="google" data-auth-return-step="manual">
+                <button class="social-auth-btn google ui-icon-btn" type="button" data-social-auth="google" data-auth-return-step="manual">
                   <span class="provider-mark">G</span>
                   <span>Continue with Google</span>
                 </button>
-                <button class="social-auth-btn facebook" type="button" data-social-auth="facebook" data-auth-return-step="manual">
+                <button class="social-auth-btn facebook ui-icon-btn" type="button" data-social-auth="facebook" data-auth-return-step="manual">
                   <span class="provider-mark">f</span>
                   <span>Continue with Facebook</span>
                 </button>
-                <button class="social-auth-btn email" type="button" data-email-auth-target="manualQuoteForm">
-                  <span class="provider-mark">@</span>
-                  <span>Continue with Email</span>
-                </button>
+                <button class="social-auth-btn email ui-icon-btn" type="button" data-email-auth-target="manualQuoteForm"><img src="/assets/icons/lucide/mail.svg" alt="" class="ui-icon"><span class="ui-label">Continue with Email</span></button>
               </div>
             </div>
             <form id="manualQuoteForm" class="stack request-form" style="gap:14px">
               <div class="grid-2">
                 <label><span>Your Name</span><input name="name" placeholder="Jane Smith" autocomplete="name" required /></label>
-                <label><span>Phone</span><input name="phone" type="tel" inputmode="tel" placeholder="555-555-5555" autocomplete="tel" required /></label>
+                <label><span>Phone</span><input name="phone" type="tel" inputmode="tel" placeholder="(479) 555-1234" autocomplete="tel" required /></label>
               </div>
+              <label class="sms-consent-control">
+                <input name="smsConsent" type="checkbox" value="true" required />
+                <span>I agree to receive SMS messages from MowNWA.com about my quote, booking, scheduling, job updates, payment/COD verification, and customer support. Message frequency may vary. Msg &amp; data rates may apply. Reply STOP to opt out or HELP for help. Consent is not a condition of purchase. View our <a href="/privacy.html">Privacy Policy</a> and <a href="/terms.html">Terms of Service</a>.</span>
+              </label>
               <label><span>Email <em>optional</em></span><input name="email" type="email" placeholder="you@example.com" autocomplete="email" /></label>
               <label><span>Preferred day/time <em>optional</em></span><input name="preferredDayTime" placeholder="Tuesday morning, after 3 PM, flexible" /></label>
               <label><span>Notes <em>optional</em></span><textarea name="notes" rows="4" placeholder="Anything we should check in person?"></textarea></label>
-              <button class="btn primary" type="submit" id="manualQuoteSubmitBtn">Submit Request</button>
-              <button class="btn ghost" type="button" id="cancelManualQuotePanel">Cancel</button>
+              <button class="btn primary ui-icon-btn" type="submit" id="manualQuoteSubmitBtn"><img src="/assets/icons/lucide/clipboard-check.svg" alt="" class="ui-icon"><span class="ui-label">Submit Request</span></button>
+              <button class="btn ghost ui-icon-btn" type="button" id="cancelManualQuotePanel"><img src="/assets/icons/lucide/x.svg" alt="" class="ui-icon"><span class="ui-label">Cancel</span></button>
             </form>
             <div id="manualQuoteResult" class="result hidden" style="margin-top:12px"></div>
           </section>
 
           <section id="leadRequestPanel" class="quote-flow-screen lead-request-panel hidden" data-quote-step-panel="request" hidden>
             <div class="flow-screen-head">
-              <button class="flow-back-btn" type="button" data-quote-back="estimate">Back</button>
+              <button class="flow-back-btn ui-icon-btn" type="button" data-quote-back="estimate"><img src="/assets/icons/lucide/arrow-left.svg" alt="" class="ui-icon"><span class="ui-label">Back</span></button>
               <div>
                 <h2>Secure Checkout</h2>
                 <p>Share booking details, then continue to Stripe test checkout.</p>
@@ -317,18 +320,15 @@
                 <p class="meta">Choose an account option, then finish your contact and service details.</p>
               </div>
               <div class="quote-auth-actions">
-                <button class="social-auth-btn google" type="button" data-social-auth="google" data-auth-return-step="request">
+                <button class="social-auth-btn google ui-icon-btn" type="button" data-social-auth="google" data-auth-return-step="request">
                   <span class="provider-mark">G</span>
                   <span>Continue with Google</span>
                 </button>
-                <button class="social-auth-btn facebook" type="button" data-social-auth="facebook" data-auth-return-step="request">
+                <button class="social-auth-btn facebook ui-icon-btn" type="button" data-social-auth="facebook" data-auth-return-step="request">
                   <span class="provider-mark">f</span>
                   <span>Continue with Facebook</span>
                 </button>
-                <button class="social-auth-btn email" type="button" data-email-auth-target="leadRequestForm">
-                  <span class="provider-mark">@</span>
-                  <span>Continue with Email</span>
-                </button>
+                <button class="social-auth-btn email ui-icon-btn" type="button" data-email-auth-target="leadRequestForm"><img src="/assets/icons/lucide/mail.svg" alt="" class="ui-icon"><span class="ui-label">Continue with Email</span></button>
               </div>
             </div>
             <form id="leadRequestForm" class="stack request-form" style="gap:14px" novalidate>
@@ -347,8 +347,12 @@
                 <input type="hidden" name="customerAdjustedMowableSqft" id="leadCustomerAdjustedMowableSqft" />
               <div class="grid-2">
                 <label><span>Your Name</span><input name="customerName" placeholder="Jane Smith" autocomplete="name" required /></label>
-                <label><span>Phone</span><input name="customerPhone" id="leadPhone" type="tel" inputmode="tel" placeholder="555-555-5555" autocomplete="tel" required /></label>
+                <label><span>Phone</span><input name="customerPhone" id="leadPhone" type="tel" inputmode="tel" placeholder="(479) 555-1234" autocomplete="tel" required /></label>
               </div>
+              <label class="sms-consent-control">
+                <input name="smsConsent" type="checkbox" value="true" required />
+                <span>I agree to receive SMS messages from MowNWA.com about my quote, booking, scheduling, job updates, payment/COD verification, and customer support. Message frequency may vary. Msg &amp; data rates may apply. Reply STOP to opt out or HELP for help. Consent is not a condition of purchase. View our <a href="/privacy.html">Privacy Policy</a> and <a href="/terms.html">Terms of Service</a>.</span>
+              </label>
               <label><span>Email</span><input name="customerEmail" type="email" placeholder="you@example.com" autocomplete="email" required /></label>
               <label><span>Service Address</span><input name="address" id="leadAddress" placeholder="123 Main St" autocomplete="street-address" required /></label>
               <div class="grid-3">
@@ -368,14 +372,14 @@
                   </select>
                 </label>
               </div>
-              <div class="checks compact-checks">
-                <label><input type="checkbox" name="available_days_json" value="monday" /> Monday</label>
-                <label><input type="checkbox" name="available_days_json" value="tuesday" /> Tuesday</label>
-                <label><input type="checkbox" name="available_days_json" value="wednesday" /> Wednesday</label>
-                <label><input type="checkbox" name="available_days_json" value="thursday" /> Thursday</label>
-                <label><input type="checkbox" name="available_days_json" value="friday" /> Friday</label>
-                <label><input type="checkbox" name="available_days_json" value="saturday" /> Saturday</label>
-                <label><input type="checkbox" name="available_days_json" value="sunday" /> Sunday</label>
+              <div class="preferred-days-grid" aria-label="Preferred days of the week">
+                <label class="preferred-day-card"><input type="checkbox" name="available_days_json" value="monday" /><span class="preferred-day-check" aria-hidden="true">✓</span><span class="preferred-day-icon" aria-hidden="true"><img src="/assets/icons/lucide/calendar-days.svg" alt="" class="ui-icon"></span><span class="preferred-day-name">Monday</span><span class="preferred-day-helper">Start of week</span></label>
+                <label class="preferred-day-card"><input type="checkbox" name="available_days_json" value="tuesday" /><span class="preferred-day-check" aria-hidden="true">✓</span><span class="preferred-day-icon" aria-hidden="true"><img src="/assets/icons/lucide/calendar-days.svg" alt="" class="ui-icon"></span><span class="preferred-day-name">Tuesday</span><span class="preferred-day-helper">Early week</span></label>
+                <label class="preferred-day-card"><input type="checkbox" name="available_days_json" value="wednesday" /><span class="preferred-day-check" aria-hidden="true">✓</span><span class="preferred-day-icon" aria-hidden="true"><img src="/assets/icons/lucide/calendar-days.svg" alt="" class="ui-icon"></span><span class="preferred-day-name">Wednesday</span><span class="preferred-day-helper">Midweek</span></label>
+                <label class="preferred-day-card"><input type="checkbox" name="available_days_json" value="thursday" /><span class="preferred-day-check" aria-hidden="true">✓</span><span class="preferred-day-icon" aria-hidden="true"><img src="/assets/icons/lucide/calendar-days.svg" alt="" class="ui-icon"></span><span class="preferred-day-name">Thursday</span><span class="preferred-day-helper">Before Friday</span></label>
+                <label class="preferred-day-card"><input type="checkbox" name="available_days_json" value="friday" /><span class="preferred-day-check" aria-hidden="true">✓</span><span class="preferred-day-icon" aria-hidden="true"><img src="/assets/icons/lucide/calendar-days.svg" alt="" class="ui-icon"></span><span class="preferred-day-name">Friday</span><span class="preferred-day-helper">End of week</span></label>
+                <label class="preferred-day-card"><input type="checkbox" name="available_days_json" value="saturday" /><span class="preferred-day-check" aria-hidden="true">✓</span><span class="preferred-day-icon" aria-hidden="true"><img src="/assets/icons/lucide/calendar-days.svg" alt="" class="ui-icon"></span><span class="preferred-day-name">Saturday</span><span class="preferred-day-helper">Weekend</span></label>
+                <label class="preferred-day-card"><input type="checkbox" name="available_days_json" value="sunday" /><span class="preferred-day-check" aria-hidden="true">✓</span><span class="preferred-day-icon" aria-hidden="true"><img src="/assets/icons/lucide/calendar-days.svg" alt="" class="ui-icon"></span><span class="preferred-day-name">Sunday</span><span class="preferred-day-helper">Weekend</span></label>
               </div>
               <input type="hidden" name="time_preference" value="any_time" />
               <input type="hidden" name="schedule_flexibility" value="soonest_available" />
@@ -384,8 +388,8 @@
               <input type="hidden" name="specific_service_date" />
               <label><span>Access Notes</span><textarea name="notes" rows="4" placeholder="Access, dogs, HOA rules, timing, or anything the crew should know."></textarea></label>
               <p class="meta" style="margin:0">Stripe test checkout enabled. Use card 4242 4242 4242 4242.</p>
-              <button class="btn primary" type="submit" id="leadSubmitBtn">Book &amp; Pay Securely</button>
-              <button class="btn ghost" type="button" id="closeleadRequestPanel">Cancel</button>
+              <button class="btn primary ui-icon-btn" type="submit" id="leadSubmitBtn"><img src="/assets/icons/lucide/credit-card.svg" alt="" class="ui-icon"><span class="ui-label">Book &amp; Pay Securely</span></button>
+              <button class="btn ghost ui-icon-btn" type="button" id="closeleadRequestPanel"><img src="/assets/icons/lucide/x.svg" alt="" class="ui-icon"><span class="ui-label">Cancel</span></button>
             </form>
             <div id="leadRequestResult" class="result hidden" style="margin-top:12px"></div>
           </section>
@@ -411,32 +415,33 @@
                 <li>Get updates about scheduling and completed work</li>
               </ul>
               <div class="quote-auth-actions account-recommend-auth">
-                <button class="social-auth-btn google" type="button" data-social-auth="google" data-auth-return-step="request">
+                <button class="social-auth-btn google ui-icon-btn" type="button" data-social-auth="google" data-auth-return-step="request">
                   <span class="provider-mark">G</span>
                   <span>Continue with Google</span>
                 </button>
-                <button class="social-auth-btn facebook" type="button" data-social-auth="facebook" data-auth-return-step="request">
+                <button class="social-auth-btn facebook ui-icon-btn" type="button" data-social-auth="facebook" data-auth-return-step="request">
                   <span class="provider-mark">f</span>
                   <span>Continue with Facebook</span>
                 </button>
-                <button class="btn primary" type="button" id="accountRecommendCreateBtn">Continue with Email</button>
+                <button class="btn primary ui-icon-btn" type="button" id="accountRecommendCreateBtn"><img src="/assets/icons/lucide/mail.svg" alt="" class="ui-icon"><span class="ui-label">Continue with Email</span></button>
               </div>
-              <button class="btn ghost" type="button" id="accountRecommendGuestBtn">Continue as Guest</button>
+              <button class="btn ghost ui-icon-btn" type="button" id="accountRecommendGuestBtn"><img src="/assets/icons/lucide/user.svg" alt="" class="ui-icon"><span class="ui-label">Continue as Guest</span></button>
             </div>
             <div id="accountRecommendAuthForm" class="hidden" style="margin-top:16px">
               <h3 style="margin:0 0 8px">Create Account</h3>
               <form id="accountRecommendRegisterForm" class="stack" style="gap:10px">
                 <label><span>Full Name</span><input name="fullName" autocomplete="name" required /></label>
                 <label><span>Email</span><input name="email" type="email" autocomplete="email" required /></label>
+                <label><span>Phone</span><input name="phone" type="tel" inputmode="tel" autocomplete="tel" required /></label>
                 <label><span>Password</span><input name="password" type="password" autocomplete="new-password" required minlength="8" /></label>
-                <button class="btn primary" type="submit" id="accountRecommendRegisterBtn">Create Account &amp; Proceed to Checkout</button>
-                <p class="meta" style="text-align:center;margin:0">Already have an account? <button type="button" class="link-btn" id="accountRecommendLoginToggle">Sign in instead</button></p>
+                <button class="btn primary ui-icon-btn" type="submit" id="accountRecommendRegisterBtn"><img src="/assets/icons/lucide/user.svg" alt="" class="ui-icon"><span class="ui-label">Create Account &amp; Proceed to Checkout</span></button>
+                <p class="meta" style="text-align:center;margin:0">Already have an account? <button type="button" class="link-btn ui-icon-btn" id="accountRecommendLoginToggle"><img src="/assets/icons/lucide/log-in.svg" alt="" class="ui-icon"><span class="ui-label">Sign in instead</span></button></p>
               </form>
               <form id="accountRecommendLoginForm" class="stack hidden" style="gap:10px">
                 <label><span>Email</span><input name="email" type="email" autocomplete="email" required /></label>
                 <label><span>Password</span><input name="password" type="password" autocomplete="current-password" required /></label>
-                <button class="btn primary" type="submit" id="accountRecommendLoginBtn">Sign In &amp; Proceed to Checkout</button>
-                <p class="meta" style="text-align:center;margin:0">New user? <button type="button" class="link-btn" id="accountRecommendRegisterToggle">Create account instead</button></p>
+                <button class="btn primary ui-icon-btn" type="submit" id="accountRecommendLoginBtn"><img src="/assets/icons/lucide/log-in.svg" alt="" class="ui-icon"><span class="ui-label">Sign In &amp; Proceed to Checkout</span></button>
+                <p class="meta" style="text-align:center;margin:0">New user? <button type="button" class="link-btn ui-icon-btn" id="accountRecommendRegisterToggle"><img src="/assets/icons/lucide/user.svg" alt="" class="ui-icon"><span class="ui-label">Create account instead</span></button></p>
               </form>
               <div id="accountRecommendAuthResult" class="result hidden" style="margin-top:8px"></div>
             </div>
@@ -464,8 +469,8 @@
             <div id="checkoutCancelContent" style="padding:4px 0">
               <p>Your card was not charged. You can return to the quote and book when you are ready.</p>
               <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
-                <button class="btn primary" type="button" onclick="showQuoteFlowStep('estimate')">Return to Quote</button>
-                <button class="btn ghost" type="button" onclick="setActiveView('quote')">Start Over</button>
+                <button class="btn primary ui-icon-btn" type="button" onclick="showQuoteFlowStep('estimate')"><img src="/assets/icons/lucide/calculator.svg" alt="" class="ui-icon"><span class="ui-label">Return to Quote</span></button>
+                <button class="btn ghost ui-icon-btn" type="button" onclick="setActiveView('quote')"><img src="/assets/icons/lucide/rotate-ccw.svg" alt="" class="ui-icon"><span class="ui-label">Start Over</span></button>
               </div>
             </div>
           </section>
@@ -485,6 +490,10 @@
                   <label><span>Name</span><input name="customerName" autocomplete="name" /></label>
                   <label><span>Phone</span><input name="customerPhone" type="tel" inputmode="tel" autocomplete="tel" /></label>
                 </div>
+                <label class="sms-consent-control">
+                  <input name="smsConsent" type="checkbox" value="true" required />
+                  <span>I agree to receive SMS messages from MowNWA.com about my quote, booking, scheduling, job updates, payment/COD verification, and customer support. Message frequency may vary. Msg &amp; data rates may apply. Reply STOP to opt out or HELP for help. Consent is not a condition of purchase. View our <a href="/privacy.html">Privacy Policy</a> and <a href="/terms.html">Terms of Service</a>.</span>
+                </label>
                 <label><span>Email</span><input name="customerEmail" type="email" autocomplete="email" /></label>
                 <label><span>Service Address</span><input name="address" placeholder="123 Main St" required /></label>
                 <div class="grid-3">
@@ -536,14 +545,14 @@
                 </section>
                 <section class="intake-section">
                   <div class="section-label">Scheduling availability</div>
-                  <div class="checks compact-checks">
-                    <label><input type="checkbox" name="available_days_json" value="monday" /> Monday</label>
-                    <label><input type="checkbox" name="available_days_json" value="tuesday" /> Tuesday</label>
-                    <label><input type="checkbox" name="available_days_json" value="wednesday" /> Wednesday</label>
-                    <label><input type="checkbox" name="available_days_json" value="thursday" /> Thursday</label>
-                    <label><input type="checkbox" name="available_days_json" value="friday" /> Friday</label>
-                    <label><input type="checkbox" name="available_days_json" value="saturday" /> Saturday</label>
-                    <label><input type="checkbox" name="available_days_json" value="sunday" /> Sunday</label>
+                  <div class="preferred-days-grid" aria-label="Preferred days of the week">
+                    <label class="preferred-day-card"><input type="checkbox" name="available_days_json" value="monday" /><span class="preferred-day-check" aria-hidden="true">✓</span><span class="preferred-day-icon" aria-hidden="true"><img src="/assets/icons/lucide/calendar-days.svg" alt="" class="ui-icon"></span><span class="preferred-day-name">Monday</span><span class="preferred-day-helper">Start of week</span></label>
+                    <label class="preferred-day-card"><input type="checkbox" name="available_days_json" value="tuesday" /><span class="preferred-day-check" aria-hidden="true">✓</span><span class="preferred-day-icon" aria-hidden="true"><img src="/assets/icons/lucide/calendar-days.svg" alt="" class="ui-icon"></span><span class="preferred-day-name">Tuesday</span><span class="preferred-day-helper">Early week</span></label>
+                    <label class="preferred-day-card"><input type="checkbox" name="available_days_json" value="wednesday" /><span class="preferred-day-check" aria-hidden="true">✓</span><span class="preferred-day-icon" aria-hidden="true"><img src="/assets/icons/lucide/calendar-days.svg" alt="" class="ui-icon"></span><span class="preferred-day-name">Wednesday</span><span class="preferred-day-helper">Midweek</span></label>
+                    <label class="preferred-day-card"><input type="checkbox" name="available_days_json" value="thursday" /><span class="preferred-day-check" aria-hidden="true">✓</span><span class="preferred-day-icon" aria-hidden="true"><img src="/assets/icons/lucide/calendar-days.svg" alt="" class="ui-icon"></span><span class="preferred-day-name">Thursday</span><span class="preferred-day-helper">Before Friday</span></label>
+                    <label class="preferred-day-card"><input type="checkbox" name="available_days_json" value="friday" /><span class="preferred-day-check" aria-hidden="true">✓</span><span class="preferred-day-icon" aria-hidden="true"><img src="/assets/icons/lucide/calendar-days.svg" alt="" class="ui-icon"></span><span class="preferred-day-name">Friday</span><span class="preferred-day-helper">End of week</span></label>
+                    <label class="preferred-day-card"><input type="checkbox" name="available_days_json" value="saturday" /><span class="preferred-day-check" aria-hidden="true">✓</span><span class="preferred-day-icon" aria-hidden="true"><img src="/assets/icons/lucide/calendar-days.svg" alt="" class="ui-icon"></span><span class="preferred-day-name">Saturday</span><span class="preferred-day-helper">Weekend</span></label>
+                    <label class="preferred-day-card"><input type="checkbox" name="available_days_json" value="sunday" /><span class="preferred-day-check" aria-hidden="true">✓</span><span class="preferred-day-icon" aria-hidden="true"><img src="/assets/icons/lucide/calendar-days.svg" alt="" class="ui-icon"></span><span class="preferred-day-name">Sunday</span><span class="preferred-day-helper">Weekend</span></label>
                   </div>
                   <div class="grid-2">
                     <label><span>Time Preference</span>
@@ -591,7 +600,7 @@
                     <option value="specific_date">Specific date in notes</option>
                   </select>
                 </label>
-                <button class="btn primary" type="submit" id="liveBidSubmitBtn">Submit Bid Request</button>
+                <button class="btn primary ui-icon-btn" type="submit" id="liveBidSubmitBtn"><img src="/assets/icons/lucide/clipboard-check.svg" alt="" class="ui-icon"><span class="ui-label">Submit Bid Request</span></button>
               </form>
               <div id="liveBidResult" class="result hidden" style="margin-top:12px"></div>
             </section>

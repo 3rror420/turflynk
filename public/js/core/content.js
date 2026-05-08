@@ -33,6 +33,10 @@ function bindLocalContentLinks(root = document) {
   });
 }
 
+function contentUiIcon(name, label) {
+  return `<img src="/assets/icons/lucide/${name}.svg" alt="" class="ui-icon"><span class="ui-label">${escapeHtml(label)}</span>`;
+}
+
 function renderFaqItems(faqs = []) {
   return faqs.map((faq) => `
     <div class="card">
@@ -71,7 +75,7 @@ function renderHomepageContent() {
           <span class="service-badge ${service.quoteType === 'instant_mow' ? 'instant' : 'bid'}">${escapeHtml(service.badge)}</span>
         </div>
         <p>${escapeHtml(service.description)}</p>
-        <button class="btn ${service.quoteType === 'instant_mow' ? 'primary' : 'secondary'} small service-select-btn" type="button" data-service-card="${escapeHtml(service.id)}">Continue</button>
+        <button class="btn ${service.quoteType === 'instant_mow' ? 'primary' : 'secondary'} small service-select-btn ui-icon-btn" type="button" data-service-card="${escapeHtml(service.id)}">${contentUiIcon(service.quoteType === 'instant_mow' ? 'calculator' : 'clipboard-check', 'Continue')}</button>
       `));
       });
     });
@@ -111,7 +115,7 @@ function renderLocalLanding(entry, type) {
       <div class="pill muted">Arkansas lawn care</div>
       <h2>Local lawn care estimates</h2>
       <p class="section-copy">That page is not available yet, but you can still start an estimate with your Arkansas address.</p>
-      <button class="btn primary" type="button" data-jump-view="quote">Get a lawn care estimate</button>
+      <button class="btn primary ui-icon-btn" type="button" data-jump-view="quote">${contentUiIcon('calculator', 'Get a lawn care estimate')}</button>
     `;
     panel.querySelectorAll('[data-jump-view]').forEach((btn) => {
       btn.addEventListener('click', () => setActiveView(btn.dataset.jumpView));
@@ -134,8 +138,8 @@ function renderLocalLanding(entry, type) {
     <h2>${escapeHtml(entry.heroTitle || entry.name || 'Local lawn care estimates')}</h2>
     <p class="section-copy">${escapeHtml(entry.heroSubtitle || entry.shortDescription || 'Start with an address and review an estimate before continuing.')}</p>
     <div class="local-landing-actions">
-      <button class="btn primary" type="button" data-jump-view="quote">${escapeHtml(entry.ctaText || 'Get an estimate')}</button>
-      <button class="btn secondary" type="button" data-local-path="/">Back to Northwest Arkansas</button>
+      <button class="btn primary ui-icon-btn" type="button" data-jump-view="quote">${contentUiIcon('calculator', entry.ctaText || 'Get an estimate')}</button>
+      <button class="btn secondary ui-icon-btn" type="button" data-local-path="/">${contentUiIcon('home', 'Back to Northwest Arkansas')}</button>
     </div>
     <div class="section-grid two-up local-detail-grid">
       <div class="mini-card">
@@ -206,7 +210,7 @@ function renderCoverage() {
         <div class="meta">${escapeHtml(area.shortDescription || 'Request lawn care estimates in this area.')}</div>
         <div class="meta">Counties: ${escapeHtml((area.counties || []).join(', '))}</div>
         <div class="meta">Cities: ${escapeHtml((area.neighborhoodsOrNearbyAreas || []).slice(0, 6).join(', '))}</div>
-        <button class="btn secondary small" type="button" data-local-path="/areas/${escapeHtml(area.slug)}">View area</button>
+        <button class="btn secondary small ui-icon-btn" type="button" data-local-path="/areas/${escapeHtml(area.slug)}">${contentUiIcon('map', 'View area')}</button>
       `));
     });
 
@@ -216,7 +220,7 @@ function renderCoverage() {
         <div class="meta">${escapeHtml(city.shortDescription || `${city.name} lawn care estimates.`)}</div>
         <div class="meta">Common needs: ${escapeHtml((city.commonServices || []).slice(0, 4).join(', '))}</div>
         <div class="meta">Nearby: ${escapeHtml((city.neighborhoodsOrNearbyAreas || []).slice(0, 5).join(', '))}</div>
-        <button class="btn secondary small" type="button" data-local-path="/cities/${escapeHtml(city.slug)}">View ${escapeHtml(city.name)}</button>
+        <button class="btn secondary small ui-icon-btn" type="button" data-local-path="/cities/${escapeHtml(city.slug)}">${contentUiIcon('map-pin', `View ${city.name}`)}</button>
       `));
     });
     bindLocalContentLinks(grid);

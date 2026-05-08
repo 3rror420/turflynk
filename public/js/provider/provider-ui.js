@@ -105,8 +105,34 @@ function providerError(title, error) {
   if (el) el.innerHTML = `<h3>${escapeHtml(title)}</h3><div class="account-card">${accountEmptyMessage(prettyApiError(error))}</div>`;
 }
 
+function providerUiIcon(name, label) {
+  return `<img src="/assets/icons/lucide/${name}.svg" alt="" class="ui-icon"><span class="ui-label">${escapeHtml(label)}</span>`;
+}
+
+function providerSectionIcon(section) {
+  return {
+    dashboard: 'truck',
+    jobs: 'clipboard-check',
+    history: 'clock',
+    services: 'wrench',
+    areas: 'map-pin',
+    profile: 'user',
+    settings: 'settings'
+  }[section] || 'settings';
+}
+
 function providerQuickButton(label, section) {
-  return `<button class="btn secondary small" type="button" data-provider-action="${escapeHtml(section)}">${escapeHtml(label)}</button>`;
+  return `<button class="btn secondary small ui-icon-btn" type="button" data-provider-action="${escapeHtml(section)}">${providerUiIcon(providerSectionIcon(section), label)}</button>`;
+}
+
+function providerPaymentBadge(job = {}) {
+  const status = String(job.paymentStatus || job.payment_status || 'unpaid').trim().toLowerCase().replace(/\s+/g, '_');
+  const label = status === 'onsite_pending'
+    ? 'Cash/Check Due'
+    : status === 'paid'
+      ? 'Paid'
+      : status.replace(/_/g, ' ');
+  return `<span class="payment-badge ${escapeHtml(status)}">${escapeHtml(label)}</span>`;
 }
 
 /* ── Provider dashboard ──────────────────────────────────────────────────── */
@@ -170,17 +196,69 @@ function providerPhotosHtml(job = {}) {
   return links ? `<div class="meta">Photos: ${links}</div>` : '';
 }
 
+function providerJobPhotoUrls(job = {}, category = 'before') {
+  const key = category === 'after' ? 'afterPhotoUrls' : 'beforePhotoUrls';
+  return Array.isArray(job[key]) ? job[key] : [];
+}
+
+function providerJobPhotoThumbs(job = {}, category = 'before') {
+  const urls = providerJobPhotoUrls(job, category);
+  if (!urls.length) return '<div class="meta">No photos yet.</div>';
+  return urls.map((url, index) => `
+    <div class="job-photo-thumb">
+      <a href="${escapeHtml(url)}" target="_blank" rel="noopener">
+        <img src="${escapeHtml(url)}" alt="${escapeHtml(`${category} photo ${index + 1}`)}" />
+      </a>
+      <button class="btn secondary small" type="button" data-provider-remove-job-photo="${escapeHtml(category)}" data-provider-job-id="${escapeHtml(job.id || '')}" data-url="${escapeHtml(url)}">Remove</button>
+    </div>
+  `).join('');
+}
+
+function providerJobPhotoSection(job = {}, category = 'before', label = 'Before Photos') {
+  return `
+    <section class="job-photo-section">
+      <div class="job-photo-section-head">
+        <strong>${escapeHtml(label)}</strong>
+        <label class="btn secondary small job-photo-upload">
+          Upload
+          <input type="file" multiple accept="image/*" data-provider-job-photo-upload="${escapeHtml(category)}" data-provider-job-id="${escapeHtml(job.id || '')}" />
+        </label>
+      </div>
+      <div class="job-photo-grid">${providerJobPhotoThumbs(job, category)}</div>
+    </section>
+  `;
+}
+
+function providerJobPhotoManagerHtml(job = {}, options = {}) {
+  if (options.compact) return '';
+  return `
+    <div class="job-photo-manager">
+      ${providerJobPhotoSection(job, 'before', 'Before Photos')}
+      ${providerJobPhotoSection(job, 'after', 'After Photos')}
+    </div>
+  `;
+}
+
+function providerMergePhotoUrls(existing = [], incoming = []) {
+  return [...new Set([...(Array.isArray(existing) ? existing : []), ...(Array.isArray(incoming) ? incoming : [])].filter(Boolean))];
+}
+
 function providerJobActions(job = {}) {
   const id = escapeHtml(job.id || '');
   const status = job.status || '';
+  const paymentStatus = String(job.paymentStatus || job.payment_status || '').toLowerCase();
   const actions = [];
+  if (paymentStatus === 'onsite_pending') actions.push(['payment_paid', 'Mark Paid']);
   if (['assigned', 'claimed'].includes(status)) actions.push(['scheduled', 'Mark scheduled']);
   if (['assigned', 'claimed', 'scheduled'].includes(status)) actions.push(['in_progress', 'Mark in progress']);
   if (['assigned', 'claimed', 'scheduled', 'in_progress'].includes(status)) actions.push(['completed', 'Mark completed']);
   if (!['completed', 'canceled', 'cancelled', 'refunded'].includes(status)) actions.push(['canceled', 'Cancel / decline']);
   return actions.length ? `
     <div class="provider-job-actions">
-      ${actions.map(([nextStatus, label]) => `<button class="btn secondary small" type="button" data-provider-job-status="${escapeHtml(nextStatus)}" data-provider-job-id="${id}">${escapeHtml(label)}</button>`).join('')}
+      ${actions.map(([nextStatus, label]) => {
+        const paymentAction = nextStatus === 'payment_paid';
+        return `<button class="btn secondary small ui-icon-btn" type="button" ${paymentAction ? 'data-provider-mark-paid="true"' : `data-provider-job-status="${escapeHtml(nextStatus)}"`} data-provider-job-id="${id}">${providerUiIcon(paymentAction ? 'badge-dollar-sign' : nextStatus === 'completed' ? 'circle-check' : nextStatus === 'canceled' ? 'x' : 'clipboard-check', label)}</button>`;
+      }).join('')}
     </div>
   ` : '';
 }
@@ -195,7 +273,7 @@ function providerJobCard(job = {}, options = {}) {
     <div class="provider-job-card-head">
       <div>
         <h4>${escapeHtml(safe.title || 'Lawn Service')}</h4>
-        <div class="meta">${escapeHtml(serviceLabel(safe.serviceType))} &middot; ${statusBadge(safe.status)}</div>
+        <div class="meta">${escapeHtml(serviceLabel(safe.serviceType))} &middot; ${statusBadge(safe.status)} &middot; ${providerPaymentBadge(job)}</div>
       </div>
       <strong>${money(safe.amount)}</strong>
     </div>
@@ -205,15 +283,36 @@ function providerJobCard(job = {}, options = {}) {
     <div class="meta">Preferred: ${escapeHtml(safe.preferredDate || 'Flexible')} &middot; Created: ${created ? escapeHtml(new Date(created).toLocaleDateString()) : 'n/a'}</div>
     ${access ? `<div class="meta">${escapeHtml(access)}</div>` : ''}
     ${providerPhotosHtml(job)}
-    ${options.compact ? '' : `<details class="provider-job-details"><summary>View details</summary><pre>${escapeHtml(details || 'No notes yet.')}</pre>${renderJobScopeSnapshot(job, safe)}</details>`}
+    ${options.compact ? '' : renderJobScopeSnapshot(job, safe)}
+    ${providerJobPhotoManagerHtml(job, options)}
+    ${options.compact ? '' : `<details class="provider-job-details"><summary>View details</summary><pre>${escapeHtml(details || 'No notes yet.')}</pre></details>`}
     ${options.readonly ? '' : providerJobActions(job)}
   `;
   const item = card(html);
   item.classList.add('provider-job-card');
+  item.dataset.providerJobCardId = String(job.id || '');
+  item._providerJob = job;
   return item;
 }
 
 function wireProviderJobStatusButtons(root = document, reload = () => renderProviderJobs('active')) {
+  $$('[data-provider-mark-paid]', root).forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const jobId = btn.dataset.providerJobId;
+      btn.disabled = true;
+      try {
+        await api(`/api/provider/jobs/${encodeURIComponent(jobId)}/payment`, {
+          method: 'PATCH',
+          body: JSON.stringify({ payment_status: 'paid' })
+        });
+        showSuccess('Payment marked paid');
+        await reload();
+      } catch (error) {
+        showError(prettyApiError(error));
+        btn.disabled = false;
+      }
+    });
+  });
   $$('[data-provider-job-status]', root).forEach((btn) => {
     btn.addEventListener('click', async () => {
       const status = btn.dataset.providerJobStatus;
@@ -235,6 +334,87 @@ function wireProviderJobStatusButtons(root = document, reload = () => renderProv
   });
 }
 
+async function uploadProviderJobPhotoFiles(jobId, category, files) {
+  if (!files.length) return;
+  const cardEl = providerJobCardElement(jobId);
+  const job = cardEl?._providerJob || {};
+  const fd = new FormData();
+  fd.append('jobId', jobId);
+  fd.append('category', category);
+  files.forEach((file) => fd.append('photos', file));
+  const uploadRes = await fetch('/api/upload', { method: 'POST', body: fd });
+  const uploadText = await uploadRes.text();
+  let uploadData = null;
+  try {
+    uploadData = JSON.parse(uploadText);
+  } catch {
+    throw new Error(`Upload did not return JSON: ${uploadText.slice(0, 120)}`);
+  }
+  if (!uploadRes.ok || !uploadData.ok) throw new Error(uploadData?.error || 'Upload failed');
+  const uploadedUrls = (uploadData.files || []).map((file) => file.url).filter(Boolean);
+  const beforePhotoUrls = category === 'before'
+    ? providerMergePhotoUrls(providerJobPhotoUrls(job, 'before'), uploadedUrls)
+    : providerJobPhotoUrls(job, 'before');
+  const afterPhotoUrls = category === 'after'
+    ? providerMergePhotoUrls(providerJobPhotoUrls(job, 'after'), uploadedUrls)
+    : providerJobPhotoUrls(job, 'after');
+  await api(`/api/provider/jobs/${encodeURIComponent(jobId)}/photos`, {
+    method: 'PATCH',
+    body: JSON.stringify({ beforePhotoUrls, afterPhotoUrls }),
+  });
+}
+
+async function removeProviderJobPhoto(jobId, category, url) {
+  const cardEl = providerJobCardElement(jobId);
+  const job = cardEl?._providerJob || {};
+  const beforePhotoUrls = category === 'before'
+    ? providerJobPhotoUrls(job, 'before').filter((item) => item !== url)
+    : providerJobPhotoUrls(job, 'before');
+  const afterPhotoUrls = category === 'after'
+    ? providerJobPhotoUrls(job, 'after').filter((item) => item !== url)
+    : providerJobPhotoUrls(job, 'after');
+  await api(`/api/provider/jobs/${encodeURIComponent(jobId)}/photos`, {
+    method: 'PATCH',
+    body: JSON.stringify({ beforePhotoUrls, afterPhotoUrls }),
+  });
+}
+
+function providerJobCardElement(jobId) {
+  return Array.from(document.querySelectorAll('[data-provider-job-card-id]'))
+    .find((el) => el.dataset.providerJobCardId === String(jobId));
+}
+
+function wireProviderJobPhotoControls(root = document, reload = () => renderProviderJobs('active')) {
+  $$('[data-provider-job-photo-upload]', root).forEach((input) => {
+    input.addEventListener('change', async () => {
+      const files = Array.from(input.files || []);
+      if (!files.length) return;
+      input.disabled = true;
+      try {
+        await uploadProviderJobPhotoFiles(input.dataset.providerJobId, input.dataset.providerJobPhotoUpload, files);
+        showSuccess('Job photos uploaded');
+        await reload();
+      } catch (error) {
+        showError(prettyApiError(error));
+        input.disabled = false;
+      }
+    });
+  });
+  $$('[data-provider-remove-job-photo]', root).forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      try {
+        await removeProviderJobPhoto(btn.dataset.providerJobId, btn.dataset.providerRemoveJobPhoto, btn.dataset.url);
+        showSuccess('Job photo removed');
+        await reload();
+      } catch (error) {
+        showError(prettyApiError(error));
+        btn.disabled = false;
+      }
+    });
+  });
+}
+
 /* ── Provider job views ──────────────────────────────────────────────────── */
 
 async function renderProviderJobs(filter = 'active') {
@@ -246,7 +426,7 @@ async function renderProviderJobs(filter = 'active') {
     el.innerHTML = `
       <div class="provider-section-head">
         <h3>My Jobs</h3>
-        <button class="btn secondary small" type="button" id="refreshProviderJobsBtn">Refresh</button>
+        <button class="btn secondary small ui-icon-btn" type="button" id="refreshProviderJobsBtn">${providerUiIcon('refresh-cw', 'Refresh')}</button>
       </div>
       <div id="providerJobsList" class="card-list"></div>
     `;
@@ -257,7 +437,9 @@ async function renderProviderJobs(filter = 'active') {
       return;
     }
     data.jobs.forEach((job) => list.append(providerJobCard(job)));
+    if (typeof initJobScopeSnapshotMaps === 'function') initJobScopeSnapshotMaps(list);
     wireProviderJobStatusButtons(list, () => renderProviderJobs(filter));
+    wireProviderJobPhotoControls(list, () => renderProviderJobs(filter));
   } catch (error) {
     providerError('My Jobs', error);
   }
@@ -279,7 +461,7 @@ async function renderProviderJobHistory(filter = 'history') {
     el.innerHTML = `
       <h3>Job History</h3>
       <div class="provider-filter-row">
-        ${filters.map(([value, label]) => `<button class="account-menu-item ${value === filter ? 'active' : ''}" type="button" data-provider-history-filter="${escapeHtml(value)}">${escapeHtml(label)}</button>`).join('')}
+        ${filters.map(([value, label]) => `<button class="account-menu-item ui-icon-btn ${value === filter ? 'active' : ''}" type="button" data-provider-history-filter="${escapeHtml(value)}">${providerUiIcon(value === 'completed' ? 'circle-check' : value === 'canceled' ? 'x' : 'clock', label)}</button>`).join('')}
       </div>
       <div id="providerHistoryList" class="card-list"></div>
     `;
@@ -292,7 +474,9 @@ async function renderProviderJobHistory(filter = 'history') {
       return;
     }
     data.jobs.forEach((job) => list.append(providerJobCard(job, { readonly: ['completed', 'canceled', 'cancelled', 'refunded'].includes(job.status) })));
+    if (typeof initJobScopeSnapshotMaps === 'function') initJobScopeSnapshotMaps(list);
     wireProviderJobStatusButtons(list, () => renderProviderJobHistory(filter));
+    wireProviderJobPhotoControls(list, () => renderProviderJobHistory(filter));
   } catch (error) {
     providerError('Job History', error);
   }
@@ -321,7 +505,7 @@ async function renderProviderServices() {
             <label><span>Notes</span><textarea name="notes" rows="2">${escapeHtml(service.notes || '')}</textarea></label>
           </section>
         `).join('')}
-        <button class="btn primary" type="submit">Save Services</button>
+        <button class="btn primary ui-icon-btn" type="submit">${providerUiIcon('save', 'Save Services')}</button>
       </form>
       <div id="providerServicesResult" class="result hidden"></div>
     `;
@@ -382,7 +566,7 @@ async function renderProviderServiceAreas() {
           <label><span>Pause new jobs</span><select name="serviceAreasPaused"><option value="false">Active</option><option value="true" ${prefs.service_areas_paused ? 'selected' : ''}>Paused</option></select></label>
         </div>
         <label><span>Notes</span><textarea name="notes" rows="3">${escapeHtml(settings.notes || '')}</textarea></label>
-        <button class="btn primary" type="submit">Save Service Areas</button>
+        <button class="btn primary ui-icon-btn" type="submit">${providerUiIcon('map-pin', 'Save Service Areas')}</button>
       </form>
       <div id="providerAreasResult" class="result hidden"></div>
     `;
@@ -444,7 +628,7 @@ async function renderProviderProfile() {
         </div>
         <label><span>Equipment</span><input name="equipment" value="${escapeHtml(profile.equipment || '')}" /></label>
         <label><span>Bio / notes</span><textarea name="bio" rows="4">${escapeHtml(profile.bio || '')}</textarea></label>
-        <button class="btn primary" type="submit">Save Provider Profile</button>
+        <button class="btn primary ui-icon-btn" type="submit">${providerUiIcon('user', 'Save Provider Profile')}</button>
       </form>
       <div id="providerProfileResult" class="result hidden"></div>
     `;
@@ -539,9 +723,11 @@ async function loadProviderPaidJobs() {
         <div class="meta">${escapeHtml(serviceLabel(safe.serviceType))} &middot; ${escapeHtml(safe.location)}</div>
         <div class="meta">Estimate: <strong>${money(safe.amount)}</strong> &middot; Preferred ${escapeHtml(safe.preferredDate || 'Flexible')}</div>
         <div class="meta">${statusBadge(safe.status)}</div>
-        <button class="btn primary small" type="button" data-claim-paid-job="${escapeHtml(safe.id)}" style="margin-top:8px">Claim Job</button>
+        ${renderJobScopeSnapshot(job, safe)}
+        <button class="btn primary small ui-icon-btn" type="button" data-claim-paid-job="${escapeHtml(safe.id)}" style="margin-top:8px">${providerUiIcon('clipboard-check', 'Claim Job')}</button>
       `));
     });
+    if (typeof initJobScopeSnapshotMaps === 'function') initJobScopeSnapshotMaps(list);
     list.querySelectorAll('[data-claim-paid-job]').forEach((btn) => {
       btn.addEventListener('click', async () => {
         btn.disabled = true;
@@ -588,7 +774,7 @@ async function loadOpenJobsForProvider() {
         <div class="meta">${escapeHtml(serviceLabel(safe.serviceType))} &middot; ${escapeHtml(safe.location)}</div>
         <div class="meta">Estimate: <strong>${money(safe.amount)}</strong> &nbsp;&middot;&nbsp; ${statusBadge(safe.status)}</div>
         <div class="meta" style="font-size:.85rem">Posted: ${safe.postedAt ? new Date(safe.postedAt).toLocaleDateString() : 'n/a'}</div>
-        ${isProvider ? `<button class="btn primary small" data-accept-job="${escapeHtml(safe.id)}" style="margin-top:8px">Accept Job</button>` : ''}
+        ${isProvider ? `<button class="btn primary small ui-icon-btn" data-accept-job="${escapeHtml(safe.id)}" style="margin-top:8px">${providerUiIcon('circle-check', 'Accept Job')}</button>` : ''}
       `);
       list.append(c);
     });

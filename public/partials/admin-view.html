@@ -2,7 +2,7 @@
         <div id="adminAuthWall" class="panel" style="display:none;text-align:center;padding:40px">
           <h3>Admin access required</h3>
           <p class="section-copy">Log in as an admin to manage operations.</p>
-          <button class="btn primary" type="button" onclick="document.getElementById('openAuth').click()">Log In</button>
+          <button class="btn primary ui-icon-btn" type="button" onclick="document.getElementById('openAuth').click()"><img src="/assets/icons/lucide/log-in.svg" alt="" class="ui-icon"><span class="ui-label">Log In</span></button>
         </div>
 
         <section class="panel admin-only admin-console" id="adminConsole">
@@ -11,24 +11,24 @@
               <h2>Admin Console</h2>
               <p class="section-copy" style="margin:0">Operational controls for jobs, users, providers, pricing, and system tools.</p>
             </div>
-            <button class="btn secondary small" id="adminConsoleRefresh" type="button">Refresh</button>
+            <button class="btn secondary small ui-icon-btn" id="adminConsoleRefresh" type="button"><img src="/assets/icons/lucide/refresh-cw.svg" alt="" class="ui-icon"><span class="ui-label">Refresh</span></button>
           </div>
 
           <div class="admin-tabs" role="tablist" aria-label="Admin sections">
-            <button class="admin-tab active" type="button" data-admin-tab="overview" role="tab" aria-selected="true">Overview</button>
-            <button class="admin-tab" type="button" data-admin-tab="jobs" role="tab" aria-selected="false">Jobs</button>
-            <button class="admin-tab" type="button" data-admin-tab="quotes" role="tab" aria-selected="false">Quotes</button>
-            <button class="admin-tab" type="button" data-admin-tab="users" role="tab" aria-selected="false">Users</button>
-            <button class="admin-tab" type="button" data-admin-tab="providers" role="tab" aria-selected="false">Providers</button>
-            <button class="admin-tab" type="button" data-admin-tab="pricing" role="tab" aria-selected="false">Pricing</button>
-            <button class="admin-tab" type="button" data-admin-tab="system" role="tab" aria-selected="false">System</button>
+            <button class="admin-tab active ui-icon-btn" type="button" data-admin-tab="overview" role="tab" aria-selected="true"><img src="/assets/icons/lucide/home.svg" alt="" class="ui-icon"><span class="ui-label">Overview</span></button>
+            <button class="admin-tab ui-icon-btn" type="button" data-admin-tab="jobs" role="tab" aria-selected="false"><img src="/assets/icons/lucide/clipboard-check.svg" alt="" class="ui-icon"><span class="ui-label">Jobs</span></button>
+            <button class="admin-tab ui-icon-btn" type="button" data-admin-tab="quotes" role="tab" aria-selected="false"><img src="/assets/icons/lucide/calculator.svg" alt="" class="ui-icon"><span class="ui-label">Quotes</span></button>
+            <button class="admin-tab ui-icon-btn" type="button" data-admin-tab="users" role="tab" aria-selected="false"><img src="/assets/icons/lucide/users.svg" alt="" class="ui-icon"><span class="ui-label">Users</span></button>
+            <button class="admin-tab ui-icon-btn" type="button" data-admin-tab="providers" role="tab" aria-selected="false"><img src="/assets/icons/lucide/truck.svg" alt="" class="ui-icon"><span class="ui-label">Providers</span></button>
+            <button class="admin-tab ui-icon-btn" type="button" data-admin-tab="pricing" role="tab" aria-selected="false"><img src="/assets/icons/lucide/settings.svg" alt="" class="ui-icon"><span class="ui-label">Pricing</span></button>
+            <button class="admin-tab ui-icon-btn" type="button" data-admin-tab="system" role="tab" aria-selected="false"><img src="/assets/icons/lucide/shield.svg" alt="" class="ui-icon"><span class="ui-label">System</span></button>
           </div>
 
           <div class="admin-tab-panel active" id="adminTabOverview" data-admin-tab-panel="overview" role="tabpanel">
             <div id="adminMetrics" class="metrics"></div>
             <div class="admin-subhead">
               <h3>Operational Alerts</h3>
-              <button class="btn secondary small" id="refreshAdminAlertsBtn" type="button">Review Orphans</button>
+              <button class="btn secondary small ui-icon-btn" id="refreshAdminAlertsBtn" type="button"><img src="/assets/icons/lucide/triangle-alert.svg" alt="" class="ui-icon"><span class="ui-label">Review Orphans</span></button>
             </div>
             <div id="adminAlerts" class="admin-alert-grid"></div>
           </div>
@@ -54,9 +54,9 @@
                 <option value="paid">Paid</option>
                 <option value="refunded">Refunded</option>
               </select>
-              <button class="btn secondary small" id="refreshMgmtJobsBtn" type="button">Refresh</button>
+              <button class="btn secondary small ui-icon-btn" id="refreshMgmtJobsBtn" type="button"><img src="/assets/icons/lucide/refresh-cw.svg" alt="" class="ui-icon"><span class="ui-label">Refresh</span></button>
               <span id="adminJobsSelectedCount" class="admin-muted">0 selected</span>
-              <button class="btn secondary small" id="adminDeleteSelectedJobsBtn" type="button" disabled>Delete selected jobs</button>
+              <button class="btn secondary small ui-icon-btn" id="adminDeleteSelectedJobsBtn" type="button" disabled><img src="/assets/icons/lucide/trash.svg" alt="" class="ui-icon"><span class="ui-label">Delete selected jobs</span></button>
             </div>
             <div id="adminMgmtJobsTable" class="admin-table-wrap"></div>
             <div id="adminJobDetailPanel" class="admin-detail-panel hidden"></div>
@@ -72,7 +72,7 @@
                 <option value="converted">Converted</option>
                 <option value="paid">Paid</option>
               </select>
-              <button class="btn secondary small" id="refreshMgmtQuotesBtn" type="button">Refresh</button>
+              <button class="btn secondary small ui-icon-btn" id="refreshMgmtQuotesBtn" type="button"><img src="/assets/icons/lucide/refresh-cw.svg" alt="" class="ui-icon"><span class="ui-label">Refresh</span></button>
             </div>
             <div id="adminMgmtQuotesTable" class="admin-table-wrap"></div>
             <div id="adminQuoteDetailPanel" class="admin-detail-panel hidden"></div>
@@ -92,9 +92,9 @@
                 <option value="true">Active</option>
                 <option value="false">Inactive</option>
               </select>
-              <button class="btn secondary small" id="refreshMgmtUsersBtn" type="button">Refresh</button>
+              <button class="btn secondary small ui-icon-btn" id="refreshMgmtUsersBtn" type="button"><img src="/assets/icons/lucide/refresh-cw.svg" alt="" class="ui-icon"><span class="ui-label">Refresh</span></button>
               <span id="adminUsersSelectedCount" class="admin-muted">0 selected</span>
-              <button class="btn secondary small" id="adminDeleteSelectedUsersBtn" type="button" disabled>Delete selected users</button>
+              <button class="btn secondary small ui-icon-btn" id="adminDeleteSelectedUsersBtn" type="button" disabled><img src="/assets/icons/lucide/trash.svg" alt="" class="ui-icon"><span class="ui-label">Delete selected users</span></button>
             </div>
             <div id="adminMgmtUsersTable" class="admin-table-wrap"></div>
             <div id="adminUserDetailPanel" class="admin-detail-panel hidden"></div>
@@ -108,7 +108,7 @@
                 <option value="true">Active</option>
                 <option value="false">Inactive</option>
               </select>
-              <button class="btn secondary small" id="refreshMgmtProvidersBtn" type="button">Refresh</button>
+              <button class="btn secondary small ui-icon-btn" id="refreshMgmtProvidersBtn" type="button"><img src="/assets/icons/lucide/refresh-cw.svg" alt="" class="ui-icon"><span class="ui-label">Refresh</span></button>
             </div>
             <div id="adminMgmtProvidersTable" class="admin-table-wrap"></div>
             <div id="adminProviderJobsPanel" class="admin-detail-panel hidden"></div>
@@ -120,7 +120,7 @@
               <section class="mini-card">
                 <div class="panel-head">
                   <h3>Region Pricing</h3>
-                  <button class="btn secondary small" id="refreshRegions" type="button">Refresh</button>
+                  <button class="btn secondary small ui-icon-btn" id="refreshRegions" type="button"><img src="/assets/icons/lucide/refresh-cw.svg" alt="" class="ui-icon"><span class="ui-label">Refresh</span></button>
                 </div>
                 <form id="regionEditorForm" class="stack">
                   <label><span>Region</span><select id="regionEditorSelect"></select></label>
@@ -131,7 +131,7 @@
                   </div>
                   <label><span>Featured Cities</span><input id="regionFeaturedCities" /></label>
                   <label><span>Enabled</span><select id="regionEnabled"><option value="true">Enabled</option><option value="false">Disabled</option></select></label>
-                  <button class="btn primary" type="submit">Save Region Pricing</button>
+                  <button class="btn primary ui-icon-btn" type="submit"><img src="/assets/icons/lucide/save.svg" alt="" class="ui-icon"><span class="ui-label">Save Region Pricing</span></button>
                 </form>
                 <div id="regionEditorResult" class="result hidden"></div>
               </section>
@@ -139,7 +139,7 @@
               <section class="mini-card">
                 <div class="panel-head">
                   <h3>Service Pricing</h3>
-                  <button class="btn secondary small" id="refreshServices" type="button">Refresh</button>
+                  <button class="btn secondary small ui-icon-btn" id="refreshServices" type="button"><img src="/assets/icons/lucide/refresh-cw.svg" alt="" class="ui-icon"><span class="ui-label">Refresh</span></button>
                 </div>
                 <div id="adminServicePricingTable" class="admin-table-wrap"></div>
                 <div id="serviceEditorResult" class="result hidden"></div>
@@ -150,7 +150,7 @@
           <div class="admin-tab-panel" id="adminTabSystem" data-admin-tab-panel="system" role="tabpanel">
             <div class="admin-subhead">
               <h3>System Health</h3>
-              <button class="btn secondary small" id="refreshAdminSystemBtn" type="button">Refresh</button>
+              <button class="btn secondary small ui-icon-btn" id="refreshAdminSystemBtn" type="button"><img src="/assets/icons/lucide/refresh-cw.svg" alt="" class="ui-icon"><span class="ui-label">Refresh</span></button>
             </div>
             <div id="adminSystemInfo" class="admin-system-grid"></div>
             <div class="admin-subhead">
@@ -161,7 +161,7 @@
                 <strong>Clear test jobs</strong>
                 <p class="section-copy" style="margin:4px 0 0">Deletes test-looking jobs only after explicit confirmation.</p>
               </div>
-              <button class="btn secondary small" id="cleanupTestJobsBtn" type="button">Clear Test Jobs</button>
+              <button class="btn secondary small ui-icon-btn" id="cleanupTestJobsBtn" type="button"><img src="/assets/icons/lucide/trash.svg" alt="" class="ui-icon"><span class="ui-label">Clear Test Jobs</span></button>
             </div>
           </div>
         </section>
@@ -172,8 +172,8 @@
             <p class="section-copy" style="margin:0 0 14px">Permanently deletes test/orphan jobs. Type <strong>DELETE</strong> to confirm.</p>
             <input id="cleanupConfirmInput" type="text" placeholder="Type DELETE" autocomplete="off" style="margin-bottom:12px" />
             <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap">
-              <button class="btn secondary small" id="cleanupCancelBtn" type="button">Cancel</button>
-              <button class="btn primary small" id="cleanupConfirmBtn" type="button">Delete Jobs</button>
+              <button class="btn secondary small ui-icon-btn" id="cleanupCancelBtn" type="button"><img src="/assets/icons/lucide/x.svg" alt="" class="ui-icon"><span class="ui-label">Cancel</span></button>
+              <button class="btn primary small ui-icon-btn" id="cleanupConfirmBtn" type="button"><img src="/assets/icons/lucide/trash.svg" alt="" class="ui-icon"><span class="ui-label">Delete Jobs</span></button>
             </div>
             <div id="cleanupModalResult" style="margin-top:10px;font-size:.85rem"></div>
           </div>

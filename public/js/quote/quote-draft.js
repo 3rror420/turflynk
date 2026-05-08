@@ -1,4 +1,4 @@
-// Quote draft persistence helpers (localStorage).
+// Quote draft persistence helpers (sessionStorage).
 // Extracted from app.js — Phase 13e modular refactor. Loads before app.js.
 //
 // Pre-load globals required (satisfied by earlier script tags):
@@ -9,17 +9,20 @@
 function saveQuoteDraft() {
   const form = byId('quoteForm');
   if (!form) return;
-  localStorage.setItem(QUOTE_DRAFT_KEY, JSON.stringify(formToObject(form)));
+  try { localStorage.removeItem(QUOTE_DRAFT_KEY); } catch {}
+  sessionStorage.setItem(QUOTE_DRAFT_KEY, JSON.stringify(formToObject(form)));
 }
 
 function loadQuoteDraft() {
   try {
-    return JSON.parse(localStorage.getItem(QUOTE_DRAFT_KEY) || 'null');
+    localStorage.removeItem(QUOTE_DRAFT_KEY);
+    return JSON.parse(sessionStorage.getItem(QUOTE_DRAFT_KEY) || 'null');
   } catch {
     return null;
   }
 }
 
 function clearQuoteDraft() {
-  localStorage.removeItem(QUOTE_DRAFT_KEY);
+  try { localStorage.removeItem(QUOTE_DRAFT_KEY); } catch {}
+  try { sessionStorage.removeItem(QUOTE_DRAFT_KEY); } catch {}
 }

@@ -9,40 +9,43 @@
         <!-- GET SERVICE — always visible -->
         <div class="drawer-section">
           <h4 class="drawer-section-label">Get Service</h4>
-          <button class="nav-btn" data-view="quote">Get Lawn Quote</button>
+          <button class="nav-btn ui-icon-btn" data-view="quote">
+            <img src="/assets/icons/lucide/calculator.svg" alt="" class="ui-icon">
+            <span class="ui-label">Get Lawn Quote</span>
+          </button>
         </div>
 
         <!-- MY ACCOUNT — shown only when logged in -->
         <div class="drawer-section customer-logged-in-nav" style="display:none">
           <h4 class="drawer-section-label">My Account</h4>
-          <button type="button" class="nav-btn" onclick="showAccountPanel('quotes')">My Quotes</button>
-          <button type="button" class="nav-btn" onclick="showAccountPanel('jobs')">My Jobs</button>
-          <button type="button" class="nav-btn" data-account-panel>Account Settings</button>
-          <button type="button" class="nav-btn" onclick="handleAccountLogout()">Sign Out</button>
+          <button type="button" class="nav-btn ui-icon-btn" onclick="showAccountPanel('quotes')"><img src="/assets/icons/lucide/calculator.svg" alt="" class="ui-icon"><span class="ui-label">My Quotes</span></button>
+          <button type="button" class="nav-btn ui-icon-btn" onclick="showAccountPanel('jobs')"><img src="/assets/icons/lucide/clipboard-check.svg" alt="" class="ui-icon"><span class="ui-label">My Jobs</span></button>
+          <button type="button" class="nav-btn ui-icon-btn" data-account-panel><img src="/assets/icons/lucide/user.svg" alt="" class="ui-icon"><span class="ui-label">Account Settings</span></button>
+          <button type="button" class="nav-btn ui-icon-btn" onclick="handleAccountLogout()"><img src="/assets/icons/lucide/log-out.svg" alt="" class="ui-icon"><span class="ui-label">Sign Out</span></button>
         </div>
 
         <!-- Provider — shown to provider or admin role -->
         <div class="drawer-section provider-only-nav" style="display:none">
           <h4 class="drawer-section-label">Provider</h4>
-          <button class="nav-btn provider-only-nav" data-view="providers" data-provider-section="dashboard">Provider Area</button>
+          <button class="nav-btn provider-only-nav ui-icon-btn" data-view="providers" data-provider-section="dashboard"><img src="/assets/icons/lucide/truck.svg" alt="" class="ui-icon"><span class="ui-label">Provider Area</span></button>
         </div>
 
         <!-- Admin — shown to admin role only -->
         <div class="drawer-section admin-only-nav" style="display:none">
           <h4 class="drawer-section-label">Admin</h4>
-          <button class="nav-btn admin-only-nav" data-view="admin" style="display:none">Admin</button>
-          <button class="nav-btn admin-only-nav" data-view="admin" data-scroll-target="adminRecentActivityPanel" style="display:none">Recent Activity</button>
-          <button class="nav-btn admin-only-nav" data-view="admin" data-scroll-target="adminRecentJobsPanel" style="display:none">Recent Jobs</button>
+          <button class="nav-btn admin-only-nav ui-icon-btn" data-view="admin" style="display:none"><img src="/assets/icons/lucide/shield.svg" alt="" class="ui-icon"><span class="ui-label">Admin</span></button>
+          <button class="nav-btn admin-only-nav ui-icon-btn" data-view="admin" data-scroll-target="adminRecentActivityPanel" style="display:none"><img src="/assets/icons/lucide/clipboard-check.svg" alt="" class="ui-icon"><span class="ui-label">Recent Activity</span></button>
+          <button class="nav-btn admin-only-nav ui-icon-btn" data-view="admin" data-scroll-target="adminRecentJobsPanel" style="display:none"><img src="/assets/icons/lucide/briefcase.svg" alt="" class="ui-icon"><span class="ui-label">Recent Jobs</span></button>
         </div>
 
         <!-- INFO — always visible -->
         <div class="drawer-section">
           <h4 class="drawer-section-label">Info</h4>
-          <button class="nav-btn" data-view="dashboard" data-scroll-target="coverageGrid">Service Area</button>
-          <button type="button" class="nav-btn" onclick="this.nextElementSibling.hidden=!this.nextElementSibling.hidden">Contact</button>
+          <button class="nav-btn ui-icon-btn" data-view="dashboard" data-scroll-target="coverageGrid"><img src="/assets/icons/lucide/map.svg" alt="" class="ui-icon"><span class="ui-label">Service Area</span></button>
+          <button type="button" class="nav-btn ui-icon-btn" onclick="this.nextElementSibling.hidden=!this.nextElementSibling.hidden"><img src="/assets/icons/lucide/mail.svg" alt="" class="ui-icon"><span class="ui-label">Contact</span></button>
           <div class="drawer-section">
-            <a href="https://wa.me/1XXXXXXXXXX?text=Hi%20I%20have%20a%20question%20about%20my%20quote" target="_blank" rel="noopener" class="nav-btn" style="text-decoration:none">WhatsApp</a>
-            <a href="https://m.me/YOUR_PAGE_NAME" target="_blank" rel="noopener" class="nav-btn" style="text-decoration:none">Messenger</a>
+            <a href="https://wa.me/1XXXXXXXXXX?text=Hi%20I%20have%20a%20question%20about%20my%20quote" target="_blank" rel="noopener" class="nav-btn ui-icon-btn" style="text-decoration:none"><img src="/assets/icons/lucide/mail.svg" alt="" class="ui-icon"><span class="ui-label">WhatsApp</span></a>
+            <a href="https://m.me/YOUR_PAGE_NAME" target="_blank" rel="noopener" class="nav-btn ui-icon-btn" style="text-decoration:none"><img src="/assets/icons/lucide/mail.svg" alt="" class="ui-icon"><span class="ui-label">Messenger</span></a>
           </div>
         </div>
 

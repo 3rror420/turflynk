@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>My Dashboard | MowNWA</title>
   <link rel="icon" href="/assets/brand/mownwa_logo.png" />
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" crossorigin="" />
   <link rel="stylesheet" href="/styles.css" />
   <style>
     .dash-wrap { max-width: 860px; margin: 0 auto; padding: 20px 16px 80px; }
@@ -40,8 +41,8 @@
   <a href="/">MowNWA</a>
   <div class="dash-topbar-right">
     <span id="userChip" class="user-chip" style="display:none"></span>
-    <a href="/" class="btn secondary small">Get Quote</a>
-    <button id="signOutBtn" class="btn ghost small" style="display:none" type="button">Sign Out</button>
+    <a href="/" class="btn secondary small ui-icon-btn"><img src="/assets/icons/lucide/calculator.svg" alt="" class="ui-icon"><span class="ui-label">Get Quote</span></a>
+    <button id="signOutBtn" class="btn ghost small ui-icon-btn" style="display:none" type="button"><img src="/assets/icons/lucide/log-out.svg" alt="" class="ui-icon"><span class="ui-label">Sign Out</span></button>
   </div>
 </header>
 
@@ -51,14 +52,14 @@
   <p>View your quotes, track jobs, and manage your lawn service.</p>
 
   <div class="tab-row">
-    <button class="tab-btn active" type="button" onclick="showAuthTab('login')">Login</button>
-    <button class="tab-btn" type="button" onclick="showAuthTab('register')">Sign Up</button>
+    <button class="tab-btn active ui-icon-btn" type="button" onclick="showAuthTab('login')"><img src="/assets/icons/lucide/log-in.svg" alt="" class="ui-icon"><span class="ui-label">Login</span></button>
+    <button class="tab-btn ui-icon-btn" type="button" onclick="showAuthTab('register')"><img src="/assets/icons/lucide/user.svg" alt="" class="ui-icon"><span class="ui-label">Sign Up</span></button>
   </div>
 
   <form id="loginForm" class="stack" style="gap:12px">
     <label><span>Email</span><input name="email" type="email" autocomplete="email" required /></label>
     <label><span>Password</span><input name="password" type="password" autocomplete="current-password" required /></label>
-    <button class="btn primary" type="submit">Login</button>
+    <button class="btn primary ui-icon-btn" type="submit"><img src="/assets/icons/lucide/log-in.svg" alt="" class="ui-icon"><span class="ui-label">Login</span></button>
     <div id="loginErr" class="auth-err"></div>
   </form>
 
@@ -67,7 +68,7 @@
     <label><span>Email</span><input name="email" type="email" autocomplete="email" required /></label>
     <label><span>Phone</span><input name="phone" type="tel" inputmode="tel" autocomplete="tel" required /></label>
     <label><span>Password</span><input name="password" type="password" autocomplete="new-password" required /></label>
-    <button class="btn primary" type="submit">Create Account</button>
+    <button class="btn primary ui-icon-btn" type="submit"><img src="/assets/icons/lucide/user.svg" alt="" class="ui-icon"><span class="ui-label">Create Account</span></button>
     <div id="registerErr" class="auth-err"></div>
   </form>
 </div>
@@ -80,7 +81,7 @@
       <div class="eyebrow">Customer Dashboard</div>
       <h1 id="welcomeHeading" style="font-size:1.55rem;margin:4px 0 0">My Account</h1>
     </div>
-    <a href="/" class="btn primary">Get New Quote</a>
+    <a href="/" class="btn primary ui-icon-btn"><img src="/assets/icons/lucide/calculator.svg" alt="" class="ui-icon"><span class="ui-label">Get New Quote</span></a>
   </div>
 
   <!-- Quotes -->
@@ -90,7 +91,7 @@
         <h2 style="font-size:1.2rem;margin:0">My Quotes</h2>
         <p class="section-copy" style="margin:4px 0 0">Request a job from any quote below.</p>
       </div>
-      <button class="btn secondary small" type="button" onclick="loadQuotes()">Refresh</button>
+      <button class="btn secondary small ui-icon-btn" type="button" onclick="loadQuotes()"><img src="/assets/icons/lucide/refresh-cw.svg" alt="" class="ui-icon"><span class="ui-label">Refresh</span></button>
     </div>
     <div id="quotesList" class="card-list">
       <div class="empty-msg">Loading quotes…</div>
@@ -104,7 +105,7 @@
         <h2 style="font-size:1.2rem;margin:0">My Jobs</h2>
         <p class="section-copy" style="margin:4px 0 0">Active and past lawn service jobs.</p>
       </div>
-      <button class="btn secondary small" type="button" onclick="loadJobs()">Refresh</button>
+      <button class="btn secondary small ui-icon-btn" type="button" onclick="loadJobs()"><img src="/assets/icons/lucide/refresh-cw.svg" alt="" class="ui-icon"><span class="ui-label">Refresh</span></button>
     </div>
     <div id="jobsList" class="card-list">
       <div class="empty-msg">Loading jobs…</div>
@@ -120,12 +121,15 @@
     <p style="color:var(--muted);margin:0">Your phone number is needed to book service so a provider can contact you.</p>
     <label><span>Phone</span><input id="phoneInput" type="tel" inputmode="tel" autocomplete="tel" placeholder="(555) 555-5555" /></label>
     <div style="display:flex;gap:10px">
-      <button class="btn primary" type="button" id="phoneConfirmBtn">Confirm &amp; Book</button>
-      <button class="btn ghost" type="button" id="phoneCancelBtn">Cancel</button>
+      <button class="btn primary ui-icon-btn" type="button" id="phoneConfirmBtn"><img src="/assets/icons/lucide/credit-card.svg" alt="" class="ui-icon"><span class="ui-label">Confirm &amp; Book</span></button>
+      <button class="btn ghost ui-icon-btn" type="button" id="phoneCancelBtn"><img src="/assets/icons/lucide/x.svg" alt="" class="ui-icon"><span class="ui-label">Cancel</span></button>
     </div>
   </div>
 </div>
 
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js" crossorigin=""></script>
+<script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
+<script src="/js/jobs/scope-map.js"></script>
 <script src="/js/utils/phone.js"></script>
 <script>
 const TOKEN_KEY = 'turflynk.authToken';
@@ -151,6 +155,10 @@ function paymentBadge(ps) {
   const label = { unpaid: 'Unpaid', deposit_paid: 'Deposit Paid', paid: 'Paid' }[ps] || 'Unpaid';
   const cls = ps === 'paid' ? 'paid' : ps === 'deposit_paid' ? 'deposit_paid' : 'unpaid';
   return `<span class="pay-badge ${cls}">${label}</span>`;
+}
+
+function dashUiIcon(name, label) {
+  return `<img src="/assets/icons/lucide/${name}.svg" alt="" class="ui-icon"><span class="ui-label">${esc(label)}</span>`;
 }
 
 function serviceLabel(s) {
@@ -185,10 +193,29 @@ async function api(path, opts = {}) {
   });
   if (!res.ok) {
     let msg = `Error ${res.status}`;
-    try { const j = await res.json(); msg = j.error || msg; } catch { try { msg = await res.text() || msg; } catch {} }
-    throw new Error(msg);
+    let data = null;
+    try { data = await res.json(); msg = data.error || msg; } catch { try { msg = await res.text() || msg; } catch {} }
+    const err = new Error(msg);
+    err.status = res.status;
+    err.data = data;
+    err.field = data?.field || '';
+    throw err;
   }
   return res.json();
+}
+
+function showRegisterErr(form, errEl, err) {
+  form.querySelectorAll('[aria-invalid="true"]').forEach(input => {
+    input.removeAttribute('aria-invalid');
+    input.style.borderColor = '';
+  });
+  errEl.textContent = err.message || 'Registration failed';
+  const field = err.field && form.elements?.[err.field];
+  if (field) {
+    field.setAttribute('aria-invalid', 'true');
+    field.style.borderColor = 'var(--danger, #b91c1c)';
+    field.focus();
+  }
 }
 
 async function init() {
@@ -284,7 +311,7 @@ async function loadQuotes() {
         <div class="card-actions">
           ${hasJob
             ? `<span class="pill muted" style="margin:0">Job requested ✓</span>`
-            : `<button class="btn primary small" type="button"
+            : `<button class="btn primary small ui-icon-btn" type="button"
                  data-quote-id="${esc(q.id)}"
                  data-addr="${esc(addr)}"
                  data-estimate="${estimate}"
@@ -292,7 +319,7 @@ async function loadQuotes() {
                  data-sqft="${sqft}"
                  data-city="${esc(q.city||'')}"
                  data-state="${esc(q.state||'AR')}"
-                 data-zip="${esc(q.zip||'')}">Request Job</button>`}
+                 data-zip="${esc(q.zip||'')}">${dashUiIcon('clipboard-check', 'Request Job')}</button>`}
         </div>
       `;
       list.appendChild(card);
@@ -394,9 +421,11 @@ async function loadJobs() {
           </div>
           <div style="flex-shrink:0">${statusBadge(job.status)}</div>
         </div>
-        ${showPayNow ? `<div class="card-actions"><button class="btn primary small" type="button" data-pay-job="${esc(job.id)}">Pay Now</button></div>` : ''}
+        ${window.jobScopeSnapshotMapHtml ? window.jobScopeSnapshotMapHtml(job) : ''}
+        ${showPayNow ? `<div class="card-actions"><button class="btn primary small ui-icon-btn" type="button" data-pay-job="${esc(job.id)}">${dashUiIcon('credit-card', 'Pay Now')}</button></div>` : ''}
       `;
       list.appendChild(card);
+      window.initJobScopeSnapshotMaps?.(card);
     });
 
     list.querySelectorAll('[data-pay-job]').forEach(btn => {
@@ -447,7 +476,7 @@ document.getElementById('registerForm').addEventListener('submit', async e => {
     currentUser = data.user;
     showDash();
   } catch (err) {
-    errEl.textContent = err.message;
+    showRegisterErr(e.target, errEl, err);
   }
 });
 

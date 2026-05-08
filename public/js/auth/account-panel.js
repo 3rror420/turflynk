@@ -15,6 +15,10 @@ function accountEmptyMessage(text) {
   return `<div class="account-empty">${escapeHtml(text)}</div>`;
 }
 
+function accountUiIcon(name, label) {
+  return `<img src="/assets/icons/lucide/${name}.svg" alt="" class="ui-icon"><span class="ui-label">${escapeHtml(label)}</span>`;
+}
+
 function hideAllPanels() {
   $$('[data-view-panel]').forEach((panel) => {
     panel.classList.remove('active');
@@ -60,13 +64,13 @@ function renderAccountMenu(active) {
     <div class="customer-dashboard-hero">
       <p class="customer-welcome">Welcome back, ${escapeHtml(firstName)}!</p>
       <p class="customer-welcome-sub">Manage your lawn quotes and mowing jobs.</p>
-      <button class="btn primary small" onclick="setActiveView('quote')">Start New Quote</button>
+      <button class="btn primary small ui-icon-btn" onclick="setActiveView('quote')">${accountUiIcon('calculator', 'Start New Quote')}</button>
     </div>
     <div class="customer-tab-row">
       ${ACCOUNT_SECTIONS.map((s) => `
-        <button class="account-menu-item ${s.id === active ? 'active' : ''}"
+        <button class="account-menu-item ui-icon-btn ${s.id === active ? 'active' : ''}"
           onclick="showAccountPanel('${s.id}')">
-          ${s.label}
+          ${accountUiIcon(s.id === 'jobs' ? 'clipboard-check' : s.id === 'account' ? 'user' : 'calculator', s.label)}
         </button>
       `).join('')}
     </div>

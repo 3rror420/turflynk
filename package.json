@@ -20,7 +20,8 @@
     "passport": "^0.7.0",
     "passport-facebook": "^3.0.0",
     "pg": "^8.13.1",
-    "stripe": "^22.1.0"
+    "stripe": "^22.1.0",
+    "twilio": "^6.0.1"
   },
   "devDependencies": {
     "@playwright/test": "^1.59.1"

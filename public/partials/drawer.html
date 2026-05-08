@@ -6,16 +6,16 @@
       <span>Northwest Arkansas lawn care</span>
     </div>
     <button class="app-icon-btn" id="closeAppDrawer" type="button" aria-label="Close menu">
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      <img src="/assets/icons/lucide/x.svg" alt="" class="ui-icon">
     </button>
   </div>
 
   <!-- GET SERVICE — always visible -->
   <div class="drawer-section">
     <h4 class="drawer-section-label">Get Service</h4>
-    <button type="button" data-drawer-view="quote" class="drawer-btn">
-      <svg class="drawer-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
-      Get Lawn Quote
+    <button type="button" data-drawer-view="quote" class="drawer-btn ui-icon-btn">
+      <img src="/assets/icons/lucide/calculator.svg" alt="" class="ui-icon drawer-icon">
+      <span class="ui-label">Get Lawn Quote</span>
     </button>
   </div>
 
@@ -32,62 +32,62 @@
         <small id="drawerAccountMeta"></small>
       </span>
     </div>
-    <button type="button" onclick="showAccountPanel('quotes')" class="drawer-btn">
-      <svg class="drawer-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
-      My Quotes
+    <button type="button" onclick="showAccountPanel('quotes')" class="drawer-btn ui-icon-btn">
+      <img src="/assets/icons/lucide/calculator.svg" alt="" class="ui-icon drawer-icon">
+      <span class="ui-label">My Quotes</span>
     </button>
-    <button type="button" onclick="showAccountPanel('jobs')" class="drawer-btn">
-      <svg class="drawer-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v2"/></svg>
-      My Jobs
+    <button type="button" onclick="showAccountPanel('jobs')" class="drawer-btn ui-icon-btn">
+      <img src="/assets/icons/lucide/clipboard-check.svg" alt="" class="ui-icon drawer-icon">
+      <span class="ui-label">My Jobs</span>
     </button>
-    <button type="button" data-account-panel class="drawer-btn">
-      <svg class="drawer-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 21a8 8 0 0 0-16 0"/><circle cx="12" cy="7" r="4"/></svg>
-      Account Settings
+    <button type="button" data-account-panel class="drawer-btn ui-icon-btn">
+      <img src="/assets/icons/lucide/user.svg" alt="" class="ui-icon drawer-icon">
+      <span class="ui-label">Account Settings</span>
     </button>
-    <button type="button" id="drawerLogoutBtn" class="drawer-btn">
-      <svg class="drawer-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 17l5-5-5-5"/><path d="M15 12H3"/><path d="M21 19V5a2 2 0 00-2-2h-6"/></svg>
-      Sign Out
+    <button type="button" id="drawerLogoutBtn" class="drawer-btn ui-icon-btn">
+      <img src="/assets/icons/lucide/log-out.svg" alt="" class="ui-icon drawer-icon">
+      <span class="ui-label">Sign Out</span>
     </button>
   </div>
 
   <!-- Provider — shown to provider or admin role -->
   <div class="drawer-section provider-only-nav" style="display:none">
     <h4 class="drawer-section-label">Provider</h4>
-    <button type="button" data-drawer-view="providers" data-provider-section="dashboard" class="drawer-btn">
-      <svg class="drawer-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
-      Provider Dashboard
+    <button type="button" data-drawer-view="providers" data-provider-section="dashboard" class="drawer-btn ui-icon-btn">
+      <img src="/assets/icons/lucide/truck.svg" alt="" class="ui-icon drawer-icon">
+      <span class="ui-label">Provider Dashboard</span>
     </button>
-    <button type="button" data-drawer-view="providers" data-provider-section="jobs" class="drawer-btn">My Jobs</button>
-    <button type="button" data-drawer-view="providers" data-provider-section="history" class="drawer-btn">Job History</button>
-    <button type="button" data-drawer-view="providers" data-provider-section="services" class="drawer-btn">Services</button>
-    <button type="button" data-drawer-view="providers" data-provider-section="areas" class="drawer-btn">Service Areas</button>
-    <button type="button" data-drawer-view="providers" data-provider-section="profile" class="drawer-btn">Provider Profile</button>
-    <button type="button" data-drawer-view="providers" data-provider-section="settings" class="drawer-btn">Settings</button>
+    <button type="button" data-drawer-view="providers" data-provider-section="jobs" class="drawer-btn ui-icon-btn"><img src="/assets/icons/lucide/clipboard-check.svg" alt="" class="ui-icon drawer-icon"><span class="ui-label">My Jobs</span></button>
+    <button type="button" data-drawer-view="providers" data-provider-section="history" class="drawer-btn ui-icon-btn"><img src="/assets/icons/lucide/clock.svg" alt="" class="ui-icon drawer-icon"><span class="ui-label">Job History</span></button>
+    <button type="button" data-drawer-view="providers" data-provider-section="services" class="drawer-btn ui-icon-btn"><img src="/assets/icons/lucide/wrench.svg" alt="" class="ui-icon drawer-icon"><span class="ui-label">Services</span></button>
+    <button type="button" data-drawer-view="providers" data-provider-section="areas" class="drawer-btn ui-icon-btn"><img src="/assets/icons/lucide/map-pin.svg" alt="" class="ui-icon drawer-icon"><span class="ui-label">Service Areas</span></button>
+    <button type="button" data-drawer-view="providers" data-provider-section="profile" class="drawer-btn ui-icon-btn"><img src="/assets/icons/lucide/user.svg" alt="" class="ui-icon drawer-icon"><span class="ui-label">Provider Profile</span></button>
+    <button type="button" data-drawer-view="providers" data-provider-section="settings" class="drawer-btn ui-icon-btn"><img src="/assets/icons/lucide/settings.svg" alt="" class="ui-icon drawer-icon"><span class="ui-label">Settings</span></button>
   </div>
 
   <!-- Admin — shown to admin role only -->
   <div class="drawer-section admin-only-nav" style="display:none">
     <h4 class="drawer-section-label">Admin</h4>
-    <button type="button" data-open-auth id="drawerAdminLogin" class="drawer-btn">
-      <svg class="drawer-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
-      Admin Login
+    <button type="button" data-open-auth id="drawerAdminLogin" class="drawer-btn ui-icon-btn">
+      <img src="/assets/icons/lucide/shield.svg" alt="" class="ui-icon drawer-icon">
+      <span class="ui-label">Admin Login</span>
     </button>
-    <button type="button" class="admin-only-nav drawer-btn" data-drawer-view="admin" data-scroll-target="adminRecentActivityPanel" style="display:none">Recent Activity</button>
-    <button type="button" class="admin-only-nav drawer-btn" data-drawer-view="admin" data-scroll-target="adminRecentJobsPanel" style="display:none">Recent Jobs</button>
-    <button type="button" class="admin-only-nav drawer-btn" data-drawer-view="admin" data-scroll-target="leadsPanel" style="display:none">Leads / Jobs</button>
-    <button type="button" class="admin-only-nav drawer-btn" data-drawer-view="admin" data-scroll-target="adminControlsWrap" style="display:none">Pricing</button>
+    <button type="button" class="admin-only-nav drawer-btn ui-icon-btn" data-drawer-view="admin" data-scroll-target="adminRecentActivityPanel" style="display:none"><img src="/assets/icons/lucide/clipboard-check.svg" alt="" class="ui-icon drawer-icon"><span class="ui-label">Recent Activity</span></button>
+    <button type="button" class="admin-only-nav drawer-btn ui-icon-btn" data-drawer-view="admin" data-scroll-target="adminRecentJobsPanel" style="display:none"><img src="/assets/icons/lucide/briefcase.svg" alt="" class="ui-icon drawer-icon"><span class="ui-label">Recent Jobs</span></button>
+    <button type="button" class="admin-only-nav drawer-btn ui-icon-btn" data-drawer-view="admin" data-scroll-target="leadsPanel" style="display:none"><img src="/assets/icons/lucide/clipboard-list.svg" alt="" class="ui-icon drawer-icon"><span class="ui-label">Leads / Jobs</span></button>
+    <button type="button" class="admin-only-nav drawer-btn ui-icon-btn" data-drawer-view="admin" data-scroll-target="adminControlsWrap" style="display:none"><img src="/assets/icons/lucide/settings.svg" alt="" class="ui-icon drawer-icon"><span class="ui-label">Pricing</span></button>
   </div>
 
   <!-- INFO — always visible -->
   <div class="drawer-section">
     <h4 class="drawer-section-label">Info</h4>
-    <button type="button" data-drawer-view="dashboard" data-scroll-target="coverageGrid" class="drawer-btn">
-      <svg class="drawer-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 010 20M12 2a15.3 15.3 0 000 20"/></svg>
-      Service Area
+    <button type="button" data-drawer-view="dashboard" data-scroll-target="coverageGrid" class="drawer-btn ui-icon-btn">
+      <img src="/assets/icons/lucide/map.svg" alt="" class="ui-icon drawer-icon">
+      <span class="ui-label">Service Area</span>
     </button>
-    <button type="button" data-drawer-contact class="drawer-btn">
-      <svg class="drawer-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07A19.5 19.5 0 013.07 9.81a19.79 19.79 0 01-3.07-8.72A2 2 0 012 .82h3a2 2 0 012 1.72c.13 1.04.35 2.06.67 3.06a2 2 0 01-.45 2.11L6.09 8.91a16 16 0 006 6l1.2-1.2a2 2 0 012.11-.45c1 .32 2.02.55 3.06.67A2 2 0 0122 16.92z"/></svg>
-      Contact
+    <button type="button" data-drawer-contact class="drawer-btn ui-icon-btn">
+      <img src="/assets/icons/lucide/mail.svg" alt="" class="ui-icon drawer-icon">
+      <span class="ui-label">Contact</span>
     </button>
     <div id="drawerContactPanel" class="drawer-contact-panel" aria-label="Contact options">
       <a href="https://wa.me/1XXXXXXXXXX?text=Hi%20I%20have%20a%20question%20about%20my%20quote" target="_blank" rel="noopener" aria-label="Contact TurfLynk on WhatsApp">

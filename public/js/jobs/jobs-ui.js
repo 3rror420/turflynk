@@ -7,6 +7,19 @@
 
 /* ── Customer name / job sanitizers ─────────────────────────────────────── */
 
+function jobsBindOnce(target, type, key, handler, options) {
+  if (!target || typeof target.addEventListener !== 'function' || !key) return false;
+  const registry = target.__turflynkListenerKeys || (target.__turflynkListenerKeys = new Set());
+  const registryKey = `${type}:${key}`;
+  if (registry.has(registryKey)) {
+    console.info('[ListenerGuard] duplicate jobs listener skipped', registryKey);
+    return false;
+  }
+  registry.add(registryKey);
+  target.addEventListener(type, handler, options);
+  return true;
+}
+
 function sanitizeCustomerName(fullName) {
   const parts = String(fullName || '').trim().split(/\s+/).filter(Boolean);
   if (!parts.length) return 'Customer';
@@ -32,6 +45,10 @@ function sanitizeJobForPublic(job = {}) {
     location,
     amount,
     status: job.status || 'open',
+    paymentStatus: job.paymentStatus || job.payment_status || 'unpaid',
+    paymentMethod: job.paymentMethod || job.payment_method || '',
+    paidAt: job.paidAt || job.paid_at || '',
+    stripeCheckoutSessionId: job.stripeCheckoutSessionId || job.stripe_checkout_session_id || '',
     preferredDate: job.preferredDate || job.preferred_date || '',
     postedAt: job.postedAt || job.createdAt || job.created_at || '',
   };
@@ -53,18 +70,22 @@ function countGeoJsonFeatures(geojson) {
 
 function renderJobScopeSnapshot(job = {}, safe = sanitizeJobForPublic(job)) {
   const scope = job.scopeSnapshot || job.scope_snapshot || {};
-  if (!scope || !Object.keys(scope).length) return '';
+  if (!scope || !Object.keys(scope).length) {
+    return '<div class="job-scope-snapshot"><div class="job-scope-unavailable">Scope snapshot unavailable for this older job.</div></div>';
+  }
   const access = scope.access || {};
   const options = scope.serviceOptions || {};
   const mowSqft = Number(scope.mowableAreaSqFt || scope.mowAreaSqft || 0);
   const lotSqft = Number(scope.lotAreaSqFt || scope.lotAreaSqft || 0);
   const price = Number(scope.paidAmount || scope.finalAmount || safe.amount || 0);
   const tip = Number(scope.tipAmount || 0);
-  const mapItems = [
-    countGeoJsonFeatures(scope.parcelGeoJSON) ? 'parcel saved' : '',
-    countGeoJsonFeatures(scope.selectedMowableGeoJSON) ? `${countGeoJsonFeatures(scope.selectedMowableGeoJSON)} mowable area${countGeoJsonFeatures(scope.selectedMowableGeoJSON) === 1 ? '' : 's'} saved` : '',
-    countGeoJsonFeatures(scope.excludedGeoJSON) ? `${countGeoJsonFeatures(scope.excludedGeoJSON)} cutout${countGeoJsonFeatures(scope.excludedGeoJSON) === 1 ? '' : 's'} saved` : '',
-  ].filter(Boolean).join(' · ');
+  const mapHtml = typeof jobScopeSnapshotMapHtml === 'function'
+    ? jobScopeSnapshotMapHtml(scope)
+    : `<div class="map-placeholder">${escapeHtml([
+        countGeoJsonFeatures(scope.parcelGeoJSON) ? 'parcel saved' : '',
+        countGeoJsonFeatures(scope.selectedMowableGeoJSON) ? `${countGeoJsonFeatures(scope.selectedMowableGeoJSON)} mowable area${countGeoJsonFeatures(scope.selectedMowableGeoJSON) === 1 ? '' : 's'} saved` : '',
+        countGeoJsonFeatures(scope.excludedGeoJSON) ? `${countGeoJsonFeatures(scope.excludedGeoJSON)} cutout${countGeoJsonFeatures(scope.excludedGeoJSON) === 1 ? '' : 's'} saved` : '',
+      ].filter(Boolean).join(' · ') || 'Map snapshot saved for this job.')}</div>`;
   const accessText = [
     access.gateSize ? `Gate: ${access.gateSize}` : '',
     access.gateWidthInches ? `Gate width: ${access.gateWidthInches} in` : '',
@@ -83,13 +104,13 @@ function renderJobScopeSnapshot(job = {}, safe = sanitizeJobForPublic(job)) {
   ].filter(Boolean).join(' · ');
 
   return `
-    <div class="job-scope-snapshot" aria-label="Paid scope snapshot">
-      <div class="meta"><strong>Paid scope:</strong> ${escapeHtml(serviceText || `${serviceLabel(scope.serviceType || safe.serviceType)} from MowNWA`)}</div>
+    <div class="job-scope-snapshot" aria-label="Booking scope snapshot">
+      <div class="meta"><strong>Booking scope:</strong> ${escapeHtml(serviceText || `${serviceLabel(scope.serviceType || safe.serviceType)} from MowNWA`)}</div>
       ${mowSqft ? `<div class="meta">Mowable area: <strong>${escapeHtml(scopeAreaLabel(mowSqft))}</strong>${lotSqft ? ` · Lot: ${escapeHtml(scopeAreaLabel(lotSqft))}` : ''}</div>` : ''}
       <div class="meta">Price: <strong>${money(price)}</strong>${tip > 0 ? ` · Tip: <strong>${money(tip)}</strong>` : ''}</div>
       ${accessText ? `<div class="meta">Service/access: ${escapeHtml(accessText)}</div>` : ''}
       ${scope.customerNotes ? `<div class="meta">Customer notes: ${escapeHtml(scope.customerNotes)}</div>` : ''}
-      <div class="map-placeholder">${escapeHtml(mapItems || 'Map snapshot saved for this job.')}</div>
+      ${mapHtml}
     </div>
   `;
 }
@@ -98,6 +119,10 @@ function renderJobScopeSnapshot(job = {}, safe = sanitizeJobForPublic(job)) {
 
 function statusBadge(status) {
   return `<span class="status-badge ${escapeHtml(status || 'open')}">${escapeHtml(status || 'open')}</span>`;
+}
+
+function uiIcon(name, label) {
+  return `<img src="/assets/icons/lucide/${name}.svg" alt="" class="ui-icon"><span class="ui-label">${escapeHtml(label)}</span>`;
 }
 
 /* ── Customer display helpers ────────────────────────────────────────────── */
@@ -114,30 +139,109 @@ function formatCustomerMoney(value) {
 }
 
 function humanCustomerJobStatus(status) {
-  const map = { open: 'Open', assigned: 'Assigned', scheduled: 'Scheduled', in_progress: 'In Progress', completed: 'Completed', cancelled: 'Cancelled', canceled: 'Cancelled' };
+  const map = { open: 'Open', cod_verification_pending: 'Pending Verification', assigned: 'Assigned', scheduled: 'Scheduled', in_progress: 'In Progress', completed: 'Completed', cancelled: 'Cancelled', canceled: 'Cancelled' };
   return map[status] || status || 'Open';
 }
 
 function humanCustomerPaymentStatus(status) {
-  const map = { unpaid: 'Unpaid', checkout_pending: 'Checkout Started', checkout_created: 'Payment Pending', paid: 'Paid' };
+  const map = { unpaid: 'Unpaid', checkout_pending: 'Checkout Started', checkout_created: 'Payment Pending', onsite_pending: 'Reserved - Pay Onsite', paid: 'Paid' };
   return map[status] || status || 'Unpaid';
 }
 
 function paymentStatusBadge(status) {
-  return `<span class="payment-badge ${escapeHtml(status || 'unpaid')}">${escapeHtml(humanCustomerPaymentStatus(status))}</span>`;
+  const normalized = normalizeCustomerPaymentStatus(status);
+  return `<span class="payment-badge ${escapeHtml(normalized || 'unpaid')}">${escapeHtml(humanCustomerPaymentStatus(normalized))}</span>`;
+}
+
+function normalizeCustomerPaymentStatus(status) {
+  return String(status || 'unpaid').trim().toLowerCase().replace(/\s+/g, '_');
+}
+
+function normalizeCustomerJobStatus(status) {
+  return String(status || 'open').trim().toLowerCase().replace(/\s+/g, '_');
+}
+
+function isCustomerPaidJob(item = {}) {
+  const payStatus = normalizeCustomerPaymentStatus(item.paymentStatus || item.payment_status);
+  const jobStatus = normalizeCustomerJobStatus(item.status);
+  return payStatus === 'paid'
+    || payStatus === 'deposit_paid'
+    || jobStatus === 'paid'
+    || Boolean(item.paidAt || item.paid_at);
+}
+
+function customerJobNeedsCodVerification(item = {}) {
+  const jobStatus = normalizeCustomerJobStatus(item.status);
+  const codStatus = normalizeCustomerPaymentStatus(item.codVerificationStatus || item.cod_verification_status);
+  return jobStatus === 'cod_verification_pending' || codStatus === 'pending';
+}
+
+function customerJobNeedsCheckout(item = {}) {
+  if (isCustomerPaidJob(item)) return false;
+  if (customerJobNeedsCodVerification(item)) return false;
+
+  const payStatus = normalizeCustomerPaymentStatus(item.paymentStatus || item.payment_status);
+  if (payStatus === 'onsite_pending') return false;
+  const jobStatus = normalizeCustomerJobStatus(item.status);
+  if (['refunded', 'canceled', 'cancelled'].includes(payStatus) || ['canceled', 'cancelled', 'completed'].includes(jobStatus)) {
+    return false;
+  }
+
+  const paymentDueStatuses = new Set(['unpaid', 'checkout_pending', 'checkout_created', 'payment_pending', 'pending', 'failed', 'payment_failed']);
+  const checkoutJobStatuses = new Set(['draft', 'quote', 'quote_pending', 'payment_pending', 'checkout_pending', 'checkout_created', 'payment_failed']);
+  return paymentDueStatuses.has(payStatus)
+    && (checkoutJobStatuses.has(jobStatus) || Boolean(item.stripeCheckoutSessionId || item.stripe_checkout_session_id));
 }
 
 function getCustomerCardAction(item) {
-  const payStatus = item.paymentStatus || item.payment_status || 'unpaid';
-  const jobStatus = item.status || 'open';
-  if (payStatus === 'unpaid' || payStatus === 'checkout_pending' || payStatus === 'checkout_created') {
-    return { label: 'Continue Checkout', cls: 'primary' };
+  const jobStatus = normalizeCustomerJobStatus(item.status);
+  if (customerJobNeedsCodVerification(item)) {
+    return { label: 'Verify phone', cls: 'primary', kind: 'verify_phone' };
   }
+  if (isCustomerPaidJob(item)) {
+    return { label: 'View Paid Scope', cls: 'secondary', kind: 'paid_scope' };
+  }
+  if (customerJobNeedsCheckout(item)) {
+    return { label: 'Continue to Checkout', cls: 'primary', kind: 'checkout' };
+  }
+  const payStatus = normalizeCustomerPaymentStatus(item.paymentStatus || item.payment_status);
+  if (payStatus === 'onsite_pending') return { label: 'Pay Onsite', cls: 'ghost', disabled: true };
   if (jobStatus === 'completed') return { label: 'Completed', cls: 'ghost', disabled: true };
   if (jobStatus === 'cancelled' || jobStatus === 'canceled') return null;
   if (jobStatus === 'scheduled') return { label: 'Scheduled', cls: 'ghost', disabled: true };
   if (jobStatus === 'in_progress') return { label: 'In Progress', cls: 'ghost', disabled: true };
   return { label: 'Waiting for Provider', cls: 'ghost', disabled: true };
+}
+
+function customerJobActionHtml(action, jobId) {
+  if (!action) return '';
+  if (action.disabled) return `<span class="customer-status-label">${escapeHtml(action.label)}</span>`;
+  if (action.kind === 'verify_phone') {
+    return `<button class="btn ${escapeHtml(action.cls)} small ui-icon-btn" type="button" data-focus-cod-verification="${escapeHtml(jobId || '')}">${uiIcon('shield-check', action.label)}</button>`;
+  }
+  if (action.kind === 'paid_scope') {
+    return `<button class="btn ${escapeHtml(action.cls)} small ui-icon-btn" type="button" data-view-paid-scope="${escapeHtml(jobId || '')}">${uiIcon('clipboard-check', action.label)}</button>`;
+  }
+  if (action.kind === 'checkout') {
+    return `<button class="btn ${escapeHtml(action.cls)} small ui-icon-btn" type="button" onclick="setActiveView('quote')">${uiIcon('credit-card', action.label)}</button>`;
+  }
+  return '';
+}
+
+function customerCodVerificationControlsHtml(jobId) {
+  return `
+    <div class="cod-verification-panel customer-cod-verification" data-cod-verification-panel data-job-id="${escapeHtml(jobId || '')}">
+      <strong>Verify your phone</strong>
+      <p class="meta">We sent a verification code by text.</p>
+      <label><span>6-digit code</span><input name="codVerificationCode" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="\\d{6}" /></label>
+      <div class="checkout-action-bar">
+        <button class="btn primary small ui-icon-btn" type="button" data-confirm-cod-code>${uiIcon('circle-check', 'Verify')}</button>
+        <button class="btn secondary small ui-icon-btn" type="button" data-resend-cod-code>${uiIcon('refresh-cw', 'Resend code')}</button>
+      </div>
+      <p class="meta cod-verification-note">Your job is reserved but won’t be opened until the phone number is verified.</p>
+      <div class="meta" data-cod-verification-message></div>
+    </div>
+  `;
 }
 
 /* ── Nav link helper (copy-address buttons) ─────────────────────────────── */
@@ -147,10 +251,10 @@ function navLinksHtml(job) {
   if (!addr.trim()) return '';
   const enc = encodeURIComponent(addr);
   return `<div class="nav-link-row">
-    <a class="nav-link-btn" href="https://www.google.com/maps/search/?api=1&query=${enc}" target="_blank" rel="noopener">Google Maps</a>
-    <a class="nav-link-btn" href="https://maps.apple.com/?q=${enc}" target="_blank" rel="noopener">Apple Maps</a>
-    <a class="nav-link-btn" href="https://waze.com/ul?q=${enc}&navigate=yes" target="_blank" rel="noopener">Waze</a>
-    <button class="nav-link-btn" type="button" data-copy-addr="${escapeHtml(addr)}">Copy Address</button>
+    <a class="nav-link-btn ui-icon-btn" href="https://www.google.com/maps/search/?api=1&query=${enc}" target="_blank" rel="noopener">${uiIcon('map-pin', 'Google Maps')}</a>
+    <a class="nav-link-btn ui-icon-btn" href="https://maps.apple.com/?q=${enc}" target="_blank" rel="noopener">${uiIcon('map', 'Apple Maps')}</a>
+    <a class="nav-link-btn ui-icon-btn" href="https://waze.com/ul?q=${enc}&navigate=yes" target="_blank" rel="noopener">${uiIcon('navigation', 'Waze')}</a>
+    <button class="nav-link-btn ui-icon-btn" type="button" data-copy-addr="${escapeHtml(addr)}">${uiIcon('clipboard-check', 'Copy Address')}</button>
   </div>`;
 }
 
@@ -176,7 +280,7 @@ async function loadMyQuotes() {
       list.innerHTML = `<div class="customer-empty-state">
         <p>No lawn quotes yet.</p>
         <p>Start a quote to get instant pricing for your property.</p>
-        <button class="btn primary" onclick="setActiveView('quote')">Start New Quote</button>
+        <button class="btn primary ui-icon-btn" onclick="setActiveView('quote')">${uiIcon('calculator', 'Start New Quote')}</button>
       </div>`;
       return;
     }
@@ -196,7 +300,7 @@ async function loadMyQuotes() {
         <div class="meta">Estimate: <strong>${formatCustomerMoney(estimate)}</strong></div>
         <div class="meta customer-date">Requested: ${escapeHtml(formatCustomerDate(quote.created_at || quote.createdAt))}</div>
         <div class="customer-card-footer">
-          <button class="btn primary small" onclick="setActiveView('quote')">${escapeHtml(actionLabel)}</button>
+          <button class="btn primary small ui-icon-btn" onclick="setActiveView('quote')">${uiIcon(actionLabel.includes('Checkout') ? 'credit-card' : 'calculator', actionLabel)}</button>
         </div>
       `));
     });
@@ -227,7 +331,7 @@ async function loadMyJobs(targetId = 'myJobsList') {
       list.innerHTML = `<div class="customer-empty-state">
         <p>No lawn jobs yet.</p>
         <p>Start a quote to get instant pricing for your property.</p>
-        <button class="btn primary" onclick="setActiveView('quote')">Start New Quote</button>
+        <button class="btn primary ui-icon-btn" onclick="setActiveView('quote')">${uiIcon('calculator', 'Start New Quote')}</button>
       </div>`;
       return;
     }
@@ -236,12 +340,11 @@ async function loadMyJobs(targetId = 'myJobsList') {
       const safe = sanitizeJobForPublic(job);
       const addr = [job.address, safe.city, safe.state].filter(Boolean).join(', ') || safe.location || '—';
       const amount = job.paidAmount || job.estimateAtBooking || safe.amount || 0;
-      const payStatus = job.paymentStatus || safe.paymentStatus || 'unpaid';
-      const action = getCustomerCardAction({ ...safe, paymentStatus: payStatus });
-      const actionHtml = action
-        ? action.disabled
-          ? `<span class="customer-status-label">${escapeHtml(action.label)}</span>`
-          : `<button class="btn ${escapeHtml(action.cls)} small" onclick="setActiveView('quote')">${escapeHtml(action.label)}</button>`
+      const payStatus = normalizeCustomerPaymentStatus(job.paymentStatus || job.payment_status || safe.paymentStatus);
+      const action = getCustomerCardAction({ ...job, ...safe, paymentStatus: payStatus });
+      const actionHtml = customerJobActionHtml(action, safe.id);
+      const codVerificationHtml = customerJobNeedsCodVerification(job)
+        ? customerCodVerificationControlsHtml(safe.id)
         : '';
       const c = card(`
         <div class="customer-card-head">
@@ -251,10 +354,13 @@ async function loadMyJobs(targetId = 'myJobsList') {
         <div class="meta">${escapeHtml(addr)}</div>
         <div class="meta">Amount: <strong>${formatCustomerMoney(amount)}</strong> &nbsp; ${paymentStatusBadge(payStatus)}</div>
         <div class="meta customer-date">Booked: ${escapeHtml(formatCustomerDate(job.createdAt || safe.postedAt))}</div>
+        ${renderJobScopeSnapshot(job, safe)}
+        ${codVerificationHtml}
         <div class="customer-card-footer">${actionHtml}</div>
       `);
       list.append(c);
     });
+    if (typeof initJobScopeSnapshotMaps === 'function') initJobScopeSnapshotMaps(list);
   } catch {
     list.innerHTML = '<div class="account-empty">Could not load bookings. Please sign in and try again.</div>';
   }
@@ -262,14 +368,14 @@ async function loadMyJobs(targetId = 'myJobsList') {
 
 /* ── Jobs tab event handler ──────────────────────────────────────────────── */
 
-byId('showMyJobsBtn')?.addEventListener('click', () => {
+jobsBindOnce(byId('showMyJobsBtn'), 'click', 'show-my-jobs', () => {
   byId('myBookingsPanelTitle') && (byId('myBookingsPanelTitle').textContent = 'My Jobs');
   loadMyJobs();
 });
 
 /* ── Copy-address delegated handler ─────────────────────────────────────── */
 
-document.addEventListener('click', (e) => {
+jobsBindOnce(document, 'click', 'copy-address', (e) => {
   const btn = e.target.closest('[data-copy-addr]');
   if (!btn) return;
   const addr = btn.dataset.copyAddr || '';
@@ -280,6 +386,28 @@ document.addEventListener('click', (e) => {
   } else {
     showInfo(addr);
   }
+});
+
+jobsBindOnce(document, 'click', 'view-paid-scope', (e) => {
+  const btn = e.target.closest('[data-view-paid-scope]');
+  if (!btn) return;
+  const cardEl = btn.closest('.card');
+  const scopeEl = cardEl?.querySelector('.job-scope-snapshot');
+  if (scopeEl) {
+    scopeEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    scopeEl.classList.add('is-highlighted');
+    setTimeout(() => scopeEl.classList.remove('is-highlighted'), 1200);
+  }
+});
+
+jobsBindOnce(document, 'click', 'focus-cod-verification', (e) => {
+  const btn = e.target.closest('[data-focus-cod-verification]');
+  if (!btn) return;
+  const cardEl = btn.closest('.card');
+  const panel = cardEl?.querySelector('[data-cod-verification-panel]');
+  const input = panel?.querySelector('input[name="codVerificationCode"]');
+  if (panel) panel.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  if (input) setTimeout(() => input.focus(), 250);
 });
 
 /* ── Public job photo preview (Phase 13f) ────────────────────────────────── */
@@ -354,3 +482,6 @@ window.humanCustomerJobStatus = humanCustomerJobStatus;
 window.humanCustomerPaymentStatus = humanCustomerPaymentStatus;
 window.paymentStatusBadge = paymentStatusBadge;
 window.getCustomerCardAction = getCustomerCardAction;
+window.normalizeCustomerPaymentStatus = normalizeCustomerPaymentStatus;
+window.isCustomerPaidJob = isCustomerPaidJob;
+window.customerJobNeedsCheckout = customerJobNeedsCheckout;

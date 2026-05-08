@@ -23,7 +23,27 @@ function quoteStepNumber(step = state.quoteFlowStep) {
   return Math.max(1, QUOTE_STEP_ORDER.indexOf(normalizeQuoteStep(step)) + 1);
 }
 
+function quoteFlowStepDebugEnabled() {
+  try {
+    return Boolean(window.DEBUG_QUOTE_FLOW)
+      || localStorage.getItem('DEBUG_QUOTE_FLOW') === '1'
+      || localStorage.getItem('DEBUG_QUOTE_FLOW') === 'true';
+  } catch {
+    return false;
+  }
+}
+
 function showQuoteFlowStep(step, options = {}) {
+  const trace = quoteFlowStepDebugEnabled();
+  const traceLabel = trace ? `[QuoteFlow] showQuoteFlowStep ${state.quoteFlowStep || 'none'} -> ${step}` : '';
+  if (trace) {
+    console.time(traceLabel);
+    console.log('[QuoteFlow] showQuoteFlowStep:start', {
+      from: state.quoteFlowStep || '',
+      to: step,
+      options,
+    });
+  }
   const nextStep = normalizeQuoteStep(step);
   state.quoteFlowStep = nextStep;
   document.body.dataset.quoteFlowStep = nextStep;
@@ -36,10 +56,15 @@ function showQuoteFlowStep(step, options = {}) {
 
   $$('[data-quote-step-panel]').forEach((panel) => {
     const active = panel.dataset.quoteStepPanel === nextStep;
+    const keepMapHostVisible = nextStep === 'draw'
+      && panel.dataset.quoteStepPanel === 'property'
+      && Boolean(panel.querySelector('#quoteMap'));
+    const visible = active || keepMapHostVisible;
     panel.classList.toggle('is-active', active);
-    panel.classList.toggle('is-hidden', !active);
-    panel.classList.toggle('hidden', !active);
-    panel.hidden = !active;
+    panel.classList.toggle('is-map-host-visible', keepMapHostVisible);
+    panel.classList.toggle('is-hidden', !visible);
+    panel.classList.toggle('hidden', !visible);
+    panel.hidden = !visible;
     panel.setAttribute('aria-hidden', active ? 'false' : 'true');
   });
 
@@ -60,10 +85,21 @@ function showQuoteFlowStep(step, options = {}) {
   if (nextStep === 'estimate') {
     scheduleEstimateRefresh('estimate-step', { immediate: true });
   }
+  window.turflynkCanvasDiagnostics?.(`quote step:${nextStep}`);
 
   if (options.scroll !== false) {
     const activePanel = document.querySelector(`[data-quote-step-panel="${nextStep}"]`);
     activePanel?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+  requestAnimationFrame(() => {
+    try { (window.turflynkMap || state.map)?.resize?.(); } catch {}
+  });
+  if (trace) {
+    console.log('[QuoteFlow] showQuoteFlowStep:end', {
+      step: nextStep,
+      activePanel: Boolean(document.querySelector(`[data-quote-step-panel="${nextStep}"].is-active`)),
+    });
+    console.timeEnd(traceLabel);
   }
 }
 
@@ -255,27 +291,31 @@ function multiSelectValues(select) {
   return Array.from(select?.selectedOptions || []).map((option) => option.value);
 }
 
-// Back button delegation
-$$('[data-quote-back]').forEach((btn) => {
-  btn.addEventListener('click', () => showQuoteFlowStep(btn.dataset.quoteBack || 'property'));
-});
+if (!window.__turflynkQuoteFlowListenersInstalled) {
+  window.__turflynkQuoteFlowListenersInstalled = true;
 
-// Draw step continue button
-byId('drawContinueBtn')?.addEventListener('click', async () => {
-  const form = byId('quoteForm');
-  if (!form) return;
-  if (!hasActiveMowableArea()) {
-    showMissingMowableAreaPrompt('parcelInfo');
-    return;
-  }
-  try {
-    stopToolModes();
-    await generateGuestEstimate(form);
-  } catch (error) {
-    showResult('quoteResult', `<strong>Estimate failed:</strong> ${escapeHtml(prettyApiError(error))}`);
-    showError(prettyApiError(error));
-  }
-});
+  // Back button delegation
+  $$('[data-quote-back]').forEach((btn) => {
+    btn.addEventListener('click', () => showQuoteFlowStep(btn.dataset.quoteBack || 'property'));
+  });
+
+  // Draw step continue button
+  byId('drawContinueBtn')?.addEventListener('click', async () => {
+    const form = byId('quoteForm');
+    if (!form) return;
+    if (!hasActiveMowableArea()) {
+      showMissingMowableAreaPrompt('parcelInfo');
+      return;
+    }
+    try {
+      stopToolModes();
+      await generateGuestEstimate(form);
+    } catch (error) {
+      showResult('quoteResult', `<strong>Estimate failed:</strong> ${escapeHtml(prettyApiError(error))}`);
+      showError(prettyApiError(error));
+    }
+  });
+}
 
 // Expose globally — called from app.js and inline onclick handlers
 window.normalizeQuoteStep = normalizeQuoteStep;

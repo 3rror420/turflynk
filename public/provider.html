@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Provider Dashboard | MowNWA</title>
   <link rel="icon" href="/assets/brand/mownwa_logo.png" />
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" crossorigin="" />
   <link rel="stylesheet" href="/styles.css" />
   <style>
     .prov-wrap { max-width: 920px; margin: 0 auto; padding: 20px 16px 80px; }
@@ -45,8 +46,8 @@
   <a href="/">MowNWA</a>
   <div class="prov-topbar-right">
     <span id="userChip" class="user-chip" style="display:none"></span>
-    <a href="/dashboard.html" class="btn secondary small">Customer View</a>
-    <button id="signOutBtn" class="btn ghost small" style="display:none" type="button">Sign Out</button>
+    <a href="/dashboard.html" class="btn secondary small ui-icon-btn"><img src="/assets/icons/lucide/user.svg" alt="" class="ui-icon"><span class="ui-label">Customer View</span></a>
+    <button id="signOutBtn" class="btn ghost small ui-icon-btn" style="display:none" type="button"><img src="/assets/icons/lucide/log-out.svg" alt="" class="ui-icon"><span class="ui-label">Sign Out</span></button>
   </div>
 </header>
 
@@ -57,7 +58,7 @@
   <form id="loginForm" class="stack" style="gap:12px">
     <label><span>Email</span><input name="email" type="email" autocomplete="email" required /></label>
     <label><span>Password</span><input name="password" type="password" autocomplete="current-password" required /></label>
-    <button class="btn primary" type="submit">Login</button>
+    <button class="btn primary ui-icon-btn" type="submit"><img src="/assets/icons/lucide/log-in.svg" alt="" class="ui-icon"><span class="ui-label">Login</span></button>
     <div id="loginErr" class="auth-err"></div>
   </form>
   <p style="margin-top:16px;color:var(--muted);font-size:.88rem">
@@ -73,7 +74,7 @@
       <div class="eyebrow">Provider Dashboard</div>
       <h1 id="welcomeHeading" style="font-size:1.55rem;margin:4px 0 0">Provider Area</h1>
     </div>
-    <button class="btn secondary small" type="button" onclick="loadOverview()">Refresh Stats</button>
+    <button class="btn secondary small ui-icon-btn" type="button" onclick="loadOverview()"><img src="/assets/icons/lucide/refresh-cw.svg" alt="" class="ui-icon"><span class="ui-label">Refresh Stats</span></button>
   </div>
 
   <!-- Metrics -->
@@ -81,8 +82,8 @@
 
   <!-- Tabs -->
   <div class="tab-row">
-    <button class="tab-btn active" type="button" onclick="switchTab('open')" id="tabOpen">Open Jobs</button>
-    <button class="tab-btn" type="button" onclick="switchTab('mine')" id="tabMine">My Jobs</button>
+    <button class="tab-btn active ui-icon-btn" type="button" onclick="switchTab('open')" id="tabOpen"><img src="/assets/icons/lucide/briefcase.svg" alt="" class="ui-icon"><span class="ui-label">Open Jobs</span></button>
+    <button class="tab-btn ui-icon-btn" type="button" onclick="switchTab('mine')" id="tabMine"><img src="/assets/icons/lucide/clipboard-check.svg" alt="" class="ui-icon"><span class="ui-label">My Jobs</span></button>
   </div>
 
   <!-- Open Jobs panel -->
@@ -93,7 +94,7 @@
           <h2 style="font-size:1.15rem;margin:0">Available Jobs</h2>
           <p class="section-copy" style="margin:4px 0 0">Open jobs you can accept.</p>
         </div>
-        <button class="btn secondary small" type="button" onclick="loadOpenJobs()">Refresh</button>
+        <button class="btn secondary small ui-icon-btn" type="button" onclick="loadOpenJobs()"><img src="/assets/icons/lucide/refresh-cw.svg" alt="" class="ui-icon"><span class="ui-label">Refresh</span></button>
       </div>
       <div id="openJobsList" class="card-list">
         <div class="empty-msg">Loading open jobs…</div>
@@ -115,7 +116,7 @@
             <option value="history">History</option>
             <option value="all">All</option>
           </select>
-          <button class="btn secondary small" type="button" onclick="loadMyJobs()">Refresh</button>
+          <button class="btn secondary small ui-icon-btn" type="button" onclick="loadMyJobs()"><img src="/assets/icons/lucide/refresh-cw.svg" alt="" class="ui-icon"><span class="ui-label">Refresh</span></button>
         </div>
       </div>
       <div id="myJobsList" class="card-list">
@@ -126,6 +127,9 @@
 
 </div>
 
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js" crossorigin=""></script>
+<script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
+<script src="/js/jobs/scope-map.js"></script>
 <script>
 const TOKEN_KEY = 'turflynk.authToken';
 let currentUser = null;
@@ -149,6 +153,10 @@ function paymentBadge(ps) {
   const label = { unpaid: 'Unpaid', deposit_paid: 'Deposit Paid', paid: 'Paid' }[ps] || 'Unpaid';
   const cls = ps === 'paid' ? 'paid' : ps === 'deposit_paid' ? 'deposit_paid' : 'unpaid';
   return `<span class="pay-badge ${cls}">${label}</span>`;
+}
+
+function provUiIcon(name, label) {
+  return `<img src="/assets/icons/lucide/${name}.svg" alt="" class="ui-icon"><span class="ui-label">${esc(label)}</span>`;
 }
 
 function serviceLabel(s) {
@@ -261,7 +269,7 @@ async function loadOpenJobs() {
   const list = document.getElementById('openJobsList');
   list.innerHTML = '<div class="empty-msg">Loading…</div>';
   try {
-    const data = await fetch('/api/jobs/open').then(r => r.json());
+    const data = await api('/api/provider/paid-jobs');
     const jobs = data.jobs || [];
     if (!jobs.length) {
       list.innerHTML = '<div class="empty-msg">No open jobs right now. Check back soon.</div>';
@@ -295,11 +303,13 @@ function renderOpenJobCard(list, job) {
       </div>
       ${statusBadge(job.status)}
     </div>
+    ${window.jobScopeSnapshotMapHtml ? window.jobScopeSnapshotMapHtml(job) : ''}
     <div class="job-actions">
-      <button class="btn primary small" type="button" data-accept="${esc(job.id)}">Accept Job</button>
+      <button class="btn primary small ui-icon-btn" type="button" data-accept="${esc(job.id)}">${provUiIcon('circle-check', 'Accept Job')}</button>
     </div>
   `;
   list.appendChild(card);
+  window.initJobScopeSnapshotMaps?.(card);
   card.querySelector('[data-accept]').addEventListener('click', e => acceptJob(job.id, e.target));
 }
 
@@ -366,10 +376,12 @@ function renderMyJobCard(list, job) {
       </div>
       ${statusBadge(job.status)}
     </div>
+    ${window.jobScopeSnapshotMapHtml ? window.jobScopeSnapshotMapHtml(job) : ''}
     ${actionBtns ? `<div class="job-actions">${actionBtns}</div>` : ''}
   `;
 
   list.appendChild(card);
+  window.initJobScopeSnapshotMaps?.(card);
 
   card.querySelectorAll('[data-set-status]').forEach(btn => {
     btn.addEventListener('click', () => updateJobStatus(job.id, btn.dataset.setStatus, btn));
@@ -380,12 +392,12 @@ function buildActionButtons(job) {
   const s = job.status;
   const btns = [];
   if (s === 'assigned' || s === 'open') {
-    btns.push(`<button class="btn secondary small" type="button" data-set-status="in_progress">Mark In Progress</button>`);
-    btns.push(`<button class="btn ghost small" type="button" data-set-status="completed">Mark Complete</button>`);
+    btns.push(`<button class="btn secondary small ui-icon-btn" type="button" data-set-status="in_progress">${provUiIcon('play', 'Mark In Progress')}</button>`);
+    btns.push(`<button class="btn ghost small ui-icon-btn" type="button" data-set-status="completed">${provUiIcon('circle-check', 'Mark Complete')}</button>`);
   } else if (s === 'in_progress') {
-    btns.push(`<button class="btn primary small" type="button" data-set-status="completed">Mark Complete</button>`);
+    btns.push(`<button class="btn primary small ui-icon-btn" type="button" data-set-status="completed">${provUiIcon('circle-check', 'Mark Complete')}</button>`);
   } else if (s === 'scheduled') {
-    btns.push(`<button class="btn secondary small" type="button" data-set-status="in_progress">Mark In Progress</button>`);
+    btns.push(`<button class="btn secondary small ui-icon-btn" type="button" data-set-status="in_progress">${provUiIcon('play', 'Mark In Progress')}</button>`);
   }
   return btns.join('');
 }

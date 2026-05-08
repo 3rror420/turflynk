@@ -26,6 +26,10 @@ function getCurrentUser() {
   return state.currentUser || state.user || null;
 }
 
+function authUserKey(user) {
+  return String(user?.id || user?.email || '').trim().toLowerCase();
+}
+
 function getUserDisplayName(user) {
   if (!user) return '';
   return user.fullName
@@ -116,11 +120,14 @@ function updateAccountAvatar(user = getCurrentUser()) {
 
 function updateSessionStatus(user) {
   const el = byId('sessionStatus');
+  const previousUser = getCurrentUser();
+  const previousKey = window.__turflynkAuthUserKey || authUserKey(previousUser);
   if (user !== undefined) {
     state.currentUser = user || null;
     state.user = user || null;
   }
   const currentUser = getCurrentUser();
+  const currentKey = authUserKey(currentUser);
   updateAccountAvatar(currentUser || null);
 
   const loggedIn = Boolean(currentUser?.id || currentUser?.email);
@@ -134,6 +141,14 @@ function updateSessionStatus(user) {
     console.info('[Auth UI] logged in user=' + (currentUser.email || currentUser.id));
   }
   if (typeof applyRoleVisibility === 'function') applyRoleVisibility();
+
+  if (user !== undefined && previousKey && previousKey !== currentKey) {
+    const reason = currentKey ? 'account-switch' : 'logout';
+    document.dispatchEvent(new CustomEvent('turflynk:auth-identity-change', {
+      detail: { reason, previousUser, currentUser },
+    }));
+  }
+  if (user !== undefined) window.__turflynkAuthUserKey = currentKey;
 
   if (!el) return;
   if (currentUser?.email) {
@@ -179,6 +194,7 @@ function hydrateLeadFormFromUser(user) {
   const name = getUserDisplayName(user);
   const email = user.email || '';
   const phone = user.phone || user.phoneNumber || '';
+  const phoneForDisplay = typeof formatUsPhoneNumber === 'function' ? formatUsPhoneNumber(phone) : phone;
 
   console.info('[Auth Hydrate] user keys=' + userKeys);
   console.info('[Auth Hydrate] resolved name=' + (name || '(empty)') + ' email=' + (email ? 'yes' : 'no') + ' phone=' + (phone ? 'yes' : 'no'));
@@ -192,15 +208,17 @@ function hydrateLeadFormFromUser(user) {
   if (leadForm) {
     fillBlank(leadForm.elements.customerName, name);
     fillBlank(leadForm.elements.customerEmail, email);
-    fillBlank(leadForm.elements.customerPhone, phone);
+    fillBlank(leadForm.elements.customerPhone, phoneForDisplay);
   }
 
   const manualForm = byId('manualQuoteForm');
   if (manualForm) {
     fillBlank(manualForm.elements.name, name);
     fillBlank(manualForm.elements.email, email);
-    fillBlank(manualForm.elements.phone, phone);
+    fillBlank(manualForm.elements.phone, phoneForDisplay);
   }
+
+  if (filled && typeof applyUsPhoneFormatting === 'function') applyUsPhoneFormatting(document);
 
   if (filled) {
     console.info('[Auth Hydrate] filled name/email/phone blanks from user profile', {
@@ -229,6 +247,7 @@ async function signOut() {
   }
   clearFrontendSessionState();
   clearAuthReturnContext();
+  if (typeof clearCheckoutPii === 'function') clearCheckoutPii({ reason: 'logout', clearAddress: true });
   if (typeof closeAppDrawer === 'function') closeAppDrawer();
   toggleAuthPanel(false);
   if (typeof showSuccess === 'function') showSuccess('Signed out');
@@ -293,7 +312,8 @@ function saveAuthReturnContext(step = 'request', sourceOverride = '') {
     hasCustomerName: Boolean(customerFields?.customerName),
   });
 
-  localStorage.setItem(AUTH_RETURN_KEY, JSON.stringify({
+  try { localStorage.removeItem(AUTH_RETURN_KEY); } catch {}
+  sessionStorage.setItem(AUTH_RETURN_KEY, JSON.stringify({
     step: currentStep,
     source,
     quote,
@@ -309,20 +329,23 @@ function saveAuthReturnContext(step = 'request', sourceOverride = '') {
 
 function loadAuthReturnContext() {
   try {
-    const context = JSON.parse(localStorage.getItem(AUTH_RETURN_KEY) || 'null');
+    localStorage.removeItem(AUTH_RETURN_KEY);
+    const context = JSON.parse(sessionStorage.getItem(AUTH_RETURN_KEY) || 'null');
     if (!context || Date.now() - Number(context.savedAt || 0) > 30 * 60 * 1000) {
-      localStorage.removeItem(AUTH_RETURN_KEY);
+      sessionStorage.removeItem(AUTH_RETURN_KEY);
       return null;
     }
     return context;
   } catch (err) {
-    localStorage.removeItem(AUTH_RETURN_KEY);
+    try { localStorage.removeItem(AUTH_RETURN_KEY); } catch {}
+    try { sessionStorage.removeItem(AUTH_RETURN_KEY); } catch {}
     return null;
   }
 }
 
 function clearAuthReturnContext() {
-  localStorage.removeItem(AUTH_RETURN_KEY);
+  try { localStorage.removeItem(AUTH_RETURN_KEY); } catch {}
+  try { sessionStorage.removeItem(AUTH_RETURN_KEY); } catch {}
 }
 
 // ── Social / OAuth helpers ──────────────────────────────────────────────────
@@ -454,6 +477,39 @@ function showAuthTab(tab) {
   document.getElementById('registerForm')?.classList.toggle('hidden', tab !== 'register');
 }
 
+function clearSignupFormError(form) {
+  form?.querySelector('[data-signup-error]')?.remove();
+  form?.querySelectorAll('[aria-invalid="true"]').forEach((input) => {
+    input.removeAttribute('aria-invalid');
+    input.style.borderColor = '';
+  });
+}
+
+function showSignupFormError(form, payload = {}, onSignIn) {
+  if (!form) return;
+  clearSignupFormError(form);
+  const message = payload.error || payload.message || 'Registration failed';
+  const errorBox = document.createElement('div');
+  errorBox.className = 'result';
+  errorBox.dataset.signupError = 'true';
+  errorBox.style.margin = '0';
+  errorBox.innerHTML = `${escapeHtml(message)} ${
+    typeof onSignIn === 'function'
+      ? '<button type="button" class="link-btn" data-signin-instead>Sign in instead</button>'
+      : ''
+  }`;
+  const submitBtn = form.querySelector('button[type="submit"]');
+  form.insertBefore(errorBox, submitBtn || null);
+  errorBox.querySelector('[data-signin-instead]')?.addEventListener('click', onSignIn);
+
+  const field = payload.field && form.elements?.[payload.field];
+  if (field) {
+    field.setAttribute('aria-invalid', 'true');
+    field.style.borderColor = 'var(--danger, #b91c1c)';
+    field.focus();
+  }
+}
+
 document.getElementById('loginForm')?.addEventListener('submit', async (e) => {
   e.preventDefault();
   const data = Object.fromEntries(new FormData(e.target));
@@ -482,7 +538,9 @@ document.getElementById('loginForm')?.addEventListener('submit', async (e) => {
 
 document.getElementById('registerForm')?.addEventListener('submit', async (e) => {
   e.preventDefault();
+  clearSignupFormError(e.target);
   const data = Object.fromEntries(new FormData(e.target));
+  if (data.phone && typeof checkoutPhoneForBackend === 'function') data.phone = checkoutPhoneForBackend(data.phone);
 
   const res = await fetch('/api/auth/register', {
     method: 'POST',
@@ -498,6 +556,7 @@ document.getElementById('registerForm')?.addEventListener('submit', async (e) =>
     if (typeof showSuccess === 'function') showSuccess('Account created. Now log in.');
     showAuthTab('login');
   } else {
+    showSignupFormError(e.target, json, () => showAuthTab('login'));
     if (typeof showError === 'function') showError(json.error);
   }
 });
@@ -534,7 +593,7 @@ function openAuthGate(onSuccess) {
   if (registerForm) {
     if (registerForm.elements.fullName && quote.name) registerForm.elements.fullName.value = quote.name;
     if (registerForm.elements.email && quote.email) registerForm.elements.email.value = quote.email;
-    if (registerForm.elements.phone && quote.phone) registerForm.elements.phone.value = quote.phone;
+    if (registerForm.elements.phone && quote.phone) registerForm.elements.phone.value = typeof formatUsPhoneNumber === 'function' ? formatUsPhoneNumber(quote.phone) : quote.phone;
   }
 
   showGateTab('login');
@@ -574,6 +633,7 @@ byId('gateLoginForm')?.addEventListener('submit', async (e) => {
     if (!json.ok) throw new Error(json.error || 'Login failed');
     setAuthToken(json.token);
     state.currentUser = json.user;
+    updateSessionStatus(json.user);
     applyRoleVisibility();
     const callback = state._authGateCallback;
     closeAuthGate();
@@ -587,17 +647,25 @@ byId('gateLoginForm')?.addEventListener('submit', async (e) => {
 
 byId('gateRegisterForm')?.addEventListener('submit', async (e) => {
   e.preventDefault();
+  clearSignupFormError(e.target);
   const btn = e.target.querySelector('button[type="submit"]');
   if (btn) btn.disabled = true;
   try {
     const { fullName, email, phone, password } = Object.fromEntries(new FormData(e.target));
+    const normalizedPhone = typeof checkoutPhoneForBackend === 'function' ? checkoutPhoneForBackend(phone) : phone;
     const regRes = await fetch('/api/auth/register', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ fullName, email, phone, password, role: 'customer' }),
+      body: JSON.stringify({ fullName, email, phone: normalizedPhone, password, role: 'customer' }),
     });
     const regJson = await regRes.json();
-    if (!regJson.ok) throw new Error(regJson.error || 'Registration failed');
+    if (!regJson.ok) {
+      const error = new Error(regJson.error || 'Registration failed');
+      error.status = regRes.status;
+      error.data = regJson;
+      error.field = regJson.field || '';
+      throw error;
+    }
     window.trackMetaEvent?.('CompleteRegistration', {
       content_name: 'Customer Account Created',
     });
@@ -610,11 +678,13 @@ byId('gateRegisterForm')?.addEventListener('submit', async (e) => {
     if (!loginJson.ok) throw new Error('Account created — please log in.');
     setAuthToken(loginJson.token);
     state.currentUser = loginJson.user;
+    updateSessionStatus(loginJson.user);
     applyRoleVisibility();
     const callback = state._authGateCallback;
     closeAuthGate();
     if (typeof callback === 'function') callback();
   } catch (err) {
+    showSignupFormError(e.target, err.data || { error: err.message, field: err.field }, () => showGateTab('login'));
     if (typeof showError === 'function') showError(err.message);
   } finally {
     if (btn) btn.disabled = false;

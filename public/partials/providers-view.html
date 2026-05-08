@@ -7,13 +7,13 @@
             </div>
           </div>
           <div class="provider-area-tabs" id="providerAreaTabs" aria-label="Provider area sections">
-            <button class="account-menu-item" type="button" data-provider-tab="dashboard">Provider Dashboard</button>
-            <button class="account-menu-item" type="button" data-provider-tab="jobs">My Jobs</button>
-            <button class="account-menu-item" type="button" data-provider-tab="history">Job History</button>
-            <button class="account-menu-item" type="button" data-provider-tab="services">Services</button>
-            <button class="account-menu-item" type="button" data-provider-tab="areas">Service Areas</button>
-            <button class="account-menu-item" type="button" data-provider-tab="profile">Provider Profile</button>
-            <button class="account-menu-item" type="button" data-provider-tab="settings">Settings</button>
+            <button class="account-menu-item ui-icon-btn" type="button" data-provider-tab="dashboard"><img src="/assets/icons/lucide/truck.svg" alt="" class="ui-icon"><span class="ui-label">Provider Dashboard</span></button>
+            <button class="account-menu-item ui-icon-btn" type="button" data-provider-tab="jobs"><img src="/assets/icons/lucide/clipboard-check.svg" alt="" class="ui-icon"><span class="ui-label">My Jobs</span></button>
+            <button class="account-menu-item ui-icon-btn" type="button" data-provider-tab="history"><img src="/assets/icons/lucide/clock.svg" alt="" class="ui-icon"><span class="ui-label">Job History</span></button>
+            <button class="account-menu-item ui-icon-btn" type="button" data-provider-tab="services"><img src="/assets/icons/lucide/wrench.svg" alt="" class="ui-icon"><span class="ui-label">Services</span></button>
+            <button class="account-menu-item ui-icon-btn" type="button" data-provider-tab="areas"><img src="/assets/icons/lucide/map-pin.svg" alt="" class="ui-icon"><span class="ui-label">Service Areas</span></button>
+            <button class="account-menu-item ui-icon-btn" type="button" data-provider-tab="profile"><img src="/assets/icons/lucide/user.svg" alt="" class="ui-icon"><span class="ui-label">Provider Profile</span></button>
+            <button class="account-menu-item ui-icon-btn" type="button" data-provider-tab="settings"><img src="/assets/icons/lucide/settings.svg" alt="" class="ui-icon"><span class="ui-label">Settings</span></button>
           </div>
           <div id="providerWorkspaceContent" class="provider-workspace-content"></div>
         </section>
@@ -25,7 +25,7 @@
               <h2>Available Paid Jobs</h2>
               <p class="section-copy" style="margin:0">Paid jobs needing a provider. Sign in as a provider to see and claim jobs.</p>
             </div>
-            <button class="btn secondary small" id="refreshProviderPaidJobsBtn" type="button">Refresh</button>
+            <button class="btn secondary small ui-icon-btn" id="refreshProviderPaidJobsBtn" type="button"><img src="/assets/icons/lucide/refresh-cw.svg" alt="" class="ui-icon"><span class="ui-label">Refresh</span></button>
           </div>
           <div id="providerPaidJobsList" class="card-list">
             <div style="color:var(--muted);padding:12px">Sign in as a provider to see available paid jobs.</div>
@@ -87,7 +87,7 @@
               </section>
               <label><span>Equipment</span><input name="equipment" placeholder="52in zero turn, push mower, trimmers, trailer" /></label>
               <label><span>Short Bio</span><textarea name="bio" rows="4"></textarea></label>
-              <button class="btn primary" type="submit">Join as Provider</button>
+              <button class="btn primary ui-icon-btn" type="submit"><img src="/assets/icons/lucide/truck.svg" alt="" class="ui-icon"><span class="ui-label">Join as Provider</span></button>
             </form>
             <div id="providerResult" class="result hidden"></div>
           </section>
@@ -98,7 +98,7 @@
                 <h2>Provider Service Areas</h2>
                 <p class="section-copy" style="margin:0">Choose where you want to receive job requests. You can update this anytime.</p>
               </div>
-              <button class="btn secondary small" id="refreshProviderServiceAreas" type="button">Refresh</button>
+              <button class="btn secondary small ui-icon-btn" id="refreshProviderServiceAreas" type="button"><img src="/assets/icons/lucide/refresh-cw.svg" alt="" class="ui-icon"><span class="ui-label">Refresh</span></button>
             </div>
             <form id="providerServiceAreaForm" class="stack">
               <label><span>Selected Cities / Areas</span><select id="providerAreaCitySelect" name="cities" multiple size="8"></select></label>
@@ -126,7 +126,7 @@
                 </label>
               </div>
               <label><span>Custom Map Zone GeoJSON</span><textarea name="zoneGeojson" rows="4" placeholder='{"type":"Feature","geometry":{"type":"Polygon","coordinates":[...]}}'></textarea></label>
-              <button class="btn primary" type="submit">Save Service Areas</button>
+              <button class="btn primary ui-icon-btn" type="submit"><img src="/assets/icons/lucide/map-pin.svg" alt="" class="ui-icon"><span class="ui-label">Save Service Areas</span></button>
             </form>
             <div id="providerServiceAreaResult" class="result hidden"></div>
             <div id="providerServiceAreaSummary" class="card-list compact" style="margin-top:12px"></div>
@@ -135,7 +135,7 @@
           <section class="panel">
             <div class="panel-head">
               <h2>Featured Providers</h2>
-              <button class="btn secondary small" id="refreshProviders" type="button">Refresh</button>
+              <button class="btn secondary small ui-icon-btn" id="refreshProviders" type="button"><img src="/assets/icons/lucide/refresh-cw.svg" alt="" class="ui-icon"><span class="ui-label">Refresh</span></button>
             </div>
             <div id="providersList" class="card-list"></div>
           </section>

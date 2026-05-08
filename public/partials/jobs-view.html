@@ -6,9 +6,9 @@
               <h2 id="myBookingsPanelTitle">My Jobs</h2>
             </div>
             <div style="display:flex;gap:8px;flex-wrap:wrap">
-              <button class="btn secondary small provider-only-nav" id="showMyJobsBtn" type="button" style="display:none">My Jobs</button>
-              <button class="btn ghost small provider-only-nav" id="showOpenJobsBtn" type="button" style="display:none">Open Jobs</button>
-              <button class="btn ghost small" id="refreshMyJobs" type="button">Refresh</button>
+              <button class="btn secondary small provider-only-nav ui-icon-btn" id="showMyJobsBtn" type="button" style="display:none"><img src="/assets/icons/lucide/clipboard-check.svg" alt="" class="ui-icon"><span class="ui-label">My Jobs</span></button>
+              <button class="btn ghost small provider-only-nav ui-icon-btn" id="showOpenJobsBtn" type="button" style="display:none"><img src="/assets/icons/lucide/briefcase.svg" alt="" class="ui-icon"><span class="ui-label">Open Jobs</span></button>
+              <button class="btn ghost small ui-icon-btn" id="refreshMyJobs" type="button"><img src="/assets/icons/lucide/refresh-cw.svg" alt="" class="ui-icon"><span class="ui-label">Refresh</span></button>
             </div>
           </div>
           <div id="myJobsList" class="card-list"><div style="color:var(--muted);padding:12px">Sign in to see your bookings.</div></div>
@@ -45,7 +45,7 @@
 </label>
 <div id="jobPhotoPreview" class="photo-preview-grid"></div>
 
-<button class="btn primary" type="submit">Post Job</button>
+<button class="btn primary ui-icon-btn" type="submit"><img src="/assets/icons/lucide/clipboard-check.svg" alt="" class="ui-icon"><span class="ui-label">Post Job</span></button>
             </form>
             <div id="jobResult" class="result hidden"></div>
           </section>
@@ -53,7 +53,7 @@
           <section class="panel">
             <div class="panel-head">
               <h2>Open Jobs</h2>
-              <button class="btn secondary small" id="refreshJobs" type="button">Refresh</button>
+              <button class="btn secondary small ui-icon-btn" id="refreshJobs" type="button"><img src="/assets/icons/lucide/refresh-cw.svg" alt="" class="ui-icon"><span class="ui-label">Refresh</span></button>
             </div>
             <div id="jobsList" class="card-list"></div>
           </section>

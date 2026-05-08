@@ -24,7 +24,7 @@ function renderEstimateState() {
 
   if (estimateState.status === 'fresh' && estimateState.estimate > 0) {
     main = money(estimateState.estimate);
-    sub = money(estimateState.estimate);
+    sub = 'Standard mowing only';
   } else if (estimateState.status === 'updating' || estimateState.status === 'stale') {
     main = 'Updating...';
     sub = 'Updating estimate...';
@@ -42,6 +42,7 @@ function renderEstimateState() {
     renderEstimateResult(estimateState.payload);
     return;
   }
+  setQuoteScopeSection(false);
   if (!estimateActive) {
     result.classList.add('hidden');
     return;
@@ -53,6 +54,14 @@ function renderEstimateState() {
   } else {
     result.classList.add('hidden');
   }
+}
+
+function setQuoteScopeSection(visible) {
+  const section = byId('quoteScopeSection');
+  const grid = byId('quoteScopeGrid');
+  if (!section) return;
+  section.hidden = !visible;
+  if (!visible && grid) grid.innerHTML = '';
 }
 
 function estimateSignatureFromPayload(payload = {}) {
@@ -86,59 +95,42 @@ function currentEstimateSignature() {
   return estimateSignatureFromPayload(buildQuotePayload(form));
 }
 
+function renderMowScopeGridContent() {
+  return `
+    <div class="quote-scope-item">
+      <h4>Includes</h4>
+      <ul>${INCLUDED_MOW_TASKS.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul>
+    </div>
+    <div class="quote-scope-item">
+      <h4>Not Included</h4>
+      <ul>${EXCLUDED_MOW_TASKS.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul>
+    </div>
+    <p class="quote-scope-provider-notice">If a provider cannot complete the quoted standard mow, the job is canceled and fully refunded.</p>`;
+}
+
 function renderEstimateResult(payload) {
   const area = Number(payload.mowAreaSqft || 0);
   console.log('[TurfLynk Area Trace] E. renderEstimateResult | mowAreaSqft=' + area + ' lotAreaSqft=' + Number(payload.lotAreaSqft || 0) + ' estimate=' + payload.estimate + ' source=pendingQuote');
   if (area <= 0) {
+    setQuoteScopeSection(false);
     showMissingMowableAreaPrompt('quoteResult');
     return;
   }
 
-  const breakdown = (Array.isArray(state.currentEstimate?.breakdown) ? state.currentEstimate.breakdown : [])
-    .filter(item => !/market\s*adjust/i.test(item.label));
-  const breakdownHtml = breakdown.length > 1
-    ? `<div class="price-breakdown">
-        <h4>Price breakdown</h4>
-        <table class="breakdown-table">
-          <tbody>
-            ${breakdown.map((item) => `<tr>
-              <td>${escapeHtml(item.label)}</td>
-              <td class="breakdown-amount">${item.amount < 0 ? '−' + money(Math.abs(item.amount)) : money(item.amount)}</td>
-            </tr>`).join('')}
-          </tbody>
-          <tfoot>
-            <tr class="breakdown-total">
-              <td>Total</td>
-              <td class="breakdown-amount">${money(payload.estimate)}</td>
-            </tr>
-          </tfoot>
-        </table>
-      </div>`
-    : '';
+  const scopeGrid = byId('quoteScopeGrid');
+  if (scopeGrid) scopeGrid.innerHTML = renderMowScopeGridContent();
+  setQuoteScopeSection(true);
 
   showResult(
     'quoteResult',
     `<div class="estimate-card">
-      <div class="estimate-head">
+      <div class="estimate-head quote-result-summary">
         <div>
-          <span class="pill">Instant mow estimate</span>
-          <h3>${money(payload.estimate)}</h3>
-          <p>${formatAcres(area)} mowable area. Standard mowing only.</p>
+          <p><strong>${formatSqft(area)}</strong> mowable area. Standard mowing only.</p>
         </div>
-        <div class="preview-pill"><span>Mowable area</span><strong>${formatSqft(area)}</strong></div>
+        <div class="preview-pill"><span>Area</span><strong>${formatAcres(area)}</strong></div>
       </div>
-      ${breakdownHtml}
-      <div class="scope-grid">
-        <div>
-          <h4>Includes</h4>
-          <ul>${INCLUDED_MOW_TASKS.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul>
-        </div>
-        <div>
-          <h4>Not included</h4>
-          <ul>${EXCLUDED_MOW_TASKS.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul>
-        </div>
-      </div>
-      <p class="estimate-reassurance">No contracts. You can adjust or cancel anytime.</p>
+      <p class="estimate-reassurance">No contracts. Cancel anytime before service is assigned.</p>
     </div>`
   );
 }

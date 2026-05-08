@@ -6,6 +6,15 @@ import crypto from "crypto";
 import { nanoid } from "nanoid";
 import fetch from "node-fetch";
 import uploadRoutes from "../routes/upload.js";
+import { sendSms, isE164Phone, maskPhone, getSmsProvider, validateSmsConfig } from "../services/sms.js";
+import {
+  startPhoneVerification,
+  checkPhoneVerification,
+  getPhoneVerifyProvider,
+  getPhoneVerificationHealth,
+  logPhoneVerificationEvent,
+  normalizePhoneForVerification
+} from "./services/phoneVerifyProvider.js";
 import { fileURLToPath } from "url";
 import { createRequire } from "module";
 import { mkdirSync, readFileSync, writeFileSync, renameSync, existsSync } from "fs";
@@ -27,6 +36,7 @@ function normalizeParcelAreaSqft(attrs = {}) {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 dotenv.config({ path: path.join(__dirname, "..", ".env"), override: true });
+validateSmsConfig();
 
 const require = createRequire(import.meta.url);
 const session = require("express-session");
@@ -440,13 +450,13 @@ if (FACEBOOK_APP_ID && FACEBOOK_APP_SECRET) {
 // Middleware MUST come before API routes
 app.use(cors());
 app.use(express.json({
-  limit: "10mb",
+  limit: "25mb",
   verify: (req, _res, buf) => {
     req.rawBody = buf;
   }
 }));
 app.use("/api/weather", weatherRoutes);
-app.use(express.urlencoded({ extended: false }));
+app.use(express.urlencoded({ extended: false, limit: "25mb" }));
 app.use(session({
   secret: process.env.SESSION_SECRET || "mownwa-development-session-secret",
   resave: false,
@@ -1444,6 +1454,155 @@ function phoneValidationError() {
   return "A valid phone number is required before booking, payment, or request submission.";
 }
 
+const SMS_CONSENT_TEXT = "I agree to receive SMS messages from MowNWA.com about my quote, booking, scheduling, job updates, payment/COD verification, and customer support. Message frequency may vary. Msg & data rates may apply. Reply STOP to opt out or HELP for help. Consent is not a condition of purchase. View our Privacy Policy and Terms of Service.";
+const SMS_CONSENT_REQUIRED_MESSAGE = "SMS consent is required before we can send verification texts.";
+const PHONE_VERIFICATION_UNAVAILABLE_MESSAGE = "Phone verification is temporarily unavailable. Please try again shortly.";
+
+function smsConsentAccepted(payload = {}) {
+  return payload.smsConsent === true
+    || payload.sms_consent === true
+    || String(payload.smsConsent || "").toLowerCase() === "true"
+    || String(payload.sms_consent || "").toLowerCase() === "true";
+}
+
+function smsConsentSnapshot(...payloads) {
+  if (!payloads.some((payload) => smsConsentAccepted(payload || {}))) {
+    return { accepted: false, at: null, text: null };
+  }
+  return {
+    accepted: true,
+    at: new Date().toISOString(),
+    text: SMS_CONSENT_TEXT
+  };
+}
+
+function requireSmsConsent(res, ...payloads) {
+  const consent = smsConsentSnapshot(...payloads);
+  if (!consent.accepted) {
+    res.status(400).json({ ok: false, error: SMS_CONSENT_REQUIRED_MESSAGE });
+    return null;
+  }
+  return consent;
+}
+
+function applySmsConsentSnapshot(payload = {}, consent = {}) {
+  if (!consent?.accepted) return payload;
+  payload.smsConsent = true;
+  payload.sms_consent = true;
+  payload.smsConsentAt = consent.at;
+  payload.sms_consent_at = consent.at;
+  payload.smsConsentText = consent.text;
+  payload.sms_consent_text = consent.text;
+  return payload;
+}
+
+const DUPLICATE_EMAIL_MESSAGE = "An account already exists with this email. Please sign in instead.";
+const DUPLICATE_PHONE_MESSAGE = "An account already exists with this phone number. Please sign in instead.";
+const CHECKOUT_DUPLICATE_EMAIL_MESSAGE = "An account already exists with this email. Please sign in to continue.";
+const CHECKOUT_DUPLICATE_PHONE_MESSAGE = "An account already exists with this phone number. Please sign in to continue.";
+
+function toE164Phone(value) {
+  const text = String(value || "").trim();
+  if (isE164Phone(text)) return text;
+  const digits = phoneDigits(text);
+  if (digits.length === 10) return `+1${digits}`;
+  if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+  return text;
+}
+
+function normalizeAccountEmail(email) {
+  return String(email || "").toLowerCase().trim();
+}
+
+function normalizeAccountPhone(value) {
+  const digits = phoneDigits(value);
+  if (!digits) return "";
+  if (digits.length === 10) return `+1${digits}`;
+  if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+  return `+${digits}`;
+}
+
+function isGuestPlaceholderEmail(email) {
+  return /^phone-[^@]+@example\.com$/i.test(normalizeAccountEmail(email));
+}
+
+const NORMALIZED_USER_PHONE_SQL = `
+  CASE
+    WHEN regexp_replace(COALESCE(phone, ''), '\\D', '', 'g') = '' THEN ''
+    WHEN length(regexp_replace(COALESCE(phone, ''), '\\D', '', 'g')) = 10
+      THEN '+1' || regexp_replace(COALESCE(phone, ''), '\\D', '', 'g')
+    WHEN length(regexp_replace(COALESCE(phone, ''), '\\D', '', 'g')) = 11
+      AND left(regexp_replace(COALESCE(phone, ''), '\\D', '', 'g'), 1) = '1'
+      THEN '+' || regexp_replace(COALESCE(phone, ''), '\\D', '', 'g')
+    ELSE '+' || regexp_replace(COALESCE(phone, ''), '\\D', '', 'g')
+  END
+`;
+
+function generateSixDigitCode() {
+  return String(crypto.randomInt(100000, 1000000));
+}
+
+function codVerificationMessage(code) {
+  return `MowNWA: Your cash/check-on-site verification code is ${code}. Enter this code to confirm your mowing request.`;
+}
+
+function isCodPaymentMethod(value) {
+  return String(value || "").trim().toLowerCase() === "onsite_cash_check";
+}
+
+function codVerificationIsExpired(sentAt) {
+  const sentMs = new Date(sentAt || 0).getTime();
+  return !Number.isFinite(sentMs) || Date.now() - sentMs > 15 * 60 * 1000;
+}
+
+const PHONE_VERIFICATION_PURPOSE_COD = "cod_checkout";
+const PHONE_VERIFICATION_SESSION_TTL_MS = 30 * 60 * 1000;
+
+function phoneVerificationSessionKey(phone, purpose = PHONE_VERIFICATION_PURPOSE_COD) {
+  return `${normalizePhoneForVerification(phone)}|${String(purpose || PHONE_VERIFICATION_PURPOSE_COD).trim().toLowerCase()}`;
+}
+
+function phoneVerificationSessionStore(req) {
+  if (!req.session) return null;
+  if (!req.session.phoneVerifications || typeof req.session.phoneVerifications !== "object") {
+    req.session.phoneVerifications = {};
+  }
+  return req.session.phoneVerifications;
+}
+
+function requestIp(req) {
+  return String(req.headers["x-forwarded-for"] || req.ip || req.socket?.remoteAddress || "")
+    .split(",")[0]
+    .trim();
+}
+
+function recordPhoneVerificationSession(req, { phone, purpose, provider } = {}) {
+  const store = phoneVerificationSessionStore(req);
+  if (!store) return null;
+  const normalizedPhone = normalizePhoneForVerification(phone);
+  const verifiedAt = new Date().toISOString();
+  const record = {
+    phone: normalizedPhone,
+    purpose: String(purpose || PHONE_VERIFICATION_PURPOSE_COD),
+    provider: provider || getPhoneVerifyProvider(),
+    verifiedAt
+  };
+  store[phoneVerificationSessionKey(normalizedPhone, record.purpose)] = record;
+  return record;
+}
+
+function verifiedPhoneSession(req, phone, purpose = PHONE_VERIFICATION_PURPOSE_COD) {
+  const store = phoneVerificationSessionStore(req);
+  const record = store?.[phoneVerificationSessionKey(phone, purpose)];
+  if (!record) return null;
+  const verifiedMs = new Date(record.verifiedAt || 0).getTime();
+  if (!Number.isFinite(verifiedMs) || Date.now() - verifiedMs > PHONE_VERIFICATION_SESSION_TTL_MS) {
+    delete store[phoneVerificationSessionKey(phone, purpose)];
+    return null;
+  }
+  return record;
+}
+
 /* =========================================================
    IDEMPOTENT PRICING SCHEMA SETUP
    Runs at startup — safe to run on every start (IF NOT EXISTS).
@@ -1585,15 +1744,205 @@ async function ensureUsersPhoneColumn() {
   }
 }
 
+async function findAccountContactConflict({ email, phone, excludeUserId = null } = {}) {
+  await ensureUsersPhoneColumn();
+  const normalizedEmail = normalizeAccountEmail(email);
+  const normalizedPhone = normalizeAccountPhone(phone);
+  const excludedId = excludeUserId == null ? null : String(excludeUserId);
+
+  if (normalizedEmail && !isGuestPlaceholderEmail(normalizedEmail)) {
+    const emailResult = await pgdb.query(
+      `
+      SELECT id, email, phone
+      FROM users
+      WHERE LOWER(TRIM(COALESCE(email, ''))) = $1
+        AND LOWER(TRIM(COALESCE(email, ''))) !~ '^phone-[^@]+@example\\.com$'
+        AND deleted_at IS NULL
+        AND ($2::text IS NULL OR id::text <> $2)
+      LIMIT 1
+      `,
+      [normalizedEmail, excludedId]
+    );
+    if (emailResult.rows.length) {
+      return { field: "email", error: DUPLICATE_EMAIL_MESSAGE, user: emailResult.rows[0] };
+    }
+  }
+
+  if (normalizedPhone) {
+    const phoneResult = await pgdb.query(
+      `
+      SELECT id, email, phone
+      FROM users
+      WHERE ${NORMALIZED_USER_PHONE_SQL} = $1
+        AND LOWER(TRIM(COALESCE(email, ''))) !~ '^phone-[^@]+@example\\.com$'
+        AND deleted_at IS NULL
+        AND ($2::text IS NULL OR id::text <> $2)
+      LIMIT 1
+      `,
+      [normalizedPhone, excludedId]
+    );
+    if (phoneResult.rows.length) {
+      return { field: "phone", error: DUPLICATE_PHONE_MESSAGE, user: phoneResult.rows[0] };
+    }
+  }
+
+  return null;
+}
+
+async function checkAccountContactConflicts({ email, phone, currentUserId = null } = {}) {
+  return findAccountContactConflict({ email, phone, excludeUserId: currentUserId });
+}
+
+function checkoutContactDebugEnabled() {
+  const debugFlag = String(process.env.DEBUG_CHECKOUT_CONTACTS || "").trim().toLowerCase();
+  return process.env.NODE_ENV !== "production" || ["1", "true", "yes", "on"].includes(debugFlag);
+}
+
+function maskEmailForDebug(value) {
+  const email = normalizeAccountEmail(value);
+  if (!email || !email.includes("@")) return email ? "***" : "";
+  const [local, domain] = email.split("@");
+  const tldIndex = domain.lastIndexOf(".");
+  const domainSuffix = tldIndex > 0 ? domain.slice(tldIndex) : "";
+  return `${local.slice(0, 1) || "*"}***@${domain.slice(0, 1) || "*"}***${domainSuffix}`;
+}
+
+function checkoutConflictDebugPayload({ email, phone } = {}) {
+  if (!checkoutContactDebugEnabled()) return {};
+  return {
+    conflict_checked_email: maskEmailForDebug(email),
+    conflict_checked_phone: maskPhone(normalizeAccountPhone(phone) || phone)
+  };
+}
+
+function sendAccountContactConflict(res, conflict, options = {}) {
+  const messages = options.messages || {};
+  const error = messages[conflict.field] || conflict.error;
+  return res.status(409).json({
+    ok: false,
+    field: conflict.field,
+    code: "ACCOUNT_CONTACT_CONFLICT",
+    error,
+    ...(options.debug || {})
+  });
+}
+
+function sendAdminAccountContactConflict(res, conflict) {
+  return sendAccountContactConflict(res, conflict, {
+    messages: {
+      email: "That email is already used by another account.",
+      phone: "That phone number is already used by another account."
+    }
+  });
+}
+
+function sendCheckoutAccountContactConflict(res, conflict, checkedContact = {}) {
+  return sendAccountContactConflict(res, conflict, {
+    messages: {
+      email: CHECKOUT_DUPLICATE_EMAIL_MESSAGE,
+      phone: CHECKOUT_DUPLICATE_PHONE_MESSAGE
+    },
+    debug: checkoutConflictDebugPayload(checkedContact)
+  });
+}
+
+let accountContactIndexesEnsured = false;
+async function ensureUniqueAccountContactIndexes() {
+  if (accountContactIndexesEnsured) return true;
+  await ensureUsersPhoneColumn();
+  try {
+    const emailDuplicates = await pgdb.query(`
+      SELECT LOWER(TRIM(email)) AS normalized_email, COUNT(*)::int AS count, array_agg(id) AS user_ids
+      FROM users
+      WHERE COALESCE(TRIM(email), '') <> ''
+        AND LOWER(TRIM(email)) !~ '^phone-[^@]+@example\\.com$'
+        AND deleted_at IS NULL
+      GROUP BY LOWER(TRIM(email))
+      HAVING COUNT(*) > 1
+      LIMIT 20
+    `);
+    if (emailDuplicates.rows.length) {
+      console.warn("[Startup] Skipping users normalized-email unique index; duplicates found:", emailDuplicates.rows);
+    } else {
+      await pgdb.query(`
+        CREATE UNIQUE INDEX IF NOT EXISTS users_unique_account_email_norm_idx
+        ON users (LOWER(TRIM(email)))
+        WHERE COALESCE(TRIM(email), '') <> ''
+          AND LOWER(TRIM(email)) !~ '^phone-[^@]+@example\\.com$'
+          AND deleted_at IS NULL
+      `);
+    }
+
+    const phoneDuplicates = await pgdb.query(`
+      SELECT ${NORMALIZED_USER_PHONE_SQL} AS normalized_phone, COUNT(*)::int AS count, array_agg(id) AS user_ids
+      FROM users
+      WHERE ${NORMALIZED_USER_PHONE_SQL} <> ''
+        AND LOWER(TRIM(COALESCE(email, ''))) !~ '^phone-[^@]+@example\\.com$'
+        AND deleted_at IS NULL
+      GROUP BY ${NORMALIZED_USER_PHONE_SQL}
+      HAVING COUNT(*) > 1
+      LIMIT 20
+    `);
+    if (phoneDuplicates.rows.length) {
+      console.warn("[Startup] Skipping users normalized-phone unique index; duplicates found:", phoneDuplicates.rows);
+    } else {
+      await pgdb.query(`
+        CREATE UNIQUE INDEX IF NOT EXISTS users_unique_account_phone_norm_idx
+        ON users ((${NORMALIZED_USER_PHONE_SQL}))
+        WHERE ${NORMALIZED_USER_PHONE_SQL} <> ''
+          AND LOWER(TRIM(COALESCE(email, ''))) !~ '^phone-[^@]+@example\\.com$'
+          AND deleted_at IS NULL
+      `);
+    }
+
+    accountContactIndexesEnsured = true;
+    return true;
+  } catch (error) {
+    console.warn("[Startup] Could not ensure account contact unique indexes:", error.message);
+    return false;
+  }
+}
+
 let jobsScopeSnapshotColumnEnsured = false;
 async function ensureJobsScopeSnapshotColumn() {
   if (jobsScopeSnapshotColumnEnsured) return true;
   try {
+    await pgdb.query("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS job_scope_snapshot JSONB");
     await pgdb.query("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS scope_snapshot JSONB");
+    await pgdb.query(`
+      UPDATE jobs
+      SET
+        job_scope_snapshot = COALESCE(job_scope_snapshot, scope_snapshot),
+        scope_snapshot = COALESCE(scope_snapshot, job_scope_snapshot)
+      WHERE job_scope_snapshot IS NULL
+         OR scope_snapshot IS NULL
+    `);
     jobsScopeSnapshotColumnEnsured = true;
     return true;
   } catch (error) {
-    console.warn("Could not ensure jobs.scope_snapshot column:", error.message);
+    console.warn("Could not ensure jobs scope snapshot columns:", error.message);
+    return false;
+  }
+}
+
+let jobPhotoColumnsEnsured = false;
+async function ensureJobPhotoColumns() {
+  if (jobPhotoColumnsEnsured) return true;
+  try {
+    await pgdb.query("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS before_photo_urls JSONB DEFAULT '[]'::jsonb");
+    await pgdb.query("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS after_photo_urls JSONB DEFAULT '[]'::jsonb");
+    await pgdb.query(`
+      UPDATE jobs
+      SET
+        before_photo_urls = COALESCE(before_photo_urls, '[]'::jsonb),
+        after_photo_urls = COALESCE(after_photo_urls, '[]'::jsonb)
+      WHERE before_photo_urls IS NULL
+         OR after_photo_urls IS NULL
+    `);
+    jobPhotoColumnsEnsured = true;
+    return true;
+  } catch (error) {
+    console.warn("Could not ensure job photo columns:", error.message);
     return false;
   }
 }
@@ -1603,6 +1952,7 @@ async function ensurePaymentColumns() {
   if (paymentColumnsEnsured) return true;
   try {
     await pgdb.query("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS payment_status TEXT DEFAULT 'unpaid'");
+    await pgdb.query("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS payment_method TEXT");
     await pgdb.query("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS stripe_checkout_session_id TEXT");
     await pgdb.query("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS stripe_payment_intent_id TEXT");
     await pgdb.query("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS paid_at TIMESTAMPTZ");
@@ -1612,6 +1962,47 @@ async function ensurePaymentColumns() {
     return true;
   } catch (error) {
     console.warn("Could not ensure payment columns:", error.message);
+    return false;
+  }
+}
+
+let codVerificationColumnsEnsured = false;
+async function ensureCodVerificationColumns() {
+  if (codVerificationColumnsEnsured) return true;
+  try {
+    await pgdb.query("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS cod_verification_status TEXT DEFAULT 'not_required'");
+    await pgdb.query("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS cod_verification_code TEXT");
+    await pgdb.query("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS cod_verification_sent_at TIMESTAMPTZ");
+    await pgdb.query("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS cod_verified_at TIMESTAMPTZ");
+    await pgdb.query("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS cod_verification_provider TEXT");
+    await pgdb.query("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS cod_verification_message_sid TEXT");
+    await pgdb.query("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS cod_verification_attempts INTEGER DEFAULT 0");
+    await pgdb.query("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS phone_verified_at TIMESTAMPTZ");
+    await pgdb.query("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS phone_verified_provider TEXT");
+    await pgdb.query("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS phone_verified_number TEXT");
+    await pgdb.query("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS phone_verification_purpose TEXT");
+    codVerificationColumnsEnsured = true;
+    return true;
+  } catch (error) {
+    console.warn("Could not ensure COD verification columns:", error.message);
+    return false;
+  }
+}
+
+let smsConsentColumnsEnsured = false;
+async function ensureSmsConsentColumns() {
+  if (smsConsentColumnsEnsured) return true;
+  try {
+    await pgdb.query("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS sms_consent_at TIMESTAMPTZ");
+    await pgdb.query("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS sms_consent_text TEXT");
+    await pgdb.query("ALTER TABLE quotes ADD COLUMN IF NOT EXISTS sms_consent_at TIMESTAMPTZ");
+    await pgdb.query("ALTER TABLE quotes ADD COLUMN IF NOT EXISTS sms_consent_text TEXT");
+    tableColumnCache.delete("jobs");
+    tableColumnCache.delete("quotes");
+    smsConsentColumnsEnsured = true;
+    return true;
+  } catch (error) {
+    console.warn("Could not ensure SMS consent columns:", error.message);
     return false;
   }
 }
@@ -1626,6 +2017,23 @@ async function ensureJobsCustomerEmailColumn() {
     return true;
   } catch (error) {
     console.warn("Could not ensure jobs.customer_email column:", error.message);
+    return false;
+  }
+}
+
+let jobsAdminEditableContactColumnsEnsured = false;
+async function ensureJobsAdminEditableContactColumns() {
+  if (jobsAdminEditableContactColumnsEnsured) return true;
+  try {
+    await pgdb.query("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS customer_name TEXT");
+    await pgdb.query("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS customer_email TEXT");
+    await pgdb.query("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS customer_phone TEXT");
+    tableColumnCache.delete("jobs");
+    jobsCustomerEmailColumnEnsured = true;
+    jobsAdminEditableContactColumnsEnsured = true;
+    return true;
+  } catch (error) {
+    console.warn("Could not ensure admin editable job contact columns:", error.message);
     return false;
   }
 }
@@ -1765,9 +2173,12 @@ async function attachCheckoutJobToUser(jobId, user = {}, email = "") {
 
 async function updateUserPhoneIfBlank(userId, phone) {
   const trimmed = String(phone || "").trim();
-  if (!userId || !trimmed || !isValidLookingPhone(trimmed)) return false;
+  const normalizedPhone = normalizeAccountPhone(trimmed);
+  if (!userId || !trimmed || !normalizedPhone || !isValidLookingPhone(trimmed)) return false;
   if (!(await ensureUsersPhoneColumn())) return false;
   try {
+    const conflict = await findAccountContactConflict({ phone: normalizedPhone, excludeUserId: userId });
+    if (conflict) return false;
     const result = await pgdb.query(
       `
       UPDATE users
@@ -1776,7 +2187,7 @@ async function updateUserPhoneIfBlank(userId, phone) {
         AND COALESCE(TRIM(phone), '') = ''
       RETURNING phone
       `,
-      [userId, trimmed]
+      [userId, normalizedPhone]
     );
     return result.rows.length > 0;
   } catch (error) {
@@ -1812,14 +2223,14 @@ async function userWithAvatar(user) {
 }
 
 async function findUserByEmail(email) {
-  const normalized = String(email || "").toLowerCase().trim();
+  const normalized = normalizeAccountEmail(email);
   if (!normalized) return null;
-  const result = await pgdb.query("SELECT * FROM users WHERE email = $1 LIMIT 1", [normalized]);
+  const result = await pgdb.query("SELECT * FROM users WHERE LOWER(TRIM(email)) = $1 LIMIT 1", [normalized]);
   return result.rows[0] || null;
 }
 
 async function findOrCreateCustomerUser({ email, fullName, firstName, lastName, phone } = {}) {
-  const normalized = String(email || "").toLowerCase().trim();
+  const normalized = normalizeAccountEmail(email);
   if (!normalized) return { user: null, created: false };
 
   await ensureUsersPhoneColumn();
@@ -1834,13 +2245,18 @@ async function findOrCreateCustomerUser({ email, fullName, firstName, lastName, 
     const safeFirstName = String(firstName || split.firstName || "").trim();
     const safeLastName = String(lastName || split.lastName || "").trim();
     const safeFullName = composeFullName(safeFirstName, safeLastName, fullName);
+    const normalizedPhone = normalizeAccountPhone(phone);
+    const phoneConflict = normalizedPhone
+      ? await findAccountContactConflict({ phone: normalizedPhone })
+      : null;
+    const safePhone = phoneConflict ? "" : normalizedPhone;
     const result = await pgdb.query(
       `
       INSERT INTO users (id, email, password_hash, full_name, first_name, last_name, phone, role)
       VALUES ($1, $2, $3, $4, $5, $6, $7, 'customer')
       RETURNING *
       `,
-      [nanoid(10), normalized, hashPassword(nanoid(40)), safeFullName, safeFirstName, safeLastName, String(phone || "").trim()]
+      [nanoid(10), normalized, hashPassword(nanoid(40)), safeFullName, safeFirstName, safeLastName, safePhone]
     );
     return { user: result.rows[0], created: true };
   } catch (error) {
@@ -3033,6 +3449,10 @@ app.get("/health", (_req, res) => {
   });
 });
 
+app.get("/api/admin/phone-verification/health", requireAuth, requireRole("admin"), (_req, res) => {
+  res.json(getPhoneVerificationHealth());
+});
+
 app.get("/api/config", async (_req, res) => {
   try {
     const settings = await loadSettingsFromDb();
@@ -3610,8 +4030,8 @@ function instantCheckoutMissingFields(payload = {}) {
 
 function normalizeInstantCheckoutPayload(payload = {}, calculatedEstimate = 0) {
   const name = payload.name || payload.customerName || "";
-  const phone = submittedPhone(payload);
-  const email = payload.email || payload.customerEmail || "";
+  const phone = String(payload.customerPhone || payload.phone || payload.leadPhone || "").trim();
+  const email = normalizeAccountEmail(payload.customerEmail || payload.email || "");
   return {
     ...payload,
     name,
@@ -3638,6 +4058,9 @@ app.post("/api/checkout/instant-mow", optionalAuth, async (req, res) => {
       const onlyPhone = missing.length === 1 && missing[0] === "phone";
       return res.status(400).json({ ok: false, error: onlyPhone ? phoneValidationError() : `Missing booking fields: ${missing.join(", ")}` });
     }
+    const smsConsent = requireSmsConsent(res, body, jobPayload);
+    if (!smsConsent) return;
+    applySmsConsentSnapshot(jobPayload, smsConsent);
 
     const settings = await loadSettingsFromDb();
     const calculatedEstimate = estimateQuote(jobPayload, settings);
@@ -3646,6 +4069,17 @@ app.post("/api/checkout/instant-mow", optionalAuth, async (req, res) => {
       return res.status(400).json({ ok: false, error: "Checkout amount is required" });
     }
     const checkoutJobPayload = normalizeInstantCheckoutPayload(jobPayload, calculatedEstimate);
+    const contactConflict = await checkAccountContactConflicts({
+      email: checkoutJobPayload.email,
+      phone: checkoutJobPayload.phone,
+      currentUserId: req.user?.id || null
+    });
+    if (contactConflict) {
+      return sendCheckoutAccountContactConflict(res, contactConflict, {
+        email: checkoutJobPayload.email,
+        phone: checkoutJobPayload.phone
+      });
+    }
 
     const secretKey = stripeSecretKey();
     const serviceSnapshot = {
@@ -3660,7 +4094,10 @@ app.post("/api/checkout/instant-mow", optionalAuth, async (req, res) => {
       notes: jobPayload.notes || jobPayload.yard_access_notes || ""
     };
     if (!secretKey) {
-      const job = await insertJobForUser(req.user?.id || null, checkoutJobPayload, "open");
+      const job = await insertJobForUser(req.user?.id || null, checkoutJobPayload, "open", {
+        paymentStatus: "checkout_pending",
+        paymentMethod: "stripe"
+      });
       const payment = {
         id: nanoid(10),
         job_id: job.id,
@@ -3696,7 +4133,10 @@ app.post("/api/checkout/instant-mow", optionalAuth, async (req, res) => {
 
     assertStripeTestMode(secretKey);
 
-    const job = await insertJobForUser(req.user?.id || null, checkoutJobPayload, "payment_pending");
+    const job = await insertJobForUser(req.user?.id || null, checkoutJobPayload, "payment_pending", {
+      paymentStatus: "checkout_pending",
+      paymentMethod: "stripe"
+    });
     const payment = {
       id: nanoid(10),
       job_id: job.id,
@@ -3777,14 +4217,235 @@ app.post("/api/checkout/instant-mow", optionalAuth, async (req, res) => {
   }
 });
 
+app.post("/api/phone-verification/start", optionalAuth, async (req, res) => {
+  try {
+    const phone = normalizePhoneForVerification(req.body?.phone || req.body?.customerPhone || "");
+    const purpose = String(req.body?.purpose || PHONE_VERIFICATION_PURPOSE_COD).trim() || PHONE_VERIFICATION_PURPOSE_COD;
+    if (!isE164Phone(phone)) {
+      return res.status(400).json({ ok: false, error: "A valid phone number is required." });
+    }
+    const result = await startPhoneVerification({
+      phone,
+      purpose,
+      userId: req.user?.id || null,
+      ip: requestIp(req)
+    });
+    if (!result.ok) {
+      const status = result.status === "rate_limited" ? 429 : (result.missing?.length ? 503 : 502);
+      return res.status(status).json({
+        ok: false,
+        status: result.status || "failed",
+        code: status >= 500 ? "PHONE_VERIFICATION_UNAVAILABLE" : undefined,
+        error: status >= 500 ? PHONE_VERIFICATION_UNAVAILABLE_MESSAGE : (result.error || "Could not start phone verification.")
+      });
+    }
+    res.json({
+      ok: true,
+      provider: result.provider || getPhoneVerifyProvider(),
+      status: result.status || "pending",
+      message: "Text code sent. Enter the 6-digit code below."
+    });
+  } catch (error) {
+    res.status(500).json({ ok: false, code: "PHONE_VERIFICATION_UNAVAILABLE", error: PHONE_VERIFICATION_UNAVAILABLE_MESSAGE });
+  }
+});
+
+app.post("/api/phone-verification/check", optionalAuth, async (req, res) => {
+  try {
+    const phone = normalizePhoneForVerification(req.body?.phone || req.body?.customerPhone || "");
+    const code = String(req.body?.code || "").replace(/\D/g, "");
+    const purpose = String(req.body?.purpose || PHONE_VERIFICATION_PURPOSE_COD).trim() || PHONE_VERIFICATION_PURPOSE_COD;
+    if (!isE164Phone(phone)) {
+      return res.status(400).json({ ok: false, error: "A valid phone number is required." });
+    }
+    if (!/^\d{4,10}$/.test(code)) {
+      return res.status(400).json({ ok: false, error: "A valid verification code is required." });
+    }
+    const result = await checkPhoneVerification({
+      phone,
+      code,
+      purpose,
+      userId: req.user?.id || null,
+      ip: requestIp(req)
+    });
+    if (!result.ok || result.status !== "approved") {
+      const unavailable = Boolean(result.missing?.length);
+      const status = unavailable ? 503 : (result.status === "rate_limited" ? 429 : 400);
+      return res.status(status).json({
+        ok: false,
+        status: result.status || "failed",
+        code: unavailable ? "PHONE_VERIFICATION_UNAVAILABLE" : undefined,
+        error: unavailable ? PHONE_VERIFICATION_UNAVAILABLE_MESSAGE : "We could not verify that code. Please try again."
+      });
+    }
+    const record = recordPhoneVerificationSession(req, {
+      phone,
+      purpose,
+      provider: result.provider || getPhoneVerifyProvider()
+    });
+    res.json({
+      ok: true,
+      provider: result.provider || getPhoneVerifyProvider(),
+      status: "approved",
+      verified: true,
+      phoneVerifiedAt: record?.verifiedAt || new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({ ok: false, code: "PHONE_VERIFICATION_UNAVAILABLE", error: PHONE_VERIFICATION_UNAVAILABLE_MESSAGE });
+  }
+});
+
+app.post("/api/checkout/pay-onsite", optionalAuth, async (req, res) => {
+  try {
+    await ensureCodVerificationColumns();
+    const body = req.body || {};
+    const jobPayload = body.job && typeof body.job === "object" ? body.job : body;
+    const quoteId = body.quote_id || jobPayload.quote_id || jobPayload.quoteId || "";
+    const missing = instantCheckoutMissingFields(jobPayload);
+    if (missing.length) {
+      const onlyPhone = missing.length === 1 && missing[0] === "phone";
+      return res.status(400).json({ ok: false, error: onlyPhone ? phoneValidationError() : `Missing booking fields: ${missing.join(", ")}` });
+    }
+    const smsConsent = requireSmsConsent(res, body, jobPayload);
+    if (!smsConsent) return;
+    applySmsConsentSnapshot(jobPayload, smsConsent);
+
+    const settings = await loadSettingsFromDb();
+    const calculatedEstimate = estimateQuote(jobPayload, settings);
+    if (Number(calculatedEstimate || 0) <= 0) {
+      return res.status(400).json({ ok: false, error: "Booking amount is required" });
+    }
+    const onsiteJobPayload = normalizeInstantCheckoutPayload({
+      ...jobPayload,
+      payment_status: "onsite_pending",
+      payment_method: "onsite_cash_check"
+    }, calculatedEstimate);
+    const contactConflict = await checkAccountContactConflicts({
+      email: onsiteJobPayload.email,
+      phone: onsiteJobPayload.phone,
+      currentUserId: req.user?.id || null
+    });
+    if (contactConflict) {
+      return sendCheckoutAccountContactConflict(res, contactConflict, {
+        email: onsiteJobPayload.email,
+        phone: onsiteJobPayload.phone
+      });
+    }
+
+    const smsTo = toE164Phone(onsiteJobPayload.phone);
+    if (!isE164Phone(smsTo)) {
+      return res.status(400).json({ ok: false, error: "A valid E.164-capable phone number is required for cash/check-on-site verification." });
+    }
+    const phoneVerification = verifiedPhoneSession(req, smsTo, PHONE_VERIFICATION_PURPOSE_COD);
+    if (!phoneVerification) {
+      return res.status(403).json({
+        ok: false,
+        verification_required: true,
+        verificationRequired: true,
+        error: "Phone verification is required before reserving a cash/check-on-site job."
+      });
+    }
+
+    let job = await insertJobForUser(req.user?.id || null, onsiteJobPayload, "open", {
+      paymentStatus: "onsite_pending",
+      paymentMethod: "onsite_cash_check"
+    });
+    const updatedJob = await pgdb.query(
+      `
+      UPDATE jobs
+      SET cod_verification_status = 'verified',
+          cod_verified_at = NOW(),
+          cod_verification_code = NULL,
+          cod_verification_provider = $2,
+          phone_verified_at = $3,
+          phone_verified_provider = $2,
+          phone_verified_number = $4,
+          phone_verification_purpose = $5
+      WHERE id = $1
+      RETURNING *
+      `,
+      [
+        job.id,
+        phoneVerification.provider || getPhoneVerifyProvider(),
+        phoneVerification.verifiedAt,
+        smsTo,
+        PHONE_VERIFICATION_PURPOSE_COD
+      ]
+    );
+    if (updatedJob.rows[0]) job = mapJobRow(updatedJob.rows[0]);
+
+    const payment = {
+      id: nanoid(10),
+      job_id: job.id,
+      quote_id: quoteId || null,
+      stripe_checkout_session_id: null,
+      stripe_payment_intent_id: null,
+      amount: calculatedEstimate,
+      currency: "usd",
+      customer: {
+        name: onsiteJobPayload.name,
+        phone: onsiteJobPayload.phone,
+        email: onsiteJobPayload.email
+      },
+      service: {
+        serviceType: onsiteJobPayload.serviceType || "mowing",
+        address: onsiteJobPayload.address || "",
+        city: onsiteJobPayload.city || "",
+        state: onsiteJobPayload.state || "",
+        zip: onsiteJobPayload.zip || "",
+        mowAreaSqft: Number(jobPayload.mowAreaSqft || 0),
+        lotAreaSqft: Number(jobPayload.lotAreaSqft || 0),
+        preferredDate: onsiteJobPayload.preferredDate || null,
+        notes: jobPayload.notes || jobPayload.yard_access_notes || ""
+      },
+      payment_method: "onsite_cash_check",
+      status: "onsite_pending",
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      note: "Cash or check collected at time of service after COD phone verification."
+    };
+    const payments = readJsonArray(PAYMENTS_FILE);
+    payments.push(payment);
+    writeJsonArray(PAYMENTS_FILE, payments);
+    await updateUserPhoneIfBlank(req.user?.id || null, onsiteJobPayload.phone);
+
+    res.status(201).json({
+      ok: true,
+      verification_required: false,
+      verificationRequired: false,
+      jobId: job.id,
+      paymentStatus: "onsite_pending",
+      paymentMethod: "onsite_cash_check",
+      checkoutUrl: null,
+      job,
+      payment,
+      message: "Your onsite-payment job is confirmed."
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 app.post("/api/payments/create-checkout-session", requireAuth, async (req, res) => {
   try {
     const body = req.body || {};
-    const paymentPhone = submittedPhone(body) || req.user?.phone || "";
-    const paymentEmail = normalizeEmailForClaim(body.email || body.customerEmail || req.user.email || "");
+    const paymentPhone = String(body.customerPhone || body.phone || body.leadPhone || "").trim() || req.user?.phone || "";
+    const paymentEmail = normalizeEmailForClaim(body.customerEmail || body.email || req.user.email || "");
     if (!isValidLookingPhone(paymentPhone)) return rejectMissingPhone(res);
     const amount = Math.round(Number(body.amount || body.final_price || body.estimate || 0) * 100);
     if (amount <= 0) return res.status(400).json({ ok: false, error: "Checkout amount is required" });
+    const contactConflict = await checkAccountContactConflicts({
+      email: paymentEmail,
+      phone: paymentPhone,
+      currentUserId: req.user.id
+    });
+    if (contactConflict) {
+      return sendCheckoutAccountContactConflict(res, contactConflict, {
+        email: paymentEmail,
+        phone: paymentPhone
+      });
+    }
+
     if (body.job_id && req.user.role !== "admin") {
       await attachCheckoutJobToUser(body.job_id, req.user, paymentEmail);
     }
@@ -3965,14 +4626,18 @@ async function markCheckoutSessionPaid(session = {}) {
   writeJsonArray(PAYMENTS_FILE, payments);
 
   if (payment.job_id) {
+    await ensureJobsScopeSnapshotColumn();
     await pgdb.query(
       `
       UPDATE jobs
       SET
         status = CASE WHEN status IN ('payment_pending', 'checkout_pending') THEN 'open' ELSE status END,
         payment_status = 'paid',
+        payment_method = COALESCE(payment_method, 'stripe'),
         stripe_payment_intent_id = COALESCE($3, stripe_payment_intent_id),
         paid_at = COALESCE(paid_at, NOW()),
+        job_scope_snapshot = COALESCE(job_scope_snapshot, scope_snapshot),
+        scope_snapshot = COALESCE(scope_snapshot, job_scope_snapshot),
         details = CASE
           WHEN COALESCE(details, '') ILIKE '%Payment status: paid%' THEN details
           ELSE CONCAT(
@@ -4054,16 +4719,23 @@ app.get("/api/parcel/lookup", async (req, res) => {
 /* -------------------- AUTH -------------------- */
 
 app.post("/api/auth/register", async (req, res) => {
+  let normalizedEmail = "";
+  let normalizedPhone = "";
   try {
     const { email, password, fullName, firstName, lastName, phone, role } = req.body || {};
+    normalizedEmail = normalizeAccountEmail(email);
+    normalizedPhone = normalizeAccountPhone(phone);
 
-    if (!email || !password) {
+    if (!normalizedEmail || !password) {
       return res.status(400).json({ ok: false, error: "Missing email or password" });
     }
 
     const allowedRoles = new Set(["customer", "provider"]);
     const safeRole = allowedRoles.has(role) ? role : "customer";
     await ensureUsersPhoneColumn();
+    const conflict = await findAccountContactConflict({ email: normalizedEmail, phone: normalizedPhone });
+    if (conflict) return sendAccountContactConflict(res, conflict);
+
     const split = splitFullName(fullName);
     const safeFirstName = String(firstName || split.firstName || "").trim();
     const safeLastName = String(lastName || split.lastName || "").trim();
@@ -4075,7 +4747,7 @@ app.post("/api/auth/register", async (req, res) => {
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
       RETURNING id, email, full_name, first_name, last_name, phone, role, active, created_at
       `,
-      [nanoid(10), String(email).toLowerCase().trim(), hashPassword(password), safeFullName, safeFirstName, safeLastName, String(phone || "").trim(), safeRole]
+      [nanoid(10), normalizedEmail, hashPassword(password), safeFullName, safeFirstName, safeLastName, normalizedPhone, safeRole]
     );
     await linkPasswordProvider(result.rows[0]);
     await claimJobsForUserEmail(result.rows[0].id, result.rows[0].email);
@@ -4086,7 +4758,9 @@ app.post("/api/auth/register", async (req, res) => {
     });
   } catch (error) {
     if (error.code === "23505") {
-      return res.status(400).json({ ok: false, error: "User already exists" });
+      const conflict = await findAccountContactConflict({ email: normalizedEmail, phone: normalizedPhone });
+      if (conflict) return sendAccountContactConflict(res, conflict);
+      return res.status(409).json({ ok: false, field: "email", error: DUPLICATE_EMAIL_MESSAGE });
     }
     res.status(500).json({ ok: false, error: error.message });
   }
@@ -4098,8 +4772,8 @@ app.post("/api/auth/login", async (req, res) => {
 
     await ensureUsersPhoneColumn();
     const result = await pgdb.query(
-      "SELECT * FROM users WHERE email = $1 LIMIT 1",
-      [String(email || "").toLowerCase().trim()]
+      "SELECT * FROM users WHERE LOWER(TRIM(email)) = $1 LIMIT 1",
+      [normalizeAccountEmail(email)]
     );
 
     const user = result.rows[0];
@@ -5126,7 +5800,9 @@ function mapJobRow(row) {
     preferredDate: row.preferred_date || null,
     details,
     photos: parseJsonArray(row.photos),
-    scopeSnapshot: parseJsonObject(row.scope_snapshot),
+    beforePhotoUrls: parseJsonArray(row.before_photo_urls),
+    afterPhotoUrls: parseJsonArray(row.after_photo_urls),
+    scopeSnapshot: parseJsonObject(row.job_scope_snapshot || row.scope_snapshot),
     status: row.status || "open",
     customerName: row.customer_name || row.customer_full_name || row.full_name || "",
     customerEmail: row.customer_email || row.email || "",
@@ -5148,9 +5824,23 @@ function mapJobRow(row) {
     createdAt: row.created_at,
     updatedAt: row.updated_at || null,
     paymentStatus: row.payment_status || "unpaid",
+    paymentMethod: row.payment_method || null,
     estimateAtBooking: row.estimate_at_booking != null ? Number(row.estimate_at_booking) : null,
+    pricingBreakdownJson: parseJsonArray(row.pricing_breakdown_json),
     stripeCheckoutSessionId: row.stripe_checkout_session_id || null,
     paidAt: row.paid_at || null,
+    codVerificationStatus: row.cod_verification_status || "not_required",
+    codVerificationSentAt: row.cod_verification_sent_at || null,
+    codVerifiedAt: row.cod_verified_at || null,
+    codVerificationProvider: row.cod_verification_provider || null,
+    codVerificationMessageSid: row.cod_verification_message_sid || null,
+    codVerificationAttempts: Number(row.cod_verification_attempts || 0),
+    phoneVerifiedAt: row.phone_verified_at || null,
+    phoneVerifiedProvider: row.phone_verified_provider || null,
+    phoneVerifiedNumber: row.phone_verified_number || null,
+    phoneVerificationPurpose: row.phone_verification_purpose || null,
+    smsConsentAt: row.sms_consent_at || null,
+    smsConsentText: row.sms_consent_text || null,
   };
 }
 
@@ -5175,6 +5865,8 @@ function sanitizeJobForPublic(job = {}) {
     preferredDate: job.preferredDate || job.preferred_date || null,
     status: job.status || "open",
     paymentStatus: job.paymentStatus || job.payment_status || "unpaid",
+    paymentMethod: job.paymentMethod || job.payment_method || null,
+    codVerificationStatus: job.codVerificationStatus || job.cod_verification_status || "not_required",
     postedAt: job.postedAt || job.createdAt || job.created_at || null
   };
 }
@@ -5191,9 +5883,22 @@ function sanitizeJobForOwner(job = {}) {
     mower_access: job.mower_access || "",
     yard_access_notes: job.yard_access_notes || "",
     community_access_type: job.community_access_type || "",
-    scopeSnapshot: parseJsonObject(job.scopeSnapshot || job.scope_snapshot),
+    beforePhotoUrls: parseJsonArray(job.beforePhotoUrls || job.before_photo_urls),
+    afterPhotoUrls: parseJsonArray(job.afterPhotoUrls || job.after_photo_urls),
+    scopeSnapshot: parseJsonObject(job.scopeSnapshot || job.job_scope_snapshot || job.scope_snapshot),
     estimateAtBooking: job.estimateAtBooking != null ? Number(job.estimateAtBooking) : null,
+    pricingBreakdownJson: parseJsonArray(job.pricingBreakdownJson || job.pricing_breakdown_json),
     stripeCheckoutSessionId: job.stripeCheckoutSessionId || null,
+    paymentMethod: job.paymentMethod || job.payment_method || null,
+    codVerificationSentAt: job.codVerificationSentAt || job.cod_verification_sent_at || null,
+    codVerifiedAt: job.codVerifiedAt || job.cod_verified_at || null,
+    codVerificationProvider: job.codVerificationProvider || job.cod_verification_provider || null,
+    codVerificationMessageSid: job.codVerificationMessageSid || job.cod_verification_message_sid || null,
+    codVerificationAttempts: Number(job.codVerificationAttempts || job.cod_verification_attempts || 0),
+    phoneVerifiedAt: job.phoneVerifiedAt || job.phone_verified_at || null,
+    phoneVerifiedProvider: job.phoneVerifiedProvider || job.phone_verified_provider || null,
+    phoneVerifiedNumber: job.phoneVerifiedNumber || job.phone_verified_number || null,
+    phoneVerificationPurpose: job.phoneVerificationPurpose || job.phone_verification_purpose || null,
     paidAt: job.paidAt || null,
     createdAt: job.createdAt || job.postedAt || null,
     updatedAt: job.updatedAt || null
@@ -5208,7 +5913,28 @@ function sanitizeJobForProvider(job = {}) {
     customerEmail: job.customerEmail || "",
     customerPhone: job.customerPhone || "",
     photos: Array.isArray(job.photos) ? job.photos : [],
+    beforePhotoUrls: parseJsonArray(job.beforePhotoUrls || job.before_photo_urls),
+    afterPhotoUrls: parseJsonArray(job.afterPhotoUrls || job.after_photo_urls),
   };
+}
+
+function hasScopeSnapshotMutation(body = {}) {
+  return Object.keys(body || {}).some((key) => [
+    "scopeSnapshot",
+    "scope_snapshot",
+    "jobScopeSnapshot",
+    "job_scope_snapshot",
+    "selectedMowableGeoJSON",
+    "selectedMowableGeoJson",
+    "mowableGeoJSON",
+    "mowableGeoJson",
+    "parcelGeoJSON",
+    "parcelGeoJson"
+  ].includes(key));
+}
+
+function rejectScopeSnapshotMutation(res) {
+  return res.status(403).json({ ok: false, error: "Paid job scope snapshots are read-only." });
 }
 
 function buildJobDetails(body = {}) {
@@ -5257,21 +5983,53 @@ function geoJsonField(body = {}, ...keys) {
   return null;
 }
 
+function firstNonBlank(...values) {
+  for (const value of values) {
+    const text = String(value ?? "").trim();
+    if (text) return text;
+  }
+  return "";
+}
+
+function jobSnapshotAddress(body = {}) {
+  const address = firstNonBlank(body.address, body.street, body.serviceAddress);
+  const city = firstNonBlank(body.city, body.parcelCity);
+  const state = firstNonBlank(body.state, body.parcelState, DEFAULT_STATE);
+  const zip = firstNonBlank(body.zip, body.parcelZip);
+  const full = firstNonBlank(body.full, body.addressLabel, body.parcelLabel, [address, city, state, zip].filter(Boolean).join(", "));
+  return { address, city, state, zip, full };
+}
+
 function buildJobScopeSnapshot(body = {}, pricingBreakdown = null) {
   const serviceFields = servicePayloadFields(body);
   const finalAmount = Number(body.final_price || body.finalPrice || body.paidAmount || body.paymentAmount || body.budget || body.estimate || 0);
   const tipAmount = Number(body.tipAmount || body.tip_amount || body.gratuity || 0);
+  const address = jobSnapshotAddress(body);
+  const parcelLabel = firstNonBlank(body.parcelLabel, body.parcel_label, body.addressLabel, body.address_label, address.full);
+  const parcelId = firstNonBlank(body.parcelId, body.parcel_id);
+  const mapCenter = body.mapCenter || body.map_center || null;
+  const mapBounds = body.mapBounds || body.map_bounds || null;
   const snapshot = {
+    version: 1,
+    immutable: true,
+    source: "booking",
     parcelGeoJSON: geoJsonField(body, "parcelGeoJSON", "parcelGeoJson", "parcel_geojson"),
     selectedMowableGeoJSON: geoJsonField(body, "selectedMowableGeoJSON", "selectedMowableGeoJson", "mowableGeoJSON", "mowableGeoJson", "mowable_geojson"),
     excludedGeoJSON: geoJsonField(body, "excludedGeoJSON", "excludedGeoJson", "cutoutGeoJSON", "cutoutGeoJson", "cutout_geojson"),
     mowableAreaSqFt: Number(body.mowAreaSqft || body.mowableAreaSqFt || body.mowable_area_sqft || body.areaSqft || 0),
+    mowableSqft: Number(body.mowAreaSqft || body.mowableAreaSqFt || body.mowable_area_sqft || body.areaSqft || 0),
     lotAreaSqFt: Number(body.lotAreaSqft || body.lotAreaSqFt || body.lot_area_sqft || body.parcelAreaSqft || 0),
+    lotSqft: Number(body.lotAreaSqft || body.lotAreaSqFt || body.lot_area_sqft || body.parcelAreaSqft || 0),
     serviceType: body.serviceType || body.service_type || "mowing",
+    estimateAmountShownAtBooking: finalAmount,
     finalAmount,
     paidAmount: Number(body.paidAmount || body.paymentAmount || 0) || finalAmount,
     tipAmount,
-    pricingBreakdown: Array.isArray(pricingBreakdown) ? pricingBreakdown : null,
+    pricingBreakdown: pricingBreakdown && typeof pricingBreakdown === "object" ? pricingBreakdown : null,
+    address,
+    addressLabel: address.full,
+    parcelLabel,
+    parcelId,
     access: {
       gateSize: serviceFields.gate_size_category,
       gateAccessType: serviceFields.gate_access_type,
@@ -5301,10 +6059,17 @@ function buildJobScopeSnapshot(body = {}, pricingBreakdown = null) {
       availableDateEnd: serviceFields.available_date_end,
       specificServiceDate: serviceFields.specific_service_date
     },
+    smsConsent: body.sms_consent_at || body.smsConsentAt ? {
+      at: body.sms_consent_at || body.smsConsentAt,
+      text: body.sms_consent_text || body.smsConsentText || SMS_CONSENT_TEXT
+    } : null,
     customerNotes: serviceFields.customer_notes,
+    notes: serviceFields.customer_notes,
+    mapCenter,
+    mapBounds,
     map: {
-      center: body.mapCenter || body.map_center || null,
-      bounds: body.mapBounds || body.map_bounds || null
+      center: mapCenter,
+      bounds: mapBounds
     },
     createdAt: new Date().toISOString()
   };
@@ -5312,9 +6077,11 @@ function buildJobScopeSnapshot(body = {}, pricingBreakdown = null) {
   return Object.fromEntries(Object.entries(snapshot).filter(([, value]) => value !== null && value !== undefined));
 }
 
-async function insertJobForUser(userId, body = {}, status = "open") {
+async function insertJobForUser(userId, body = {}, status = "open", options = {}) {
   await ensureJobsScopeSnapshotColumn();
   await ensurePaymentColumns();
+  await ensureCodVerificationColumns();
+  await ensureSmsConsentColumns();
   await ensureJobsCustomerEmailColumn();
   /* Compute pricing breakdown at insert time so it's snapshotted permanently */
   let pricingBreakdown = null;
@@ -5331,6 +6098,10 @@ async function insertJobForUser(userId, body = {}, status = "open") {
     console.warn('[Job] Could not compute pricing breakdown for snapshot:', bErr.message);
   }
   const scopeSnapshot = buildJobScopeSnapshot(body, pricingBreakdown);
+  const insertPaymentStatus = String(options.paymentStatus || "unpaid").trim() || "unpaid";
+  const insertPaymentMethod = options.paymentMethod ? String(options.paymentMethod).trim() : null;
+  const smsConsentAt = body.sms_consent_at || body.smsConsentAt || null;
+  const smsConsentText = body.sms_consent_text || body.smsConsentText || null;
   const result = await pgdb.query(
     `
     INSERT INTO jobs (
@@ -5348,16 +6119,20 @@ async function insertJobForUser(userId, body = {}, status = "open") {
       preferred_date,
       details,
       photos,
+      job_scope_snapshot,
       scope_snapshot,
       customer_email,
       status,
       payment_status,
+      payment_method,
       estimate_at_booking,
-      pricing_breakdown_json
+      pricing_breakdown_json,
+      sms_consent_at,
+      sms_consent_text
     )
     VALUES (
-      $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb, $16,
-      $17, 'unpaid', $18, $19::jsonb
+      $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb, $15::jsonb, $16,
+      $17, $18, $19, $20, $21::jsonb, $22, $23
     )
     RETURNING *
     `,
@@ -5379,8 +6154,12 @@ async function insertJobForUser(userId, body = {}, status = "open") {
       JSON.stringify(scopeSnapshot),
       customerEmail,
       status,
+      insertPaymentStatus,
+      insertPaymentMethod,
       estimateTotal > 0 ? estimateTotal : null,
-      pricingBreakdown ? JSON.stringify(pricingBreakdown) : null
+      pricingBreakdown ? JSON.stringify(pricingBreakdown) : null,
+      smsConsentAt,
+      smsConsentText
     ]
   );
 
@@ -5439,6 +6218,9 @@ app.post("/api/jobs", requireAuth, async (req, res) => {
     const body = req.body || {};
     const phone = submittedPhone(body) || String(user?.phone || "").trim();
     if (!isValidLookingPhone(phone)) return rejectMissingPhone(res);
+    const smsConsent = requireSmsConsent(res, body);
+    if (!smsConsent) return;
+    applySmsConsentSnapshot(body, smsConsent);
     body.phone = phone;
     body.customerPhone = phone;
     body.email = body.email || body.customerEmail || user.email || "";
@@ -5461,6 +6243,8 @@ app.post("/api/leads", optionalAuth, async (req, res) => {
     const body = req.body || {};
     const phone = submittedPhone(body);
     if (!isValidLookingPhone(phone)) return rejectMissingPhone(res);
+    const smsConsent = requireSmsConsent(res, body);
+    if (!smsConsent) return;
     const lead = {
       id: nanoid(10),
       createdAt: new Date().toISOString(),
@@ -5487,6 +6271,10 @@ app.post("/api/leads", optionalAuth, async (req, res) => {
       suggestedBudget: Number(body.suggestedBudget || body.budget || 0),
       photos: listField(body.photos),
       aiSummaryJson: body.ai_summary_json || aiPhotoAnalysisPlaceholder(body),
+      smsConsentAt: smsConsent.at,
+      smsConsentText: smsConsent.text,
+      sms_consent_at: smsConsent.at,
+      sms_consent_text: smsConsent.text,
       sourceBrand: body.sourceBrand || SITE_BRAND
     };
 
@@ -5506,6 +6294,8 @@ app.post("/api/bid-requests", optionalAuth, async (req, res) => {
     const body = req.body || {};
     const phone = submittedPhone(body);
     if (!isValidLookingPhone(phone)) return rejectMissingPhone(res);
+    const smsConsent = requireSmsConsent(res, body);
+    if (!smsConsent) return;
     const photoUrls = listField(body.photos);
     const serviceTypes = listField(body.service_types || body.serviceTypes || body.requested_tasks);
     const bidRequest = {
@@ -5528,6 +6318,10 @@ app.post("/api/bid-requests", optionalAuth, async (req, res) => {
       preferredTiming: body.preferredTiming || body.preferred_timing || "flexible",
       status: "new",
       ai_summary_json: body.ai_summary_json || aiPhotoAnalysisPlaceholder(body),
+      sms_consent_at: smsConsent.at,
+      sms_consent_text: smsConsent.text,
+      smsConsentAt: smsConsent.at,
+      smsConsentText: smsConsent.text,
       provider_bid_amount: body.provider_bid_amount == null ? null : Number(body.provider_bid_amount),
       accepted_bid_id: body.accepted_bid_id || null,
       ...servicePayloadFields(body),
@@ -5794,6 +6588,7 @@ app.post("/api/admin/bids", requireAuth, requireRole("admin"), (req, res) => {
 
 app.post("/api/jobs/:id/claim", requireAuth, requireRole("provider"), async (req, res) => {
   try {
+    if (hasScopeSnapshotMutation(req.body)) return rejectScopeSnapshotMutation(res);
     const result = await pgdb.query(
       `
       UPDATE jobs
@@ -5817,6 +6612,7 @@ app.post("/api/jobs/:id/claim", requireAuth, requireRole("provider"), async (req
 
 app.patch("/api/jobs/:id/status", requireAuth, async (req, res) => {
   try {
+    if (hasScopeSnapshotMutation(req.body)) return rejectScopeSnapshotMutation(res);
     const { status } = req.body || {};
     const allowedStatuses = new Set(["open", "claimed", "in_progress", "completed", "cancelled"]);
 
@@ -6012,6 +6808,9 @@ app.post("/api/quotes", optionalAuth, async (req, res) => {
     const body = req.body || {};
     const phone = submittedPhone(body);
     if (!isValidLookingPhone(phone)) return rejectMissingPhone(res);
+    const smsConsent = requireSmsConsent(res, body);
+    if (!smsConsent) return;
+    await ensureSmsConsentColumns();
     const settings = await loadSettingsFromDb();
     const estimate = estimateQuote(body, settings);
     const serviceFields = servicePayloadFields(body);
@@ -6049,7 +6848,9 @@ app.post("/api/quotes", optionalAuth, async (req, res) => {
       estimated_price_high: serviceFields.estimated_price_high,
       final_price: estimate,
       estimate,
-      status
+      status,
+      sms_consent_at: smsConsent.at,
+      sms_consent_text: smsConsent.text
     };
 
     await pgdb.query(
@@ -6082,11 +6883,13 @@ app.post("/api/quotes", optionalAuth, async (req, res) => {
         notes,
         estimate,
         status,
-        customer_user_id
+        customer_user_id,
+        sms_consent_at,
+        sms_consent_text
        )
       VALUES (
         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,
-        $16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28
+        $16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30
       )
       `,
       [
@@ -6117,7 +6920,9 @@ app.post("/api/quotes", optionalAuth, async (req, res) => {
         quote.notes,
         quote.estimate,
         quote.status,
-        req.user?.id || null
+        req.user?.id || null,
+        quote.sms_consent_at,
+        quote.sms_consent_text
       ]
     );
     await updateUserPhoneIfBlank(req.user?.id, phone);
@@ -6144,6 +6949,7 @@ app.post("/api/quotes/:id/convert-to-job", requireAuth, requireRole("admin"), as
 
     const quote = quoteResult.rows[0];
     if (!isValidLookingPhone(quote.phone || "")) return rejectMissingPhone(res);
+    await ensureSmsConsentColumns();
 
     if (quote.converted_to_job_id) {
       const existingJob = await pgdb.query(
@@ -6235,10 +7041,12 @@ app.post("/api/quotes/:id/convert-to-job", requireAuth, requireRole("admin"), as
         details,
         photos,
         customer_email,
+        sms_consent_at,
+        sms_consent_text,
         status
       )
       VALUES (
-        $1, $2, NULL, $3, $4, $5, $6, $7, $8, $9, $10, NULL, $11, $12, $13, 'open'
+        $1, $2, NULL, $3, $4, $5, $6, $7, $8, $9, $10, NULL, $11, $12, $13, $14, $15, 'open'
       )
       RETURNING *
       `,
@@ -6255,7 +7063,9 @@ app.post("/api/quotes/:id/convert-to-job", requireAuth, requireRole("admin"), as
         quote.service_type || "mowing",
         detailsParts.join("\n"),
         JSON.stringify([]),
-        normalizeEmailForClaim(quote.email || "")
+        normalizeEmailForClaim(quote.email || ""),
+        quote.sms_consent_at || null,
+        quote.sms_consent_text || null
       ]
     );
 
@@ -6350,6 +7160,303 @@ app.get("/api/jobs/:id", requireAuth, async (req, res) => {
   }
 });
 
+function canVerifyCodJob(req, row = {}) {
+  if (row.customer_user_id) {
+    return Boolean(req.user?.id && String(row.customer_user_id) === String(req.user.id));
+  }
+  if (!req.user?.id) return true;
+  const jobEmail = normalizeEmailForClaim(row.customer_email || "");
+  const userEmail = normalizeEmailForClaim(req.user?.email || req.body?.email || req.body?.customerEmail || "");
+  return !jobEmail || (userEmail && jobEmail === userEmail);
+}
+
+app.post("/api/jobs/:id/verify-cod", optionalAuth, async (req, res) => {
+  try {
+    await ensureCodVerificationColumns();
+    const code = String(req.body?.code || "").replace(/\D/g, "");
+    if (!/^\d{6}$/.test(code)) {
+      return res.status(400).json({ ok: false, error: "A valid 6-digit verification code is required." });
+    }
+
+    const jobResult = await pgdb.query("SELECT * FROM jobs WHERE id = $1 LIMIT 1", [req.params.id]);
+    if (!jobResult.rows.length) return res.status(404).json({ ok: false, error: "Job not found" });
+    const row = jobResult.rows[0];
+    if (!isCodPaymentMethod(row.payment_method)) {
+      return res.status(400).json({ ok: false, error: "COD verification only applies to cash/check-on-site jobs." });
+    }
+    if (!canVerifyCodJob(req, row)) {
+      return res.status(403).json({ ok: false, error: "Not authorized for this job" });
+    }
+    if (row.cod_verification_status === "verified") {
+      return res.status(409).json({ ok: false, error: "This cash/check-on-site request is already verified." });
+    }
+    if (String(row.cod_verification_provider || "").trim().toLowerCase() === "twilio_verify") {
+      const payments = readJsonArray(PAYMENTS_FILE);
+      const payment = paymentForJobId(payments, row.id);
+      const verifyPhone = normalizePhoneForVerification(payment?.customer?.phone || row.customer_phone || req.user?.phone || "");
+      if (!isE164Phone(verifyPhone)) {
+        return res.status(400).json({ ok: false, error: "A valid phone number is required for verification." });
+      }
+      const verification = await checkPhoneVerification({
+        phone: verifyPhone,
+        code,
+        purpose: "cod_verification",
+        userId: req.user?.id || null,
+        ip: requestIp(req)
+      });
+      if (!verification.ok || verification.status !== "approved") {
+        if (verification.missing?.length) {
+          return res.status(503).json({ ok: false, code: "PHONE_VERIFICATION_UNAVAILABLE", error: PHONE_VERIFICATION_UNAVAILABLE_MESSAGE });
+        }
+        return res.status(400).json({ ok: false, error: "We could not verify that code. Please try again." });
+      }
+      const updated = await pgdb.query(
+        `
+        UPDATE jobs
+        SET cod_verification_status = 'verified',
+            cod_verified_at = NOW(),
+            cod_verification_code = NULL,
+            status = 'open',
+            phone_verified_at = NOW(),
+            phone_verified_provider = $2,
+            phone_verified_number = $3,
+            phone_verification_purpose = 'cod_verification'
+        WHERE id = $1
+        RETURNING *
+        `,
+        [row.id, verification.provider || "twilio_verify", verifyPhone]
+      );
+      return res.json({
+        ok: true,
+        verified: true,
+        provider: verification.provider || "twilio_verify",
+        status: "approved",
+        job: sanitizeJobForOwner(mapJobRow(updated.rows[0])),
+        message: "Your request is confirmed. We’ll review the job details and contact you if anything needs adjustment."
+      });
+    }
+    const payments = readJsonArray(PAYMENTS_FILE);
+    const payment = paymentForJobId(payments, row.id);
+    const verifiedPhone = normalizePhoneForVerification(payment?.customer?.phone || row.customer_phone || req.user?.phone || "");
+    const fallbackProvider = row.cod_verification_provider || getSmsProvider();
+    const fallbackCheckStartedAt = Date.now();
+    logPhoneVerificationEvent("verification_check_attempt", {
+      provider: fallbackProvider,
+      phone: verifiedPhone,
+      purpose: "cod_verification",
+      status: "attempt",
+      ip: requestIp(req),
+      userId: req.user?.id || null,
+      elapsedMs: 0
+    });
+    if (codVerificationIsExpired(row.cod_verification_sent_at)) {
+      await pgdb.query("UPDATE jobs SET cod_verification_status = 'expired' WHERE id = $1", [row.id]).catch(() => {});
+      logPhoneVerificationEvent("verification_check_failed", {
+        provider: fallbackProvider,
+        phone: verifiedPhone,
+        purpose: "cod_verification",
+        status: "expired",
+        ip: requestIp(req),
+        userId: req.user?.id || null,
+        elapsedMs: Date.now() - fallbackCheckStartedAt
+      }, "warn");
+      return res.status(400).json({ ok: false, error: "Verification code expired. Please request a new code." });
+    }
+    if (String(row.cod_verification_code || "") !== code) {
+      logPhoneVerificationEvent("verification_check_failed", {
+        provider: fallbackProvider,
+        phone: verifiedPhone,
+        purpose: "cod_verification",
+        status: "failed",
+        ip: requestIp(req),
+        userId: req.user?.id || null,
+        elapsedMs: Date.now() - fallbackCheckStartedAt
+      }, "warn");
+      return res.status(400).json({ ok: false, error: "Verification code is incorrect." });
+    }
+
+    const updated = await pgdb.query(
+      `
+      UPDATE jobs
+      SET cod_verification_status = 'verified',
+          cod_verified_at = NOW(),
+          cod_verification_code = NULL,
+          status = 'open',
+          phone_verified_at = NOW(),
+          phone_verified_provider = COALESCE(cod_verification_provider, $2),
+          phone_verified_number = $3,
+          phone_verification_purpose = 'cod_verification'
+      WHERE id = $1
+      RETURNING *
+      `,
+      [row.id, row.cod_verification_provider || getSmsProvider(), verifiedPhone]
+    );
+    logPhoneVerificationEvent("verification_check_approved", {
+      provider: fallbackProvider,
+      phone: verifiedPhone,
+      purpose: "cod_verification",
+      status: "approved",
+      ip: requestIp(req),
+      userId: req.user?.id || null,
+      elapsedMs: Date.now() - fallbackCheckStartedAt
+    });
+    res.json({
+      ok: true,
+      verified: true,
+      job: sanitizeJobForOwner(mapJobRow(updated.rows[0])),
+      message: "Your request is confirmed. We’ll review the job details and contact you if anything needs adjustment."
+    });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+app.post("/api/jobs/:id/resend-cod-code", optionalAuth, async (req, res) => {
+  try {
+    await ensureCodVerificationColumns();
+    const jobResult = await pgdb.query("SELECT * FROM jobs WHERE id = $1 LIMIT 1", [req.params.id]);
+    if (!jobResult.rows.length) return res.status(404).json({ ok: false, error: "Job not found" });
+    const row = jobResult.rows[0];
+    if (!isCodPaymentMethod(row.payment_method)) {
+      return res.status(400).json({ ok: false, error: "COD verification only applies to cash/check-on-site jobs." });
+    }
+    if (!canVerifyCodJob(req, row)) {
+      return res.status(403).json({ ok: false, error: "Not authorized for this job" });
+    }
+    if (row.cod_verification_status === "verified") {
+      return res.status(409).json({ ok: false, error: "This cash/check-on-site request is already verified." });
+    }
+    if (!row.sms_consent_at || row.sms_consent_text !== SMS_CONSENT_TEXT) {
+      return res.status(400).json({ ok: false, error: SMS_CONSENT_REQUIRED_MESSAGE });
+    }
+    if (Number(row.cod_verification_attempts || 0) >= 5) {
+      return res.status(429).json({ ok: false, error: "Maximum verification attempts reached." });
+    }
+    const lastSentMs = new Date(row.cod_verification_sent_at || 0).getTime();
+    if (Number.isFinite(lastSentMs) && Date.now() - lastSentMs < 60 * 1000) {
+      return res.status(429).json({ ok: false, error: "Please wait at least 60 seconds before requesting another code." });
+    }
+
+    const payments = readJsonArray(PAYMENTS_FILE);
+    const payment = paymentForJobId(payments, row.id);
+    const smsTo = toE164Phone(payment?.customer?.phone || req.user?.phone || "");
+    if (!isE164Phone(smsTo)) {
+      return res.status(400).json({ ok: false, error: "A valid E.164-capable phone number is required for cash/check-on-site verification." });
+    }
+
+    if (getPhoneVerifyProvider() === "twilio_verify") {
+      const verification = await startPhoneVerification({
+        phone: smsTo,
+        purpose: "cod_verification",
+        userId: req.user?.id || null,
+        ip: requestIp(req)
+      });
+      if (!verification.ok) {
+        return res.status(502).json({ ok: false, code: "PHONE_VERIFICATION_UNAVAILABLE", error: PHONE_VERIFICATION_UNAVAILABLE_MESSAGE });
+      }
+      const updated = await pgdb.query(
+        `
+        UPDATE jobs
+        SET cod_verification_status = 'pending',
+            cod_verification_code = NULL,
+            cod_verification_sent_at = NOW(),
+            cod_verification_provider = 'twilio_verify',
+            cod_verification_message_sid = NULL,
+            cod_verification_attempts = COALESCE(cod_verification_attempts, 0) + 1
+        WHERE id = $1
+        RETURNING *
+        `,
+        [row.id]
+      );
+      return res.json({
+        ok: true,
+        resent: true,
+        verification_required: true,
+        provider: "twilio_verify",
+        status: verification.status || "pending",
+        jobId: row.id,
+        job: sanitizeJobForOwner(mapJobRow(updated.rows[0])),
+        message: "Text code sent. Enter the 6-digit code below."
+      });
+    }
+
+    const code = generateSixDigitCode();
+    const smsProvider = getSmsProvider();
+    const fallbackStartStartedAt = Date.now();
+    logPhoneVerificationEvent("verification_start_requested", {
+      provider: smsProvider,
+      phone: smsTo,
+      purpose: "cod_verification_resend",
+      status: "requested",
+      ip: requestIp(req),
+      userId: req.user?.id || null,
+      elapsedMs: 0
+    });
+    await pgdb.query(
+      `
+      UPDATE jobs
+      SET cod_verification_status = 'pending',
+          cod_verification_code = $2,
+          cod_verification_sent_at = NOW(),
+          cod_verification_provider = $3,
+          cod_verification_attempts = COALESCE(cod_verification_attempts, 0) + 1
+      WHERE id = $1
+      `,
+      [row.id, code, smsProvider]
+    );
+
+    let smsResponse;
+    try {
+      smsResponse = await sendSms(smsTo, codVerificationMessage(code), { jobId: row.id, purpose: "cod_verification_resend" });
+      if (smsResponse?.skipped) {
+        throw new Error("COD verification SMS is disabled.");
+      }
+    } catch (smsError) {
+      await pgdb.query("UPDATE jobs SET cod_verification_status = 'send_failed' WHERE id = $1", [row.id]).catch(() => {});
+      console.warn("[COD Verification] Resend failed", {
+        jobId: row.id,
+        to: maskPhone(smsTo),
+        error: smsError.message
+      });
+      logPhoneVerificationEvent("verification_provider_error", {
+        provider: smsProvider,
+        phone: smsTo,
+        purpose: "cod_verification_resend",
+        status: "failed",
+        ip: requestIp(req),
+        userId: req.user?.id || null,
+        elapsedMs: Date.now() - fallbackStartStartedAt
+      }, "warn");
+      return res.status(502).json({ ok: false, code: "PHONE_VERIFICATION_UNAVAILABLE", error: PHONE_VERIFICATION_UNAVAILABLE_MESSAGE });
+    }
+
+    const sid = smsResponse?.messageSid || smsResponse?.sid || smsResponse?.Sid || null;
+    const updated = await pgdb.query(
+      "UPDATE jobs SET cod_verification_provider = $2, cod_verification_message_sid = $3 WHERE id = $1 RETURNING *",
+      [row.id, smsResponse?.provider || smsProvider, sid]
+    );
+    logPhoneVerificationEvent("verification_start_sent", {
+      provider: smsResponse?.provider || smsProvider,
+      phone: smsTo,
+      purpose: "cod_verification_resend",
+      status: "pending",
+      ip: requestIp(req),
+      userId: req.user?.id || null,
+      elapsedMs: Date.now() - fallbackStartStartedAt
+    });
+    res.json({
+      ok: true,
+      resent: true,
+      verification_required: true,
+      jobId: row.id,
+      job: sanitizeJobForOwner(mapJobRow(updated.rows[0])),
+      message: "A new verification code was sent."
+    });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
 // Provider accepts an open job → status becomes "assigned"
 app.post("/api/jobs/:id/accept", requireAuth, requireRole("provider"), async (req, res) => {
   try {
@@ -6392,7 +7499,20 @@ app.post("/api/jobs/:id/create-checkout-session", requireAuth, async (req, res) 
     assertStripeTestMode(secretKey);
 
     const job = mapJobRow(row);
-    const checkoutEmail = normalizeEmailForClaim(row.customer_email || req.user.email || "");
+    const checkoutEmail = normalizeEmailForClaim(req.body?.customerEmail || req.body?.email || row.customer_email || req.user.email || "");
+    const checkoutPhone = String(req.body?.customerPhone || req.body?.phone || row.customer_phone || req.user.phone || "").trim();
+    const contactConflict = await checkAccountContactConflicts({
+      email: checkoutEmail,
+      phone: checkoutPhone,
+      currentUserId: req.user.id
+    });
+    if (contactConflict) {
+      return sendCheckoutAccountContactConflict(res, contactConflict, {
+        email: checkoutEmail,
+        phone: checkoutPhone
+      });
+    }
+
     const amountCents = Math.round(Number(row.estimate_at_booking || row.budget || 0) * 100);
     if (amountCents < 50) {
       return res.status(400).json({ ok: false, error: "Job has no valid price for checkout" });
@@ -6428,7 +7548,7 @@ app.post("/api/jobs/:id/create-checkout-session", requireAuth, async (req, res) 
     }
 
     await pgdb.query(
-      "UPDATE jobs SET stripe_checkout_session_id = $1, customer_email = COALESCE(NULLIF(TRIM(customer_email), ''), $3) WHERE id = $2",
+      "UPDATE jobs SET stripe_checkout_session_id = $1, customer_email = COALESCE(NULLIF(TRIM(customer_email), ''), $3), payment_status = 'checkout_pending', payment_method = COALESCE(payment_method, 'stripe') WHERE id = $2",
       [stripeSession.id, job.id, checkoutEmail]
     );
 
@@ -6441,8 +7561,8 @@ app.post("/api/jobs/:id/create-checkout-session", requireAuth, async (req, res) 
 /* -------------------- ADMIN LEADS (JSON-backed) -------------------- */
 
 const VALID_LEAD_STATUSES = new Set(["new", "quoted", "bidding", "scheduled", "completed", "canceled"]);
-const VALID_JOB_STATUSES = new Set(["payment_pending", "payment_failed", "paid", "open", "assigned", "scheduled", "in_progress", "completed", "canceled", "refunded"]);
-const VALID_PAYMENT_STATUSES = new Set(["unpaid", "deposit_paid", "paid", "pending", "failed", "refunded"]);
+const VALID_JOB_STATUSES = new Set(["payment_pending", "payment_failed", "cod_verification_pending", "paid", "open", "assigned", "scheduled", "in_progress", "completed", "canceled", "refunded"]);
+const VALID_PAYMENT_STATUSES = new Set(["unpaid", "deposit_paid", "paid", "pending", "checkout_pending", "checkout_created", "onsite_pending", "failed", "refunded"]);
 const VALID_USER_ROLES = new Set(["customer", "provider", "admin"]);
 
 function paymentForJobId(payments = [], jobId = "") {
@@ -6463,6 +7583,7 @@ function adminJobFromRow(row = {}, payments = []) {
     providerName: row.provider_name || row.provider_owner_name || "",
     providerEmail: row.provider_email || "",
     paymentStatus: row.payment_status || payment?.status || "unpaid",
+    paymentMethod: row.payment_method || payment?.payment_method || null,
     paymentAmount: payment?.amount || null,
     stripeCheckoutSessionId: row.stripe_checkout_session_id || payment?.stripe_checkout_session_id || null,
     createdAt: row.created_at || null,
@@ -6473,6 +7594,9 @@ function adminJobFromRow(row = {}, payments = []) {
 async function loadAdminDbJobs({ status = "", paymentStatus = "", search = "", limit = 250 } = {}) {
   await ensureUsersPhoneColumn();
   await ensurePaymentColumns();
+  await ensureCodVerificationColumns();
+  await ensureJobPhotoColumns();
+  await ensureJobsAdminEditableContactColumns();
   const where = [];
   const params = [];
   if (status && VALID_JOB_STATUSES.has(status)) {
@@ -6488,6 +7612,9 @@ async function loadAdminDbJobs({ status = "", paymentStatus = "", search = "", l
     where.push(`(
       j.id ILIKE $${params.length}
       OR j.address ILIKE $${params.length}
+      OR j.customer_name ILIKE $${params.length}
+      OR j.customer_email ILIKE $${params.length}
+      OR j.customer_phone ILIKE $${params.length}
       OR j.city ILIKE $${params.length}
       OR u.email ILIKE $${params.length}
       OR u.phone ILIKE $${params.length}
@@ -6499,9 +7626,9 @@ async function loadAdminDbJobs({ status = "", paymentStatus = "", search = "", l
     `
     SELECT
       j.*,
-      u.full_name AS customer_name,
-      u.email AS customer_email,
-      u.phone AS customer_phone,
+      COALESCE(NULLIF(TRIM(u.full_name), ''), NULLIF(TRIM(j.customer_name), '')) AS customer_name,
+      COALESCE(NULLIF(TRIM(u.email), ''), NULLIF(TRIM(j.customer_email), '')) AS customer_email,
+      COALESCE(NULLIF(TRIM(u.phone), ''), NULLIF(TRIM(j.customer_phone), '')) AS customer_phone,
       pp.id AS provider_id,
       pp.business_name AS provider_name,
       pp.user_id AS provider_user_id_from_profile,
@@ -6519,6 +7646,37 @@ async function loadAdminDbJobs({ status = "", paymentStatus = "", search = "", l
   );
   const payments = readJsonArray(PAYMENTS_FILE);
   return result.rows.map((row) => adminJobFromRow(row, payments));
+}
+
+async function loadAdminDbJobById(jobId) {
+  await ensureUsersPhoneColumn();
+  await ensurePaymentColumns();
+  await ensureCodVerificationColumns();
+  await ensureJobPhotoColumns();
+  await ensureJobsAdminEditableContactColumns();
+  const result = await pgdb.query(
+    `
+    SELECT
+      j.*,
+      COALESCE(NULLIF(TRIM(u.full_name), ''), NULLIF(TRIM(j.customer_name), '')) AS customer_name,
+      COALESCE(NULLIF(TRIM(u.email), ''), NULLIF(TRIM(j.customer_email), '')) AS customer_email,
+      COALESCE(NULLIF(TRIM(u.phone), ''), NULLIF(TRIM(j.customer_phone), '')) AS customer_phone,
+      pp.id AS provider_id,
+      pp.business_name AS provider_name,
+      pp.user_id AS provider_user_id_from_profile,
+      pu.full_name AS provider_owner_name,
+      pu.email AS provider_email
+    FROM jobs j
+    LEFT JOIN users u ON u.id = j.customer_user_id
+    LEFT JOIN provider_profiles pp ON pp.user_id = j.provider_user_id
+    LEFT JOIN users pu ON pu.id = pp.user_id
+    WHERE j.id = $1
+    LIMIT 1
+    `,
+    [jobId]
+  );
+  if (!result.rows.length) return null;
+  return adminJobFromRow(result.rows[0], readJsonArray(PAYMENTS_FILE));
 }
 
 function userNameFields(row = {}) {
@@ -6590,6 +7748,44 @@ async function softDeleteAdminUser(userId, adminUser) {
   return result.rows[0] || null;
 }
 
+function normalizeJobPhotoUrls(value) {
+  if (!Array.isArray(value)) return null;
+  const urls = [];
+  const seen = new Set();
+  for (const item of value) {
+    if (typeof item !== "string") return null;
+    const url = item.trim();
+    if (!url || seen.has(url)) continue;
+    if (!url.startsWith("/uploads/")) return null;
+    urls.push(url);
+    seen.add(url);
+  }
+  return urls;
+}
+
+async function updateJobPhotoArrays(jobId, beforePhotoUrls, afterPhotoUrls, providerUserId = null) {
+  await ensureJobPhotoColumns();
+  const params = [
+    jobId,
+    JSON.stringify(beforePhotoUrls),
+    JSON.stringify(afterPhotoUrls)
+  ];
+  const providerSql = providerUserId ? " AND provider_user_id = $4" : "";
+  if (providerUserId) params.push(providerUserId);
+  const result = await pgdb.query(
+    `
+    UPDATE jobs
+    SET
+      before_photo_urls = $2::jsonb,
+      after_photo_urls = $3::jsonb
+    WHERE id = $1${providerSql}
+    RETURNING *
+    `,
+    params
+  );
+  return result.rows[0] || null;
+}
+
 app.get("/api/admin/jobs", requireAuth, requireRole("admin"), async (req, res) => {
   try {
     const jobs = await loadAdminDbJobs({
@@ -6619,8 +7815,31 @@ app.get("/api/admin/jobs/:id", requireAuth, requireRole("admin"), async (req, re
   }
 });
 
+app.patch("/api/admin/jobs/:id/photos", requireAuth, requireRole("admin"), async (req, res) => {
+  try {
+    if (hasScopeSnapshotMutation(req.body)) return rejectScopeSnapshotMutation(res);
+    const beforePhotoUrls = normalizeJobPhotoUrls(req.body?.beforePhotoUrls);
+    const afterPhotoUrls = normalizeJobPhotoUrls(req.body?.afterPhotoUrls);
+    if (!beforePhotoUrls || !afterPhotoUrls) {
+      return res.status(400).json({ ok: false, error: "beforePhotoUrls and afterPhotoUrls must be arrays of /uploads/ URLs" });
+    }
+    const job = await updateJobPhotoArrays(req.params.id, beforePhotoUrls, afterPhotoUrls);
+    if (!job) return res.status(404).json({ ok: false, error: "Job not found" });
+    const mapped = mapJobRow(job);
+    res.json({
+      ok: true,
+      beforePhotoUrls: mapped.beforePhotoUrls,
+      afterPhotoUrls: mapped.afterPhotoUrls,
+      job: mapped
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 app.patch("/api/admin/jobs/:id/status", requireAuth, requireRole("admin"), async (req, res) => {
   try {
+    if (hasScopeSnapshotMutation(req.body)) return rejectScopeSnapshotMutation(res);
     const { status } = req.body || {};
     const allValid = new Set([...VALID_LEAD_STATUSES, ...VALID_JOB_STATUSES]);
     if (!status || !allValid.has(status)) {
@@ -6657,9 +7876,10 @@ app.patch("/api/admin/jobs/:id/status", requireAuth, requireRole("admin"), async
 // Admin: manually override payment status on a DB job
 app.patch("/api/admin/jobs/:id/payment", requireAuth, requireRole("admin"), async (req, res) => {
   try {
+    if (hasScopeSnapshotMutation(req.body)) return rejectScopeSnapshotMutation(res);
     await ensurePaymentColumns();
-    const { payment_status, note } = req.body || {};
-    const allowed = new Set(["unpaid", "deposit_paid", "paid"]);
+    const { payment_status, payment_method, note } = req.body || {};
+    const allowed = VALID_PAYMENT_STATUSES;
     if (!payment_status || !allowed.has(payment_status)) {
       return res.status(400).json({ ok: false, error: `payment_status must be one of: ${[...allowed].join(", ")}` });
     }
@@ -6667,8 +7887,13 @@ app.patch("/api/admin/jobs/:id/payment", requireAuth, requireRole("admin"), asyn
     const noteText = String(note || "").trim().slice(0, 500);
     const params = [req.params.id, payment_status];
     let detailsSql = "";
+    const methodText = String(payment_method || "").trim().slice(0, 80);
+    if (methodText) {
+      detailsSql += `, payment_method = $${params.length + 1}`;
+      params.push(methodText);
+    }
     if (noteText) {
-      detailsSql = `, details = CONCAT(COALESCE(details, ''), CASE WHEN COALESCE(details, '') = '' THEN '' ELSE CHR(10) END, $3)`;
+      detailsSql += `, details = CONCAT(COALESCE(details, ''), CASE WHEN COALESCE(details, '') = '' THEN '' ELSE CHR(10) END, $${params.length + 1})`;
       params.push(`Admin payment note: ${noteText}`);
     }
     if (payment_status === "paid") {
@@ -6956,7 +8181,7 @@ app.get("/api/admin/paid-jobs", requireAuth, requireRole("admin"), async (req, r
     const jobs = result.rows.map((row) => {
       const j = mapJobRow(row);
       const payment = payments.find((p) => p.job_id === j.id);
-      return { ...j, paymentAmount: payment?.amount || null, paymentStatus: payment?.status || null, paidAt: payment?.paid_at || null };
+      return { ...j, paymentAmount: payment?.amount || null, paymentStatus: j.paymentStatus || payment?.status || null, paidAt: j.paidAt || payment?.paid_at || null };
     });
     res.json({ ok: true, jobs });
   } catch (err) {
@@ -6973,7 +8198,7 @@ app.get("/api/admin/completed-jobs", requireAuth, requireRole("admin"), async (r
     const jobs = result.rows.map((row) => {
       const j = mapJobRow(row);
       const payment = payments.find((p) => p.job_id === j.id);
-      return { ...j, paymentAmount: payment?.amount || null, paymentStatus: payment?.status || null, paidAt: payment?.paid_at || null };
+      return { ...j, paymentAmount: payment?.amount || null, paymentStatus: j.paymentStatus || payment?.status || null, paidAt: j.paidAt || payment?.paid_at || null };
     });
     res.json({ ok: true, jobs });
   } catch (err) {
@@ -7011,41 +8236,172 @@ app.get("/api/admin/db-jobs", requireAuth, requireRole("admin"), async (req, res
   }
 });
 
-// PATCH /api/admin/jobs/:id — combined status + payment_status update
+// PATCH /api/admin/jobs/:id — admin-safe details/status update
 app.patch("/api/admin/jobs/:id", requireAuth, requireRole("admin"), async (req, res) => {
   try {
-    const { status, payment_status } = req.body || {};
-    if (!status && !payment_status) {
-      return res.status(400).json({ ok: false, error: "Provide status or payment_status" });
+    if (hasScopeSnapshotMutation(req.body)) return rejectScopeSnapshotMutation(res);
+    const body = req.body || {};
+    const allowedFields = new Set([
+      "status",
+      "payment_status",
+      "customerName",
+      "customer_name",
+      "customerEmail",
+      "customer_email",
+      "customerPhone",
+      "customer_phone",
+      "serviceAddress",
+      "service_address",
+      "address",
+      "city",
+      "state",
+      "zip",
+      "notes",
+      "details"
+    ]);
+    const invalidFields = Object.keys(body).filter((key) => !allowedFields.has(key));
+    if (invalidFields.length) {
+      return res.status(400).json({ ok: false, error: `Invalid field(s): ${invalidFields.join(", ")}` });
+    }
+
+    const hasStatus = Object.prototype.hasOwnProperty.call(body, "status");
+    const hasPaymentStatus = Object.prototype.hasOwnProperty.call(body, "payment_status");
+    const hasCustomerName = Object.prototype.hasOwnProperty.call(body, "customerName") || Object.prototype.hasOwnProperty.call(body, "customer_name");
+    const hasCustomerEmail = Object.prototype.hasOwnProperty.call(body, "customerEmail") || Object.prototype.hasOwnProperty.call(body, "customer_email");
+    const hasCustomerPhone = Object.prototype.hasOwnProperty.call(body, "customerPhone") || Object.prototype.hasOwnProperty.call(body, "customer_phone");
+    const hasAddress = Object.prototype.hasOwnProperty.call(body, "address")
+      || Object.prototype.hasOwnProperty.call(body, "serviceAddress")
+      || Object.prototype.hasOwnProperty.call(body, "service_address");
+    const hasCity = Object.prototype.hasOwnProperty.call(body, "city");
+    const hasState = Object.prototype.hasOwnProperty.call(body, "state");
+    const hasZip = Object.prototype.hasOwnProperty.call(body, "zip");
+    const hasDetails = Object.prototype.hasOwnProperty.call(body, "details") || Object.prototype.hasOwnProperty.call(body, "notes");
+
+    if (![
+      hasStatus,
+      hasPaymentStatus,
+      hasCustomerName,
+      hasCustomerEmail,
+      hasCustomerPhone,
+      hasAddress,
+      hasCity,
+      hasState,
+      hasZip,
+      hasDetails
+    ].some(Boolean)) {
+      return res.status(400).json({ ok: false, error: "Provide at least one editable job field" });
     }
 
     const allValid = new Set([...VALID_LEAD_STATUSES, ...VALID_JOB_STATUSES]);
-    const paymentValid = new Set(["unpaid", "deposit_paid", "paid"]);
+    const paymentValid = VALID_PAYMENT_STATUSES;
+    const status = hasStatus ? String(body.status || "").trim() : "";
+    const payment_status = hasPaymentStatus ? String(body.payment_status || "").trim() : "";
 
-    if (status && !allValid.has(status)) {
+    if (hasStatus && (!status || !allValid.has(status))) {
       return res.status(400).json({ ok: false, error: `Invalid status: ${status}` });
     }
-    if (payment_status && !paymentValid.has(payment_status)) {
+    if (hasPaymentStatus && (!payment_status || !paymentValid.has(payment_status))) {
       return res.status(400).json({ ok: false, error: `Invalid payment_status: ${payment_status}` });
     }
 
-    // Try JSON leads first
-    const leads = readLeads();
-    const idx = leads.findIndex((l) => l.id === req.params.id);
-    if (idx !== -1) {
-      if (status) leads[idx].status = status;
-      if (payment_status) leads[idx].payment_status = payment_status;
-      leads[idx].updatedAt = new Date().toISOString();
-      writeLeads(leads);
-      return res.json({ ok: true, job: leads[idx] });
+    const detailsOnlyForLegacyLead = ![
+      hasCustomerName,
+      hasCustomerEmail,
+      hasCustomerPhone,
+      hasAddress,
+      hasCity,
+      hasState,
+      hasZip,
+      hasDetails
+    ].some(Boolean);
+    if (detailsOnlyForLegacyLead) {
+      const leads = readLeads();
+      const idx = leads.findIndex((l) => l.id === req.params.id);
+      if (idx !== -1) {
+        if (status) leads[idx].status = status;
+        if (payment_status) leads[idx].payment_status = payment_status;
+        leads[idx].updatedAt = new Date().toISOString();
+        writeLeads(leads);
+        return res.json({ ok: true, job: leads[idx] });
+      }
     }
 
-    // Try DB job
+    const existing = await pgdb.query("SELECT * FROM jobs WHERE id = $1 LIMIT 1", [req.params.id]);
+    if (!existing.rows.length) {
+      return res.status(404).json({ ok: false, error: "Job not found" });
+    }
+    const existingJob = existing.rows[0];
+
     await ensurePaymentColumns();
+    await ensureJobsAdminEditableContactColumns();
+
+    const customerName = hasCustomerName
+      ? String(body.customerName ?? body.customer_name ?? "").trim()
+      : "";
+    const customerEmail = hasCustomerEmail
+      ? normalizeAccountEmail(body.customerEmail ?? body.customer_email ?? "")
+      : "";
+    const rawCustomerPhone = hasCustomerPhone
+      ? body.customerPhone ?? body.customer_phone ?? ""
+      : "";
+    const customerPhone = hasCustomerPhone
+      ? normalizeAccountPhone(rawCustomerPhone) || String(rawCustomerPhone || "").trim()
+      : "";
+
+    if (hasCustomerEmail || hasCustomerPhone) {
+      const conflict = await findAccountContactConflict({
+        email: hasCustomerEmail ? customerEmail : "",
+        phone: hasCustomerPhone ? customerPhone : "",
+        excludeUserId: existingJob.customer_user_id || null
+      });
+      if (conflict) return sendAdminAccountContactConflict(res, conflict);
+    }
+
+    if (existingJob.customer_user_id && (hasCustomerName || hasCustomerEmail || hasCustomerPhone)) {
+      const userUpdates = [];
+      const userParams = [existingJob.customer_user_id];
+      if (hasCustomerName) {
+        const splitName = splitFullName(customerName);
+        userUpdates.push(`full_name = $${userParams.length + 1}`);
+        userParams.push(customerName);
+        userUpdates.push(`first_name = $${userParams.length + 1}`);
+        userParams.push(splitName.firstName);
+        userUpdates.push(`last_name = $${userParams.length + 1}`);
+        userParams.push(splitName.lastName);
+      }
+      if (hasCustomerEmail) {
+        userUpdates.push(`email = $${userParams.length + 1}`);
+        userParams.push(customerEmail);
+      }
+      if (hasCustomerPhone) {
+        userUpdates.push(`phone = $${userParams.length + 1}`);
+        userParams.push(customerPhone);
+      }
+      await pgdb.query(
+        `UPDATE users SET ${userUpdates.join(", ")} WHERE id = $1 AND deleted_at IS NULL`,
+        userParams
+      );
+    }
+
     const sets = [];
     const params = [req.params.id];
-    if (status) { sets.push(`status = $${params.length + 1}`); params.push(status); }
-    if (payment_status) { sets.push(`payment_status = $${params.length + 1}`); params.push(payment_status); }
+    if (hasStatus && status) { sets.push(`status = $${params.length + 1}`); params.push(status); }
+    if (hasPaymentStatus && payment_status) {
+      sets.push(`payment_status = $${params.length + 1}`);
+      params.push(payment_status);
+      if (payment_status === "paid") sets.push("paid_at = COALESCE(paid_at, NOW())");
+    }
+    if (hasCustomerName) { sets.push(`customer_name = $${params.length + 1}`); params.push(customerName); }
+    if (hasCustomerEmail) { sets.push(`customer_email = $${params.length + 1}`); params.push(customerEmail); }
+    if (hasCustomerPhone) { sets.push(`customer_phone = $${params.length + 1}`); params.push(customerPhone); }
+    if (hasAddress) {
+      sets.push(`address = $${params.length + 1}`);
+      params.push(String(body.address ?? body.serviceAddress ?? body.service_address ?? "").trim());
+    }
+    if (hasCity) { sets.push(`city = $${params.length + 1}`); params.push(String(body.city || "").trim()); }
+    if (hasState) { sets.push(`state = $${params.length + 1}`); params.push(String(body.state || "").trim().toUpperCase().slice(0, 2)); }
+    if (hasZip) { sets.push(`zip = $${params.length + 1}`); params.push(String(body.zip || "").trim()); }
+    if (hasDetails) { sets.push(`details = $${params.length + 1}`); params.push(String(body.details ?? body.notes ?? "").trim()); }
 
     const result = await pgdb.query(
       `UPDATE jobs SET ${sets.join(", ")} WHERE id = $1 RETURNING *`,
@@ -7054,8 +8410,12 @@ app.patch("/api/admin/jobs/:id", requireAuth, requireRole("admin"), async (req, 
     if (!result.rows.length) {
       return res.status(404).json({ ok: false, error: "Job not found" });
     }
-    res.json({ ok: true, job: mapJobRow(result.rows[0]) });
+    const job = await loadAdminDbJobById(req.params.id);
+    res.json({ ok: true, job: job || mapJobRow(result.rows[0]) });
   } catch (err) {
+    if (err.code === "23505") {
+      return res.status(409).json({ ok: false, field: "email", error: "That email or phone is already used by another account." });
+    }
     res.status(500).json({ ok: false, error: err.message });
   }
 });
@@ -7269,21 +8629,53 @@ app.get("/api/admin/users/:id", requireAuth, requireRole("admin"), async (req, r
 });
 
 app.patch("/api/admin/users/:id", requireAuth, requireRole("admin"), async (req, res) => {
+  let normalizedEmail = "";
+  let normalizedPhone = "";
   try {
     await ensureAdminActiveColumns();
     const body = req.body || {};
+    const allowedFields = new Set([
+      "name",
+      "fullName",
+      "full_name",
+      "firstName",
+      "first_name",
+      "lastName",
+      "last_name",
+      "email",
+      "phone",
+      "role",
+      "active"
+    ]);
+    const invalidFields = Object.keys(body).filter((key) => !allowedFields.has(key));
+    if (invalidFields.length) {
+      return res.status(400).json({ ok: false, error: `Invalid field(s): ${invalidFields.join(", ")}` });
+    }
     const existing = await pgdb.query("SELECT * FROM users WHERE id = $1 AND deleted_at IS NULL LIMIT 1", [req.params.id]);
     if (!existing.rows.length) return res.status(404).json({ ok: false, error: "User not found" });
 
-    const firstName = body.first_name ?? body.firstName ?? existing.rows[0].first_name ?? "";
-    const lastName = body.last_name ?? body.lastName ?? existing.rows[0].last_name ?? "";
-    const fullName = composeFullName(firstName, lastName, existing.rows[0].full_name);
+    const explicitName = body.name ?? body.fullName ?? body.full_name;
+    const splitName = explicitName == null ? null : splitFullName(explicitName);
+    const firstName = body.first_name ?? body.firstName ?? splitName?.firstName ?? existing.rows[0].first_name ?? "";
+    const lastName = body.last_name ?? body.lastName ?? splitName?.lastName ?? existing.rows[0].last_name ?? "";
+    const fullName = explicitName == null
+      ? composeFullName(firstName, lastName, existing.rows[0].full_name)
+      : composeFullName(firstName, lastName, explicitName);
     const role = body.role == null ? existing.rows[0].role : String(body.role || "").trim();
     const active = body.active == null ? existing.rows[0].active !== false : Boolean(body.active);
+    const rawPhone = body.phone ?? existing.rows[0].phone ?? "";
+    normalizedEmail = normalizeAccountEmail(body.email ?? existing.rows[0].email ?? "");
+    normalizedPhone = normalizeAccountPhone(rawPhone) || String(rawPhone || "").trim();
     if (!VALID_USER_ROLES.has(role)) return res.status(400).json({ ok: false, error: "Invalid role" });
     if (String(req.user.id) === String(req.params.id) && (role !== "admin" || active === false)) {
       return res.status(400).json({ ok: false, error: "Admins cannot demote or deactivate their own current session user" });
     }
+    const conflict = await findAccountContactConflict({
+      email: normalizedEmail,
+      phone: normalizedPhone,
+      excludeUserId: req.params.id
+    });
+    if (conflict) return sendAdminAccountContactConflict(res, conflict);
 
     const result = await pgdb.query(
       `
@@ -7304,15 +8696,35 @@ app.patch("/api/admin/users/:id", requireAuth, requireRole("admin"), async (req,
         String(firstName || "").trim(),
         String(lastName || "").trim(),
         fullName,
-        String(body.email ?? existing.rows[0].email ?? "").toLowerCase().trim(),
-        String(body.phone ?? existing.rows[0].phone ?? "").trim(),
+        normalizedEmail,
+        normalizedPhone,
         role,
         active
       ]
     );
+    await ensureJobsAdminEditableContactColumns();
+    await pgdb.query(
+      `
+      UPDATE jobs
+      SET
+        customer_name = $2,
+        customer_email = $3,
+        customer_phone = $4
+      WHERE customer_user_id = $1
+      `,
+      [req.params.id, fullName, normalizedEmail, normalizedPhone]
+    ).catch((error) => console.warn("[Admin] Could not sync edited user contact to jobs:", error.message));
     res.json({ ok: true, user: { ...result.rows[0], ...userNameFields(result.rows[0]) } });
   } catch (err) {
-    if (err.code === "23505") return res.status(400).json({ ok: false, error: "Email already exists" });
+    if (err.code === "23505") {
+      const conflict = await findAccountContactConflict({
+        email: normalizedEmail,
+        phone: normalizedPhone,
+        excludeUserId: req.params.id
+      });
+      if (conflict) return sendAdminAccountContactConflict(res, conflict);
+      return res.status(409).json({ ok: false, field: "email", error: "That email or phone is already used by another account." });
+    }
     res.status(500).json({ ok: false, error: err.message });
   }
 });
@@ -7569,7 +8981,7 @@ app.get("/api/customer/bookings", requireAuth, async (req, res) => {
     const jobs = result.rows.map((row) => {
       const j = mapJobRow(row);
       const payment = payments.find((p) => p.job_id === j.id);
-      return { ...j, paymentAmount: payment?.amount || null, paymentStatus: payment?.status || null, paidAt: payment?.paid_at || null };
+      return { ...j, paymentAmount: payment?.amount || null, paymentStatus: j.paymentStatus || payment?.status || null, paidAt: j.paidAt || payment?.paid_at || null };
     });
     res.json({ ok: true, jobs: jobs.map(sanitizeJobForOwner) });
   } catch (err) {
@@ -7615,6 +9027,7 @@ function providerJobStatusFilter(filter) {
 
 async function providerJobsQuery(req, filter = "active") {
   await ensureJobsScopeSnapshotColumn();
+  await ensureJobPhotoColumns();
   await ensureUsersPhoneColumn();
   const statuses = providerJobStatusFilter(filter);
   const params = [];
@@ -7698,9 +9111,62 @@ app.get("/api/provider/paid-jobs", requireAuth, providerAccessMiddleware, async 
     const jobs = result.rows.map((row) => {
       const j = mapJobRow(row);
       const payment = payments.find((p) => p.job_id === j.id);
-      return { ...j, paymentAmount: payment?.amount || null, paymentStatus: payment?.status || null, paidAt: payment?.paid_at || null };
+      return { ...j, paymentAmount: payment?.amount || null, paymentStatus: j.paymentStatus || payment?.status || null, paidAt: j.paidAt || payment?.paid_at || null };
     });
-    res.json({ ok: true, jobs: jobs.map(sanitizeJobForPublic) });
+    res.json({ ok: true, jobs: jobs.map(sanitizeJobForProvider) });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.patch("/api/provider/jobs/:id/photos", requireAuth, requireRole("provider"), async (req, res) => {
+  try {
+    if (hasScopeSnapshotMutation(req.body)) return rejectScopeSnapshotMutation(res);
+    const beforePhotoUrls = normalizeJobPhotoUrls(req.body?.beforePhotoUrls);
+    const afterPhotoUrls = normalizeJobPhotoUrls(req.body?.afterPhotoUrls);
+    if (!beforePhotoUrls || !afterPhotoUrls) {
+      return res.status(400).json({ ok: false, error: "beforePhotoUrls and afterPhotoUrls must be arrays of /uploads/ URLs" });
+    }
+    const job = await updateJobPhotoArrays(req.params.id, beforePhotoUrls, afterPhotoUrls, req.user.id);
+    if (!job) {
+      return res.status(404).json({ ok: false, error: "Job not found or not assigned to you" });
+    }
+    const mapped = sanitizeJobForProvider(mapJobRow(job));
+    res.json({
+      ok: true,
+      beforePhotoUrls: mapped.beforePhotoUrls,
+      afterPhotoUrls: mapped.afterPhotoUrls,
+      job: mapped
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.patch("/api/provider/jobs/:id/payment", requireAuth, requireRole("provider"), async (req, res) => {
+  try {
+    if (hasScopeSnapshotMutation(req.body)) return rejectScopeSnapshotMutation(res);
+    await ensurePaymentColumns();
+    const { payment_status } = req.body || {};
+    if (payment_status !== "paid") {
+      return res.status(400).json({ ok: false, error: "Providers can only mark onsite payment as paid." });
+    }
+    const result = await pgdb.query(
+      `
+      UPDATE jobs
+      SET payment_status = 'paid',
+          paid_at = COALESCE(paid_at, NOW())
+      WHERE id = $1
+        AND provider_user_id = $2
+        AND COALESCE(payment_status, 'unpaid') = 'onsite_pending'
+      RETURNING *
+      `,
+      [req.params.id, req.user.id]
+    );
+    if (!result.rows.length) {
+      return res.status(404).json({ ok: false, error: "Onsite job not found or not assigned to you" });
+    }
+    res.json({ ok: true, job: sanitizeJobForProvider(mapJobRow(result.rows[0])) });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
@@ -7708,6 +9174,7 @@ app.get("/api/provider/paid-jobs", requireAuth, providerAccessMiddleware, async 
 
 app.patch("/api/provider/jobs/:id/status", requireAuth, requireRole("provider"), async (req, res) => {
   try {
+    if (hasScopeSnapshotMutation(req.body)) return rejectScopeSnapshotMutation(res);
     const { status, reason } = req.body || {};
     const normalizedStatus = status === "cancelled" ? "canceled" : status;
     const allowed = new Set(["assigned", "scheduled", "in_progress", "completed", "canceled", "issue_reported"]);
@@ -7773,6 +9240,9 @@ app.listen(PORT, () => {
   console.log(`${APP_NAME} listening on http://0.0.0.0:${PORT}`);
   ensurePricingSchema().catch((err) => console.warn('[Startup] pricing schema ensure failed:', err.message));
   ensureJobsScopeSnapshotColumn().catch((err) => console.warn('[Startup] scope_snapshot column ensure failed:', err.message));
+  ensureJobPhotoColumns().catch((err) => console.warn('[Startup] job photo columns ensure failed:', err.message));
   ensurePaymentColumns().catch((err) => console.warn('[Startup] payment columns ensure failed:', err.message));
+  ensureCodVerificationColumns().catch((err) => console.warn('[Startup] COD verification columns ensure failed:', err.message));
   ensureAdminActiveColumns().catch((err) => console.warn('[Startup] admin active columns ensure failed:', err.message));
+  ensureUniqueAccountContactIndexes().catch((err) => console.warn('[Startup] account contact unique index ensure failed:', err.message));
 });

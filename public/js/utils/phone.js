@@ -7,7 +7,10 @@ function phoneDigits(value) {
 }
 
 function usPhoneDigits(value) {
-  return phoneDigits(value).slice(0, US_PHONE_MAX_DIGITS);
+  const digits = phoneDigits(value);
+  const trimmed = String(value || '').trim();
+  if (/^\+?1\d{10}$/.test(trimmed.replace(/[^\d+]/g, ''))) return digits.slice(1, 11);
+  return digits.slice(0, US_PHONE_MAX_DIGITS);
 }
 
 function formatUsPhoneNumber(value) {
@@ -28,7 +31,11 @@ function usPhoneCursorPosition(value, digitCount) {
 }
 
 function normalizeUsPhoneInput(input) {
-  if (!input) return '';
+  if (!input || isOtpInput(input)) return '';
+  if (String(input.value || '').trim() === '+1') {
+    input.value = '';
+    return '';
+  }
   const start = typeof input.selectionStart === 'number' ? input.selectionStart : input.value.length;
   const digitsBeforeCursor = usPhoneDigits(input.value.slice(0, start)).length;
   const formatted = formatUsPhoneNumber(input.value);
@@ -44,8 +51,20 @@ function normalizeUsPhoneInput(input) {
   return formatted;
 }
 
+function isOtpInput(input) {
+  if (!input || input.tagName !== 'INPUT') return false;
+  const autocomplete = String(input.getAttribute('autocomplete') || '').toLowerCase();
+  const name = String(input.getAttribute('name') || '').toLowerCase();
+  const id = String(input.getAttribute('id') || '').toLowerCase();
+  return input.hasAttribute('data-otp')
+    || autocomplete.includes('one-time-code')
+    || name.includes('code')
+    || id.includes('code');
+}
+
 function isUsPhoneInput(input) {
   if (!input || input.tagName !== 'INPUT') return false;
+  if (isOtpInput(input)) return false;
   const type = String(input.getAttribute('type') || input.type || '').toLowerCase();
   if (type === 'hidden') return false;
   const autocomplete = String(input.getAttribute('autocomplete') || '').toLowerCase().split(/\s+/);
