@@ -1,76 +1,66 @@
-node_modules
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Python / virtualenv
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+vision_service/.venv/
+
+# Env / secrets
 .env
 .env.*
-npm-debug.log
+!.env.example
+
+# Logs / runtime
+logs/
 *.log
-uploads
+*.pid
+*.seed
+*.pid.lock
 
-# Local AI/editor settings
-.claude/settings.local.json
+# Local app data / uploads
+uploads/
+data/*.json
+image/
 
-# Local backups
-backups/
-*.bak-admin-gate-*
-
-# Test output
+# Build / cache / test artifacts
+coverage/
+.nyc_output/
+playwright-report/
 test-results/
+.cache/
+.tmp/
+tmp/
+dist/
+build/
 
-# Local AI/editor settings
-.claude/settings.local.json
-
-# Local backups
+# Local backups / generated snapshots
+*.bak
+*.bak-*
+*.bak.*
+*.tar.gz
+*.tgz
 backups/
-*.bak-admin-gate-*
+turflynk-before-*.tar.gz
+turflynk-maplibre-regression-changed-files-*.tar.gz
 
-# Test output
-test-results/
+# One-off patch/helper scripts
+patch_*.py
+fix_*.py
+restart-codex.sh
+signalwire-test.sh
 
-# Local AI/editor settings
-.claude/settings.local.json
-
-# Local backups
-backups/
-*.bak-admin-gate-*
-
-# Test output
-test-results/
-
-# Local AI/editor settings
-.claude/settings.local.json
-
-# Local backups
-backups/
-*.bak-admin-gate-*
-
-# Test output
-test-results/
-
-# Local AI/editor settings
-.claude/settings.local.json
-
-# Local backups
-backups/
-*.bak-admin-gate-*
-
-# Test output
-test-results/
-
-# Local AI/editor settings
-.claude/settings.local.json
-
-# Local backups
-backups/
-*.bak-admin-gate-*
-
-# Test output
-test-results/
-
-# Runtime booking/payment data
-data/leads.json
-data/payments.json
-
-# Local source brand images
-/image/
-
-# Local vision service environment
-vision_service/.venv/
+# Temporary server backups
+routes/*.bak*
+server/*.bak*
