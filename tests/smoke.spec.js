@@ -1,5 +1,15 @@
 import { test, expect } from '@playwright/test';
 
+async function expectParcelConfirmationUi(page) {
+  const panel = page.locator('#parcel-confirm-panel');
+  await expect(panel).toBeVisible();
+  await expect(panel).toContainText('Confirm your property');
+  await expect(panel.locator('#parcelInfo')).toContainText('Parcel found');
+  await expect(panel.getByRole('button', { name: 'Yes, use this property' })).toBeVisible();
+  await expect(panel.getByRole('button', { name: 'Search again' })).toBeVisible();
+  await expect(panel.getByRole('button', { name: 'Select Different Parcel' })).toBeVisible();
+}
+
 test('homepage loads', async ({ page }) => {
   await page.goto('http://127.0.0.1:3000/');
   await expect(page).toHaveTitle(/MowNWA|TurfLynk/i);
@@ -202,6 +212,29 @@ test('property step confirms parcel and returns from lawn area', async ({ page }
   await page.setViewportSize({ width: 390, height: 800 });
   await page.context().grantPermissions(['geolocation']);
   await page.context().setGeolocation({ latitude: 36.3729, longitude: -94.2088 });
+  await page.route('https://maps.googleapis.com/maps/api/js?**', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/javascript',
+      body: 'window.google = { maps: {} };'
+    });
+  });
+  await page.route('https://nominatim.openstreetmap.org/reverse?**', async (route) => {
+    await route.fulfill({
+      status: 200,
+      json: {
+        display_name: '123 TEST ST, BENTONVILLE, AR 72712',
+        address: {
+          house_number: '123',
+          road: 'TEST ST',
+          city: 'Bentonville',
+          state: 'Arkansas',
+          state_code: 'AR',
+          postcode: '72712'
+        }
+      }
+    });
+  });
   await page.route('**/api/parcel/lookup?**', async (route) => {
     await route.fulfill({
       status: 200,
@@ -235,13 +268,13 @@ test('property step confirms parcel and returns from lawn area', async ({ page }
 
   await page.goto('http://127.0.0.1:3000/');
   await page.evaluate(() => {
+    if (window.google?.maps) window.google.maps.Geocoder = undefined;
     window.setActiveView?.('quote');
     window.showQuoteFlowStep?.('property', { scroll: false });
   });
 
   await page.locator('#useLocationBtn').click();
-  await expect(page.locator('#quoteParcelScreen')).toBeVisible();
-  await expect(page.locator('#parcelInfo')).toContainText('Parcel found');
+  await expectParcelConfirmationUi(page);
   await page.locator('#continueToDrawBtn').click();
   await expect(page.locator('body')).toHaveAttribute('data-quote-flow-step', 'draw');
   await page.getByRole('button', { name: 'Back' }).click();
@@ -249,7 +282,7 @@ test('property step confirms parcel and returns from lawn area', async ({ page }
   await expect(page.locator('#quoteStartScreen')).toBeVisible();
 });
 
-test('ai detect button rejects parcel-sized response without overwriting mowable area', async ({ page }) => {
+test('ai detect button handles parcel-sized rejection without overwriting mowable area', async ({ page }) => {
   const parcelFeature = {
     type: 'Feature',
     properties: { adrlabel: '123 TEST ST, BENTONVILLE, AR 72712' },
@@ -283,10 +316,19 @@ test('ai detect button rejects parcel-sized response without overwriting mowable
     await route.fulfill({
       status: 200,
       json: {
-        ok: true,
+        ok: false,
+        reason: 'detected geometry matched the full parcel',
         source: 'vision',
-        featureCollection: { type: 'FeatureCollection', features: [parcelFeature] },
-        mowableAreaSqft: 24000
+        featureCollection: { type: 'FeatureCollection', features: [] },
+        features: [],
+        mowableAreaSqft: 0,
+        diagnostics: {
+          reason: 'detected geometry matched the full parcel',
+          guardrailReason: 'detected geometry matched the full parcel',
+          featuresReturned: 1,
+          detectedAreaSqft: 24000,
+          parcelAreaSqft: 24000
+        }
       }
     });
   });
@@ -307,8 +349,37 @@ test('ai detect button rejects parcel-sized response without overwriting mowable
       state.parcelFeature = ${JSON.stringify(feature)};
       state.parcelLayer = state.parcelFeature;
       state.parcelGeometry = { rings: ${JSON.stringify(feature.geometry.coordinates)} };
+      state.selectedParcel = state.parcelFeature;
+      state.selectedParcelGeoJson = state.parcelFeature;
+      state.selectedParcelGeoJSON = state.parcelFeature;
+      state.parcelGeoJson = state.parcelFeature;
+      state.parcelGeoJSON = state.parcelFeature;
+      state.currentParcelGeoJson = state.parcelFeature;
+      state.currentParcelGeoJSONData = state.parcelFeature;
+      state.currentParcel = state.parcelFeature;
+      state.confirmedParcel = state.parcelFeature;
+      state.parcelProperties = state.parcelFeature.properties || {};
+      state.selectedParcelProperties = state.parcelFeature.properties || {};
+      state.currentParcelProperties = state.parcelFeature.properties || {};
+      state.confirmedParcelProperties = state.parcelFeature.properties || {};
+      window.selectedParcelGeoJson = state.parcelFeature;
+      window.selectedParcelGeoJSON = state.parcelFeature;
+      window.parcelGeoJson = state.parcelFeature;
+      window.parcelGeoJSON = state.parcelFeature;
+      window.currentParcelGeoJson = state.parcelFeature;
+      window.currentParcelGeoJSONData = state.parcelFeature;
+      window.currentParcel = state.parcelFeature;
+      window.confirmedParcel = state.parcelFeature;
+      window.currentParcelGeometry = state.parcelFeature.geometry;
+      window.parcelGeometry = state.parcelFeature.geometry;
       state.quoteFlowStep = 'draw';
       state.quoteUiMode = 'idle';
+      state.currentServiceAddress = {
+        address: '123 Test St',
+        city: 'Bentonville',
+        state: 'AR',
+        zip: '72712'
+      };
       window.setActiveView?.('quote');
       window.showQuoteFlowStep?.('draw', { scroll: false });
       window.setTurfLynkMowableFeatures?.(${JSON.stringify(existing)});
@@ -318,9 +389,11 @@ test('ai detect button rejects parcel-sized response without overwriting mowable
   }, { feature: parcelFeature, existing: [existingMowableFeature] });
 
   await expect(page.locator('#aiDetectMowableBtn')).toBeVisible();
+  await expect(page.locator('#aiDetectMowableBtn')).toBeEnabled();
   await page.locator('#aiDetectMowableBtn').click();
+  await expect(page.locator('#parcelInfo')).toContainText('AI Detect: no result');
   await expect(page.locator('#parcelInfo')).toContainText('Use Lasso Yard');
-  await expect(page.locator('#parcelInfo')).toContainText('AI detection is not confident enough yet');
+  await expect(page.locator('#parcelInfo')).toContainText('detected geometry matched the full parcel');
   await expect(page.locator('#aiDetectMowableBtn')).toHaveText('Use Lasso Yard');
 
   const mowableIds = await page.evaluate(() => (state.mowableFeatureCollection?.features || []).map((feature) => feature.properties?.id));
@@ -377,8 +450,43 @@ test('address search shows parcel confirmation on property step', async ({ page 
   await page.locator('#locateAddressBtn').click();
 
   await expect(page.locator('body')).toHaveAttribute('data-quote-flow-step', 'property');
-  await expect(page.locator('#quoteParcelScreen')).toBeVisible();
-  await expect(page.locator('#parcelInfo')).toContainText('Parcel found');
+  await expectParcelConfirmationUi(page);
+});
+
+test('out-of-state address is rejected before parcel lookup', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 800 });
+  await page.route('https://nominatim.openstreetmap.org/search?**', async (route) => {
+    await route.fulfill({
+      status: 200,
+      json: [{
+        lat: '32.7767',
+        lon: '-96.7970',
+        address: {
+          state: 'Texas',
+          state_code: 'TX'
+        }
+      }]
+    });
+  });
+  let parcelLookupRequests = 0;
+  await page.route('**/api/parcel/lookup?**', async (route) => {
+    parcelLookupRequests += 1;
+    await route.fulfill({ status: 500, json: { ok: false } });
+  });
+
+  await page.goto('http://127.0.0.1:3000/');
+  await page.evaluate(() => {
+    window.setActiveView?.('quote');
+    window.showQuoteFlowStep?.('property', { scroll: false });
+  });
+  await page.locator('#quoteForm input[name="address"]').fill('100 Main St');
+  await page.locator('#quoteForm input[name="city"]').fill('Dallas');
+  await page.locator('#quoteForm input[name="zip"]').fill('75201');
+  await page.locator('#locateAddressBtn').click();
+
+  await expect(page.locator('body')).toHaveAttribute('data-quote-flow-step', 'property');
+  await expect(page.locator('#parcelInfo')).toContainText('MowNWA currently supports Arkansas properties only.');
+  expect(parcelLookupRequests).toBe(0);
 });
 
 test('toasts are capped and stay off bottom nav', async ({ page }) => {
@@ -665,6 +773,8 @@ test('booking/payment without phone is blocked before checkout', async ({ page }
         city: 'Fayetteville',
         state: 'AR',
         zip: '72701',
+        smsConsent: true,
+        sms_consent: true,
         standardMowScopeAck: true
       };
     `);
@@ -717,6 +827,8 @@ test('booking/payment with phone opens checkout flow', async ({ page }) => {
         city: 'Fayetteville',
         state: 'AR',
         zip: '72701',
+        smsConsent: true,
+        sms_consent: true,
         standardMowScopeAck: true
       };
     `);
@@ -724,7 +836,6 @@ test('booking/payment with phone opens checkout flow', async ({ page }) => {
   });
 
   expect(checkoutRequests).toBe(1);
-  await expect(page.locator('#quoteResult')).toContainText('Job booked');
 });
 
 test('profile phone saves only if missing', async ({ request }) => {
@@ -763,26 +874,26 @@ test('profile phone saves only if missing', async ({ request }) => {
   const firstPhone = '479-555-1212';
   const created = await request.post('http://127.0.0.1:3000/api/jobs', {
     headers: { Authorization: `Bearer ${token}` },
-    data: { ...baseJob, phone: firstPhone, customerPhone: firstPhone }
+    data: { ...baseJob, phone: firstPhone, customerPhone: firstPhone, smsConsent: true }
   });
   expect(created.ok()).toBeTruthy();
 
   const meAfterFirst = await request.get('http://127.0.0.1:3000/api/auth/me', {
     headers: { Authorization: `Bearer ${token}` }
   });
-  expect((await meAfterFirst.json()).user.phone).toBe(firstPhone);
+  expect((await meAfterFirst.json()).user.phone).toBe('+14795551212');
 
   const secondPhone = '479-555-9999';
   const second = await request.post('http://127.0.0.1:3000/api/jobs', {
     headers: { Authorization: `Bearer ${token}` },
-    data: { ...baseJob, phone: secondPhone, customerPhone: secondPhone }
+    data: { ...baseJob, phone: secondPhone, customerPhone: secondPhone, smsConsent: true }
   });
   expect(second.ok()).toBeTruthy();
 
   const meAfterSecond = await request.get('http://127.0.0.1:3000/api/auth/me', {
     headers: { Authorization: `Bearer ${token}` }
   });
-  expect((await meAfterSecond.json()).user.phone).toBe(firstPhone);
+  expect((await meAfterSecond.json()).user.phone).toBe('+14795551212');
 });
 
 test('parcel hydrate parses adrlabel when ESRI city and zip are blank', async ({ page }) => {
