@@ -1,33 +1,104 @@
-
-
 // Parcel confirmation state machine — toggles between search and confirm panels
 
-function _getMapStage() {
-  return document.querySelector('.map-stage');
+(function installTurfLynkCanvasDiagnostics() {
+  if (window.__turflynkCanvasDiagnosticsInstalled) return;
+  window.__turflynkCanvasDiagnosticsInstalled = true;
+
+  const registry = new Set();
+  let nextCanvasId = 1;
+  const originalCreateElement = Document.prototype.createElement;
+  const originalGetContext = window.HTMLCanvasElement?.prototype?.getContext;
+
+  function rememberCanvas(canvas, source = 'unknown') {
+    if (!canvas || String(canvas.tagName || '').toLowerCase() !== 'canvas') return canvas;
+    if (!canvas.__turflynkCanvasId) {
+      canvas.__turflynkCanvasId = nextCanvasId++;
+      canvas.__turflynkCanvasSource = source;
+    }
+    registry.add(canvas);
+    return canvas;
+  }
+
+  function selectorFor(canvas) {
+    const parent = canvas?.parentElement;
+    return [
+      canvas?.id ? `#${canvas.id}` : '',
+      canvas?.className ? `.${String(canvas.className).trim().replace(/\s+/g, '.')}` : '',
+      parent?.id ? ` parent=#${parent.id}` : '',
+      parent?.className ? ` parentClass=${String(parent.className).trim().replace(/\s+/g, '.')}` : '',
+    ].filter(Boolean).join('');
+  }
+
+  document.querySelectorAll('canvas').forEach((canvas) => rememberCanvas(canvas, 'initial-dom'));
+
+  Document.prototype.createElement = function turflynkCreateElementWithCanvasDiagnostics(tagName, options) {
+    const el = originalCreateElement.call(this, tagName, options);
+    if (String(tagName || '').toLowerCase() === 'canvas') rememberCanvas(el, 'document.createElement');
+    return el;
+  };
+
+  if (originalGetContext) {
+    window.HTMLCanvasElement.prototype.getContext = function turflynkGetContextWithDiagnostics(type, ...args) {
+      const contextType = String(type || '').toLowerCase();
+      rememberCanvas(this, `getContext:${contextType}`);
+      if (contextType === 'webgl' || contextType === 'webgl2' || contextType === 'experimental-webgl') {
+        this.__turflynkWebglContextRequests = Number(this.__turflynkWebglContextRequests || 0) + 1;
+        console.info('[CanvasDiag] WebGL context requested', {
+          canvasId: this.__turflynkCanvasId,
+          contextType,
+          connected: this.isConnected,
+          selector: selectorFor(this),
+        });
+      }
+      return originalGetContext.call(this, type, ...args);
+    };
+  }
+
+  window.turflynkCanvasDiagnostics = function turflynkCanvasDiagnostics(label = 'snapshot', extra = {}) {
+    const domCanvases = Array.from(document.querySelectorAll('canvas'));
+    domCanvases.forEach((canvas) => rememberCanvas(canvas, 'dom-snapshot'));
+    const knownCanvases = Array.from(registry);
+    const detachedCanvases = knownCanvases.filter((canvas) => !canvas.isConnected);
+    const webglCanvases = knownCanvases.filter((canvas) => Number(canvas.__turflynkWebglContextRequests || 0) > 0);
+    const snapshot = {
+      label,
+      domCanvasCount: domCanvases.length,
+      knownCanvasCount: knownCanvases.length,
+      detachedCanvasCount: detachedCanvases.length,
+      webglCanvasCount: webglCanvases.length,
+      domCanvases: domCanvases.map((canvas) => ({
+        id: canvas.__turflynkCanvasId,
+        source: canvas.__turflynkCanvasSource,
+        webglRequests: Number(canvas.__turflynkWebglContextRequests || 0),
+        selector: selectorFor(canvas),
+      })),
+      detachedCanvases: detachedCanvases.slice(0, 12).map((canvas) => ({
+        id: canvas.__turflynkCanvasId,
+        source: canvas.__turflynkCanvasSource,
+        webglRequests: Number(canvas.__turflynkWebglContextRequests || 0),
+      })),
+      ...extra,
+    };
+    console.info('[CanvasDiag]', snapshot);
+    return snapshot;
+  };
+})();
+
+function bindTurfLynkOnce(target, type, key, handler, options) {
+  if (!target || typeof target.addEventListener !== 'function' || !key) return false;
+  const registry = target.__turflynkListenerKeys || (target.__turflynkListenerKeys = new Set());
+  const registryKey = `${type}:${key}`;
+  if (registry.has(registryKey)) {
+    console.info('[ListenerGuard] duplicate listener skipped', registryKey);
+    return false;
+  }
+  registry.add(registryKey);
+  target.addEventListener(type, handler, options);
+  return true;
 }
 
-function _moveMapToConfirmPanel() {
-  const ms = _getMapStage();
-  const parcelInfo = document.getElementById('parcelInfo');
-  if (ms && parcelInfo && !ms.closest('#parcel-confirm-panel')) {
-    parcelInfo.insertAdjacentElement('afterend', ms);
-  }
-}
-
-function _moveMapToSearchPanel() {
-  const ms = _getMapStage();
-  const searchPanel = document.getElementById('parcel-search-panel');
-  if (ms && searchPanel && ms !== searchPanel.nextElementSibling) {
-    searchPanel.insertAdjacentElement('afterend', ms);
-  }
-}
-
-function _moveMapToDrawScreen() {
-  const ms = _getMapStage();
-  const helper = document.getElementById('mowAreaHelper');
-  if (ms && helper && ms !== helper.nextElementSibling) {
-    helper.insertAdjacentElement('afterend', ms);
-  }
+function appUiIcon(name, label) {
+  return `<img src="/assets/icons/lucide/${name}.svg" alt="" class="ui-icon"><span class="ui-label">${escapeHtml(label)}</span>`;
 }
 
 function _setQuoteMapPointerEnabled(enabled) {
@@ -35,6 +106,27 @@ function _setQuoteMapPointerEnabled(enabled) {
   if (!mapEl) return;
   mapEl.style.pointerEvents = enabled ? 'auto' : '';
   mapEl.style.touchAction = enabled ? 'pan-y' : '';
+}
+
+function _refreshQuoteMapAfterVisible(reason) {
+  const m = window.turflynkMap || state.map;
+  const mapEl = document.getElementById('quoteMap');
+  if (!m || !mapEl) return;
+
+  const refresh = function() {
+    if (!mapEl.offsetWidth || !mapEl.offsetHeight) return;
+    try { m.resize?.(); } catch {}
+  };
+
+  requestAnimationFrame(refresh);
+  setTimeout(refresh, 80);
+  setTimeout(function() {
+    refresh();
+    if (typeof refreshMapAfterStepVisible === 'function') {
+      refreshMapAfterStepVisible(reason || 'quote-map-visible');
+    }
+  }, 120);
+  setTimeout(refresh, 240);
 }
 
 function showSearch() {
@@ -49,12 +141,12 @@ function _enableConfirmMapGestures() {
   try { m.touchZoomRotate?.enable(); } catch {}
   try { m.doubleClickZoom?.enable(); } catch {}
   setTimeout(function() { try { m.resize?.(); } catch {} }, 50);
+  _refreshQuoteMapAfterVisible('property-confirm-visible');
 }
 
 function showConfirm() {
   const s = document.getElementById('quoteStartScreen');
   if (s) { s.classList.remove('is-searching'); s.classList.add('is-confirming'); }
-  _moveMapToConfirmPanel();
   _setQuoteMapPointerEnabled(true);
   _enableConfirmMapGestures();
 }
@@ -74,23 +166,24 @@ window.showPropertyConfirmationPanel = function(visible) {
   if (visible) showConfirm(); else showSearch();
 };
 
-// Ensure map-stage moves to the right container on step transitions.
+// Keep the live MapLibre container in its original DOM position. Step
+// transitions only resize the singleton map after the target panel is visible.
 (function() {
+  if (window.__turflynkQuoteStepMapResizeGuardInstalled) return;
+  window.__turflynkQuoteStepMapResizeGuardInstalled = true;
   var _origStep = window.showQuoteFlowStep;
   window.showQuoteFlowStep = function(step, opts) {
-    if (step === 'draw') _moveMapToDrawScreen();
     var result = _origStep && _origStep(step, opts);
-    // When returning to the property step while confirm panel is showing,
-    // move the map back and re-enable gestures (setMapGestureCapture(false)
-    // was just called by showQuoteFlowStep for non-draw steps).
     var normalized = (step === 'start' || step === 'parcel') ? 'property' : step;
     if (normalized === 'property') {
       var s = document.getElementById('quoteStartScreen');
       if (s && s.classList.contains('is-confirming')) {
-        _moveMapToConfirmPanel();
         _enableConfirmMapGestures();
       }
     }
+    requestAnimationFrame(() => {
+      try { (window.turflynkMap || state.map)?.resize?.(); } catch {}
+    });
     return result;
   };
 })();
@@ -546,6 +639,7 @@ function buildQuotePayload(form) {
 // latLngToLngLat, cloneFeatureCollection, cloneGeoJson, currentParcelGeoJSON, currentMapScopeSnapshot → public/js/map/map-core.js
 
 function currentJobScopeSnapshotFields() {
+  const parcelInfo = byId('parcelInfo');
   return {
     parcelGeoJSON: currentParcelGeoJSON(),
     selectedMowableGeoJSON: cloneFeatureCollection(state.mowableFeatureCollection),
@@ -553,6 +647,9 @@ function currentJobScopeSnapshotFields() {
     excludedGeoJSON: state.aiCutoutFeatureCollection?.features?.length
       ? cloneFeatureCollection(state.aiCutoutFeatureCollection)
       : null,
+    parcelId: parcelInfo?.dataset?.parcelId || byId('quoteForm')?.elements?.parcelId?.value || '',
+    parcelLabel: parcelInfo?.dataset?.addressLabel || state.currentServiceAddress?.full || '',
+    addressLabel: parcelInfo?.dataset?.addressLabel || state.currentServiceAddress?.full || '',
     ...currentMapScopeSnapshot(),
   };
 }
@@ -886,12 +983,21 @@ function drawParcel(geometry, properties = {}) {
   state.parcelGeoJSON = cloneGeoJsonSafe(parcelGeoJsonClone);
   state.currentParcelGeoJson = cloneGeoJsonSafe(parcelGeoJsonClone);
   state.currentParcelGeoJSONData = cloneGeoJsonSafe(parcelGeoJsonClone);
+  state.currentParcel = cloneGeoJsonSafe(parcelGeoJsonClone);
+  state.confirmedParcel = cloneGeoJsonSafe(parcelGeoJsonClone);
+  state.currentParcelProperties = feature.properties || properties || {};
+  state.confirmedParcelProperties = feature.properties || properties || {};
   window.selectedParcelGeoJson = cloneGeoJsonSafe(parcelGeoJsonClone);
   window.selectedParcelGeoJSON = cloneGeoJsonSafe(parcelGeoJsonClone);
   window.parcelGeoJson = cloneGeoJsonSafe(parcelGeoJsonClone);
   window.parcelGeoJSON = cloneGeoJsonSafe(parcelGeoJsonClone);
   window.currentParcelGeoJson = cloneGeoJsonSafe(parcelGeoJsonClone);
   window.currentParcelGeoJSONData = cloneGeoJsonSafe(parcelGeoJsonClone);
+  window.currentParcel = cloneGeoJsonSafe(parcelGeoJsonClone);
+  window.confirmedParcel = cloneGeoJsonSafe(parcelGeoJsonClone);
+  window.currentParcelGeometry = cloneGeoJsonSafe(parcelGeometryFromGeoJson(parcelGeoJsonClone));
+  window.parcelGeometry = cloneGeoJsonSafe(parcelGeometryFromGeoJson(parcelGeoJsonClone));
+  window.parcelLayer = cloneGeoJsonSafe(parcelGeoJsonClone);
 
   withMapReady(() => {
     updateParcelSource();
@@ -1461,20 +1567,20 @@ function initNavigation() {
   if (!buttons.length || !sections.length) return;
 
   buttons.forEach((btn) => {
-    btn.addEventListener('click', () => {
+    bindTurfLynkOnce(btn, 'click', `view-${btn.dataset.view || 'unknown'}`, () => {
       navigateFromElement(btn);
     });
   });
 
   $$('[data-jump-view]').forEach((btn) => {
-    btn.addEventListener('click', () => {
+    bindTurfLynkOnce(btn, 'click', `jump-view-${btn.dataset.jumpView || btn.dataset.view || 'unknown'}`, () => {
       navigateFromElement(btn);
     });
   });
 
   // Logo home buttons: always return to dashboard and clean up open overlays/quote state.
   $$('[data-logo-home]').forEach((btn) => {
-    btn.addEventListener('click', () => {
+    bindTurfLynkOnce(btn, 'click', 'logo-home', () => {
       closeAppDrawer();
       if (state.activeView === 'dashboard') {
         byId('accountPanel')?.classList.add('hidden');
@@ -1543,24 +1649,24 @@ async function loadConfig() {
 }
 
 // toggleAuthPanel, openAuth click, mobileAuthBtn click → public/js/auth/auth-ui.js
-byId('openAppDrawer')?.addEventListener('click', openAppDrawer);
-byId('mobileMoreBtn')?.addEventListener('click', openAppDrawer);
-byId('closeAppDrawer')?.addEventListener('click', closeAppDrawer);
-byId('appDrawerOverlay')?.addEventListener('click', closeAppDrawer);
-document.addEventListener('keydown', (event) => {
+bindTurfLynkOnce(byId('openAppDrawer'), 'click', 'open-app-drawer', openAppDrawer);
+bindTurfLynkOnce(byId('mobileMoreBtn'), 'click', 'mobile-more-open-drawer', openAppDrawer);
+bindTurfLynkOnce(byId('closeAppDrawer'), 'click', 'close-app-drawer', closeAppDrawer);
+bindTurfLynkOnce(byId('appDrawerOverlay'), 'click', 'drawer-overlay-close', closeAppDrawer);
+bindTurfLynkOnce(document, 'keydown', 'app-escape-close-overlays', (event) => {
   if (event.key === 'Escape') {
     closeAppDrawer();
     toggleAuthPanel?.(false);
   }
 });
 document.querySelectorAll('[data-drawer-view], [data-drawer-contact], [data-mobile-contact]').forEach((btn) => {
-  btn.addEventListener('click', () => navigateFromElement(btn));
+  bindTurfLynkOnce(btn, 'click', `drawer-nav-${btn.dataset.drawerView || btn.dataset.drawerContact || btn.dataset.mobileContact || btn.dataset.view || 'unknown'}`, () => navigateFromElement(btn));
 });
 
 // [data-provider-tab] forEach handler → public/js/provider/provider-ui.js
 
 $$('[data-account-panel]').forEach((btn) => {
-  btn.addEventListener('click', () => showAccountPanel());
+  bindTurfLynkOnce(btn, 'click', 'open-account-panel', () => showAccountPanel());
 });
 
 // [data-open-auth], [data-social-auth], .facebook-login-link, [data-email-auth-target] → public/js/auth/auth-ui.js
@@ -1768,6 +1874,13 @@ function commitSelectedParcelForQuote(data = {}, options = {}) {
     || parcelLookupPointFromGeometry(geometry)
     || parcelLookupPointFromGeometry(parcelGeometryFromGeoJson(parcelGeoJson))
     || quoteFormLatLng();
+  const validationPoint = parcelLookupPointFromGeometry(parcelGeometryFromGeoJson(parcelGeoJson)) || lookupPoint;
+  const validationState = addressParts.state || addressPartsFromParcelProps(parcelProps).state || '';
+  if (!isLngLatInArkansas({ ...validationPoint, state: validationState })) {
+    showArkansasOnlyPropertyBlock({ toast: { force: true } });
+    return null;
+  }
+
   const parcelGeoJsonClone = cloneGeoJsonSafe(parcelGeoJson);
   const parcelGeometryClone = cloneGeoJsonSafe(parcelGeometryFromGeoJson(parcelGeoJsonClone));
   if (!hasValidParcelGeoJson(parcelGeoJsonClone) || !parcelGeometryClone) {
@@ -1890,6 +2003,13 @@ async function confirmParcelSelection(options = {}) {
   const normalized = data.normalized || {};
   const attrs = normalized.attributes || {};
   const parcelProps = parcelPropertiesFromLookupData(data);
+  const validationPoint = parcelLookupPointFromGeometry(geometry) || data.lookupPoint || quoteFormLatLng();
+  const validationState = addressPartsFromParcelProps(parcelProps).state || '';
+  if (!isLngLatInArkansas({ ...validationPoint, state: validationState })) {
+    showArkansasOnlyPropertyBlock({ toast: { force: true } });
+    return;
+  }
+
   let parcelAddress = resolveServiceAddressFromParcel(parcelProps, getQuoteFormServiceAddress());
   parcelAddress = await fillMissingServiceAddressFromReverseGeocode(
     parcelAddress,
@@ -1970,6 +2090,15 @@ async function confirmParcelSelection(options = {}) {
 async function generateGuestEstimate(form) {
   const _preBuildFormMow = Number(form?.elements?.mowAreaSqft?.value || 0);
   const payload = buildQuotePayload(form);
+  const validationPoint = parcelLookupPointFromGeometry(state.parcelGeometry) || {
+    lat: Number(payload.lat || form?.elements?.lat?.value || 0),
+    lng: Number(payload.lng || form?.elements?.lng?.value || 0),
+  };
+  if (!isLngLatInArkansas({ ...validationPoint, state: payload.state || state.currentServiceAddress?.state || '' })) {
+    showArkansasOnlyPropertyBlock({ resultId: 'quoteResult', toast: { force: true } });
+    return;
+  }
+
   const _genLot = Number(payload.lotAreaSqft || 0);
   const _genMow = Number(payload.mowAreaSqft || 0);
   const _genLayers = getMowableFeatureCount();
@@ -2007,6 +2136,14 @@ async function acceptPendingQuote() {
     ...buildQuotePayload(form),
     ...currentJobScopeSnapshotFields(),
   };
+  const validationPoint = parcelLookupPointFromGeometry(state.parcelGeometry) || {
+    lat: Number(payload.lat || form?.elements?.lat?.value || 0),
+    lng: Number(payload.lng || form?.elements?.lng?.value || 0),
+  };
+  if (!isLngLatInArkansas({ ...validationPoint, state: payload.state || state.currentServiceAddress?.state || '' })) {
+    showArkansasOnlyPropertyBlock({ resultId: 'quoteResult', toast: { force: true } });
+    return;
+  }
 
   try {
     if (Number(payload.mowAreaSqft || 0) <= 0) {
@@ -2063,13 +2200,13 @@ setTimeout(() => {
        Quote ID: ${escapeHtml(data.quote.id)}<br>
        Region: ${escapeHtml(regionLabel(data.quote.regionId || data.quote.region_id))}<br>
        Service: ${escapeHtml(serviceLabel(data.quote.serviceType || data.quote.service_type))}<br><br>
-       <button class="btn primary" type="button" id="bookJobBtn" style="margin-top:4px">
-         Book &amp; Pay Securely
+       <button class="btn primary ui-icon-btn" type="button" id="bookJobBtn" style="margin-top:4px">
+         ${appUiIcon('credit-card', 'Book & Pay Securely')}
        </button><br>
        <span class="meta">Stripe test checkout enabled. Use card 4242 4242 4242 4242.</span>`
     );
 
-    byId('bookJobBtn')?.addEventListener('click', bookQuoteAsJob);
+    bindTurfLynkOnce(byId('bookJobBtn'), 'click', 'book-job-from-accepted-quote', bookQuoteAsJob);
 
     saveQuoteDraft();
     if (isAdmin()) await loadAdmin().catch(() => {});
@@ -2084,7 +2221,7 @@ setTimeout(() => {
   }
 }
 
-byId('quoteForm')?.addEventListener('submit', async (event) => {
+bindTurfLynkOnce(byId('quoteForm'), 'submit', 'quote-form-submit-estimate', async (event) => {
   event.preventDefault();
   try {
     await generateGuestEstimate(event.target);
@@ -2094,7 +2231,7 @@ byId('quoteForm')?.addEventListener('submit', async (event) => {
   }
 });
 
-byId('previewEstimateBtn')?.addEventListener('click', async () => {
+bindTurfLynkOnce(byId('previewEstimateBtn'), 'click', 'preview-estimate', async () => {
   const form = byId('quoteForm');
   if (!form) return;
   try {
@@ -2106,19 +2243,19 @@ byId('previewEstimateBtn')?.addEventListener('click', async () => {
 });
 // cutMowableBtn click → public/js/map/mow-editor.js (Phase 12d)
 // undoCutBtn click → public/js/map/mow-editor.js (Phase 12d)
-byId('mapToolsToggle')?.addEventListener('click', () => {
+bindTurfLynkOnce(byId('mapToolsToggle'), 'click', 'map-tools-toggle', () => {
   const panel = byId('mapToolsPanel');
   setMapToolPanelOpen(panel?.classList.contains('hidden'));
 });
-byId('closeMapTools')?.addEventListener('click', () => setMapToolPanelOpen(false));
+bindTurfLynkOnce(byId('closeMapTools'), 'click', 'close-map-tools', () => setMapToolPanelOpen(false));
 // drawManuallyBtn: secondary action in draw-ai-hero — opens the map tools panel
-byId('drawManuallyBtn')?.addEventListener('click', () => setMapToolPanelOpen(true));
+bindTurfLynkOnce(byId('drawManuallyBtn'), 'click', 'draw-manually-open-tools', () => setMapToolPanelOpen(true));
 // continueToDrawBtn → public/js/quote/property-lookup.js
 // requestServiceBtn click, manualQuoteBtn click → public/js/quote/checkout-request.js
 // saveAreaBtn, cancelEditAreaBtn → public/js/map/mow-editor.js (Phase 12c)
 // locateAddressBtn, lookupParcelBtn, requestCurrentLocation → public/js/quote/property-lookup.js
 
-byId('propertyManualQuoteBtn')?.addEventListener('click', () => {
+bindTurfLynkOnce(byId('propertyManualQuoteBtn'), 'click', 'property-manual-quote', () => {
   hydrateLiveBidForm('other');
   setServiceFlow('live_bid');
   byId('liveBidPanel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -2126,27 +2263,28 @@ byId('propertyManualQuoteBtn')?.addEventListener('click', () => {
 
 // [data-use-current-location], gpsConfirmYesBtn, gpsConfirmNoBtn → public/js/quote/property-lookup.js
 // aiDetectMowableBtn → public/js/ai/ai-detect.js
-byId('useParcelShapeBtn')?.addEventListener('click', cloneParcelAsMowable);
+bindTurfLynkOnce(byId('useParcelShapeBtn'), 'click', 'use-parcel-shape', cloneParcelAsMowable);
 // TODO: This listener manages UI state (exits parcel-select mode, sets quoteUiMode).
 // It is NOT pure lasso drawing interaction; lasso arm is handled by lasso-yard.js bindBtn in attach().
 // Leave here until a future phase covers the full quote-flow/parcel-select coordination.
-byId('lassoYardBtn')?.addEventListener('click', () => {
+bindTurfLynkOnce(byId('lassoYardBtn'), 'click', 'lasso-yard-ui-state', () => {
   if (state.parcelSelectMode) exitParcelSelectMode();
   state.quoteUiMode = 'drawing';
   updateQuoteFlowState();
 });
-byId('drawMowableBtn')?.addEventListener('click', () => {
+bindTurfLynkOnce(byId('drawMowableBtn'), 'click', 'draw-mowable', () => {
   if (getMowableFeatureCount()) clearMowLayer();
   startDrawMowable();
 });
 // editMowableBtn, deleteMowableBtn → public/js/map/mow-editor.js (Phase 12c)
-byId('clearMowableBtn')?.addEventListener('click', clearMowLayer);
-byId('clearMowAreaBtn')?.addEventListener('click', clearMowLayer);
+bindTurfLynkOnce(byId('clearMowableBtn'), 'click', 'clear-mowable', clearMowLayer);
+bindTurfLynkOnce(byId('clearMowAreaBtn'), 'click', 'clear-mow-area', clearMowLayer);
 
-byId('clearQuoteDraftBtn')?.addEventListener('click', () => {
+bindTurfLynkOnce(byId('clearQuoteDraftBtn'), 'click', 'clear-quote-draft', () => {
   byId('quoteForm')?.reset();
   applyDefaultQuoteService();
   clearQuoteDraft();
+  if (typeof clearCheckoutPii === 'function') clearCheckoutPii({ reason: 'quote-full-reset', clearAddress: true });
   clearParcelLayer();
   clearMowLayer();
   byId('parcelInfo')?.classList.add('hidden');
@@ -2167,13 +2305,13 @@ function quoteAddressFieldChanged(event) {
   setCurrentServiceAddress(getQuoteFormServiceAddress(), 'quote-form-input');
 }
 
-byId('quoteForm')?.addEventListener('input', (event) => {
+bindTurfLynkOnce(byId('quoteForm'), 'input', 'quote-form-input-refresh', (event) => {
   quoteAddressFieldChanged(event);
   saveQuoteDraft();
   scheduleEstimateRefresh('input');
 });
 
-byId('quoteForm')?.addEventListener('change', (event) => {
+bindTurfLynkOnce(byId('quoteForm'), 'change', 'quote-form-change-refresh', (event) => {
   quoteAddressFieldChanged(event);
   saveQuoteDraft();
   scheduleEstimateRefresh('change');
@@ -2185,7 +2323,7 @@ byId('quoteForm')?.addEventListener('change', (event) => {
 
 // providerForm submit, providerServiceAreaForm submit → public/js/provider/provider-ui.js
 
-byId('jobForm')?.addEventListener('submit', async (event) => {
+bindTurfLynkOnce(byId('jobForm'), 'submit', 'public-job-form-submit', async (event) => {
   event.preventDefault();
 
   try {
@@ -2250,9 +2388,9 @@ byId('jobForm')?.addEventListener('submit', async (event) => {
 
 // regionEditorSelect/serviceEditorSelect change, regionEditorForm/serviceEditorForm submit → public/js/admin/admin-ui.js
 
-byId('jobPhotos')?.addEventListener('change', renderJobPhotoPreview);
+bindTurfLynkOnce(byId('jobPhotos'), 'change', 'job-photo-preview', renderJobPhotoPreview);
 
-byId('authForm')?.addEventListener('submit', async (event) => {
+bindTurfLynkOnce(byId('authForm'), 'submit', 'legacy-auth-form-submit', async (event) => {
   event.preventDefault();
   try {
     const payload = formToObject(event.target);
@@ -2271,7 +2409,7 @@ byId('authForm')?.addEventListener('submit', async (event) => {
   }
 });
 
-byId('whoAmIBtn')?.addEventListener('click', async () => {
+bindTurfLynkOnce(byId('whoAmIBtn'), 'click', 'whoami', async () => {
   try {
     const data = await api('/api/auth/me');
     updateSessionStatus(data.user);
@@ -2286,19 +2424,19 @@ byId('whoAmIBtn')?.addEventListener('click', async () => {
 
 // aiRefineMowableBtn, applyAiCutoutsBtn → public/js/ai/ai-detect.js
 
-byId('refreshProviders')?.addEventListener('click', loadProviders);
+bindTurfLynkOnce(byId('refreshProviders'), 'click', 'refresh-providers', loadProviders);
 
-byId('quoteForm')?.elements?.lotAreaSqft?.addEventListener('input', () => {
+bindTurfLynkOnce(byId('quoteForm')?.elements?.lotAreaSqft, 'input', 'lot-area-display-refresh', () => {
   const form = byId('quoteForm');
   refreshAreaDisplays(form.elements.lotAreaSqft.value, form.elements.mowAreaSqft.value);
 });
-byId('quoteForm')?.elements?.mowAreaSqft?.addEventListener('input', () => {
+bindTurfLynkOnce(byId('quoteForm')?.elements?.mowAreaSqft, 'input', 'mow-area-display-refresh', () => {
   const form = byId('quoteForm');
   refreshAreaDisplays(form.elements.lotAreaSqft.value, form.elements.mowAreaSqft.value);
 });
-byId('refreshJobs')?.addEventListener('click', loadJobs);
-byId('refreshRegions')?.addEventListener('click', loadConfig);
-byId('refreshServices')?.addEventListener('click', loadConfig);
+bindTurfLynkOnce(byId('refreshJobs'), 'click', 'refresh-jobs', loadJobs);
+bindTurfLynkOnce(byId('refreshRegions'), 'click', 'refresh-regions-config', loadConfig);
+bindTurfLynkOnce(byId('refreshServices'), 'click', 'refresh-services-config', loadConfig);
 // refreshAdmin click → public/js/admin/admin-ui.js
 // editAiCutoutsBtn → public/js/ai/ai-detect.js
 
@@ -2308,11 +2446,11 @@ byId('refreshServices')?.addEventListener('click', loadConfig);
 
 // leadRequestForm submit → public/js/quote/checkout-request.js
 
-byId('liveBidPhotos')?.addEventListener('change', () => {
+bindTurfLynkOnce(byId('liveBidPhotos'), 'change', 'live-bid-photo-preview', () => {
   renderFilePreview(byId('liveBidPhotos'), byId('liveBidPhotoPreview'));
 });
 
-byId('liveBidForm')?.addEventListener('submit', async (e) => {
+bindTurfLynkOnce(byId('liveBidForm'), 'submit', 'live-bid-form-submit', async (e) => {
   e.preventDefault();
   const btn = byId('liveBidSubmitBtn');
   if (btn) { btn.disabled = true; btn.textContent = 'Submitting...'; }
@@ -2320,6 +2458,7 @@ byId('liveBidForm')?.addEventListener('submit', async (e) => {
   try {
     const form = e.target;
     const payload = formToObject(form);
+    applySmsConsentToPayload(payload, form);
     const photoUrls = await uploadPhotoInput(byId('liveBidPhotos'));
     const tasks = checkedValues('requested_tasks', form);
     payload.quote_type = payload.quote_type || 'live_bid';
@@ -2338,6 +2477,11 @@ byId('liveBidForm')?.addEventListener('submit', async (e) => {
       live_bid_recommended: true,
     });
     payload.access_summary = buildAccessSummary(payload);
+
+    if (!smsConsentAccepted(payload)) {
+      showSmsConsentRequiredError('liveBidResult', form);
+      return;
+    }
 
     const missingContact = !payload.customerName || !payload.customerPhone;
     if (missingContact && !hasActiveSession()) {
@@ -2363,7 +2507,7 @@ byId('liveBidForm')?.addEventListener('submit', async (e) => {
 });
 
 // loadAdminLeads, refreshLeadsBtn/leadsStatusFilter/leadsServiceFilter/refreshAdminPaidJobsBtn → public/js/admin/admin-ui.js
-byId('refreshProviderPaidJobsBtn')?.addEventListener('click', loadProviderPaidJobs);
+bindTurfLynkOnce(byId('refreshProviderPaidJobsBtn'), 'click', 'refresh-provider-paid-jobs', loadProviderPaidJobs);
 function resetParcelQuoteStateForNewAddress() {
   const form = byId('quoteForm');
 
@@ -2392,8 +2536,17 @@ function resetParcelQuoteStateForNewAddress() {
 function selectedPlaceIsInArkansas(place) {
   const stateComponent = (place?.address_components || [])
     .find((component) => component.types?.includes('administrative_area_level_1'));
+  const hasArkansasState = stateComponent?.short_name === 'AR' || stateComponent?.long_name === 'Arkansas';
+  if (stateComponent && !hasArkansasState) return false;
 
-  return stateComponent?.short_name === 'AR' || stateComponent?.long_name === 'Arkansas';
+  const location = place?.geometry?.location;
+  if (location) {
+    const lat = typeof location.lat === 'function' ? location.lat() : location.lat;
+    const lng = typeof location.lng === 'function' ? location.lng() : location.lng;
+    return isLngLatInArkansas({ lat, lng, state: stateComponent?.short_name || stateComponent?.long_name || '' });
+  }
+
+  return hasArkansasState;
 }
 
 function initAddressAutocomplete() {
@@ -2405,16 +2558,21 @@ function initAddressAutocomplete() {
     console.warn('Google Places not loaded � autocomplete disabled');
     return;
   }
+  if (input.__turflynkAddressAutocomplete) {
+    console.info('[ListenerGuard] address autocomplete already initialized');
+    return input.__turflynkAddressAutocomplete;
+  }
 
-  // Google componentRestrictions only restricts by country. Arkansas state limiting
-  // is done with bounds/strictBounds plus a post-selection state check.
+  // Google componentRestrictions only restricts by country. Arkansas acceptance
+  // is handled by the shared post-selection coordinate check.
   const autocomplete = new google.maps.places.Autocomplete(input, {
     componentRestrictions: { country: 'us' },
     bounds: ARKANSAS_BOUNDS,
-    strictBounds: true,
+    strictBounds: false,
     fields: ['formatted_address', 'geometry', 'address_components', 'place_id'],
     types: ['address'],
   });
+  input.__turflynkAddressAutocomplete = autocomplete;
 
   autocomplete.addListener('place_changed', () => {
     resetParcelQuoteStateForNewAddress();
@@ -2423,7 +2581,8 @@ function initAddressAutocomplete() {
     if (!place?.geometry?.location) return;
 
     if (!selectedPlaceIsInArkansas(place)) {
-      showWarning('Please choose an Arkansas address for now.');
+      showResult('parcelInfo', `<strong>${escapeHtml(ARKANSAS_ONLY_MESSAGE)}</strong>`);
+      showArkansasOnlyWarning({ force: true });
       return;
     }
 
@@ -2464,7 +2623,7 @@ function initAddressAutocomplete() {
     scheduleEstimateRefresh('address-autocomplete');
 
     setTimeout(() => {
-      lookupParcel().catch((error) => {
+      lookupParcel({ source: 'autocomplete', navigate: true }).catch((error) => {
         console.warn('Autocomplete parcel lookup failed', error);
       });
 }, 100);
@@ -2593,7 +2752,7 @@ async function handleAuthReturn() {
     if (leadForm) {
       const cf = context.customerFields;
       if (cf.customerName) leadForm.elements.customerName.value = cf.customerName;
-      if (cf.customerPhone) leadForm.elements.customerPhone.value = cf.customerPhone;
+      if (cf.customerPhone) leadForm.elements.customerPhone.value = typeof checkoutPhoneForDisplay === 'function' ? checkoutPhoneForDisplay(cf.customerPhone) : (typeof formatUsPhoneNumber === 'function' ? formatUsPhoneNumber(cf.customerPhone) : cf.customerPhone);
       if (cf.customerEmail && leadForm.elements.customerEmail) leadForm.elements.customerEmail.value = cf.customerEmail;
       if (cf.notes && leadForm.elements.notes) leadForm.elements.notes.value = cf.notes;
       if (cf.preferredDate && leadForm.elements.preferredDate) leadForm.elements.preferredDate.value = cf.preferredDate;
@@ -2612,7 +2771,7 @@ async function handleAuthReturn() {
     if (manualForm) {
       const cf = context.customerFields;
       if (cf.customerName && manualForm.elements.name) manualForm.elements.name.value = cf.customerName;
-      if (cf.customerPhone && manualForm.elements.phone) manualForm.elements.phone.value = cf.customerPhone;
+      if (cf.customerPhone && manualForm.elements.phone) manualForm.elements.phone.value = typeof checkoutPhoneForDisplay === 'function' ? checkoutPhoneForDisplay(cf.customerPhone) : (typeof formatUsPhoneNumber === 'function' ? formatUsPhoneNumber(cf.customerPhone) : cf.customerPhone);
       if (cf.customerEmail && manualForm.elements.email) manualForm.elements.email.value = cf.customerEmail;
       if (cf.notes && manualForm.elements.notes) manualForm.elements.notes.value = cf.notes;
       if (cf.preferredDayTime && manualForm.elements.preferredDayTime) manualForm.elements.preferredDayTime.value = cf.preferredDayTime;
@@ -2622,6 +2781,7 @@ async function handleAuthReturn() {
   // Re-apply the single service address source after auth-return form restoration.
   if (quotePayload) setCurrentServiceAddress(getCurrentServiceAddress(quotePayload), 'auth-return');
   applyServiceAddressToLeadForm();
+  if (typeof applyUsPhoneFormatting === 'function') applyUsPhoneFormatting(document);
   // Fill name/email blanks from the freshly-loaded user profile
   hydrateLeadFormFromUser(state.currentUser);
   console.info('[Auth UI] showing signed-in controls after auth return');
@@ -2664,53 +2824,13 @@ function handleSelectDifferentParcelClick(event) {
     byId('parcelInfo')?.dataset?.addressLabel
   );
 
-  if (state.parcelSelectMode) exitParcelSelectMode();
-  stopToolModes();
-  clearMowableFeatures();
-  clearParcelLayer();
-
-  state.pendingParcelFeature = null;
-  state.pendingParcelPreviewFeature = null;
-  state.pendingParcelPreviewLayer = null;
-  state.parcelDblClick = false;
-  state.mowUndoStack = [];
-  state.editSnapshot = null;
-  state.pendingQuote = null;
-  state.lastQuote = null;
-  if (estimateRefreshTimer) clearTimeout(estimateRefreshTimer);
-  estimateRefreshTimer = null;
-  estimateRequestSeq += 1;
-  if (typeof window.parcelLayer !== 'undefined') window.parcelLayer = null;
-  updatePreviewParcelSource();
-
-  if (form) {
-    ['parcelId', 'lotAreaSqft', 'mowAreaSqft', 'lotSource', 'parcelAreaSqft'].forEach((name) => {
-      if (form.elements[name]) form.elements[name].value = '';
-    });
-    MOWABLE_ESTIMATE_FIELDS.forEach((name) => {
-      if (form.elements[name]) form.elements[name].value = '';
-    });
-  }
-
-  const parcelInfo = byId('parcelInfo');
-  if (parcelInfo) {
-    parcelInfo.textContent = '';
-    parcelInfo.dataset.parcelId = '';
-    parcelInfo.dataset.addressLabel = '';
-    parcelInfo.classList.add('hidden');
-  }
   byId('useThisParcelBar')?.classList.add('hidden');
-  byId('quoteResult')?.classList.add('hidden');
 
-  renderSuggestedMowablePanel(null);
-  updateMowAreaHelper(0, 0);
-  setEstimateState('empty', { signature: '', payload: null });
-  showPropertyConfirmationPanel(false);
   showQuoteFlowStep('property', { scroll: false });
-  showPropertyConfirmationPanel(false);
+  showPropertyConfirmationPanel(true);
 
   if (hasCoords || hasAddress || hasParcelContext) {
-    _moveMapToSearchPanel();
+    if (state.parcelSelectMode) exitParcelSelectMode();
     enterParcelSelectMode();
     requestAnimationFrame(() => {
       state.map?.resize?.();
@@ -2724,20 +2844,20 @@ function handleSelectDifferentParcelClick(event) {
   updateQuoteFlowState();
 }
 
-document.addEventListener('click', (event) => {
+bindTurfLynkOnce(document, 'click', 'select-parcel-delegated', (event) => {
   const button = event.target.closest?.('#selectParcelBtn');
   if (!button) return;
   handleSelectDifferentParcelClick(event);
 });
 
-byId('useThisParcelConfirmBtn')?.addEventListener('click', () => {
+bindTurfLynkOnce(byId('useThisParcelConfirmBtn'), 'click', 'use-this-parcel-confirm', () => {
   confirmParcelSelection({ nextStep: 'draw' }).catch((error) => showError('Parcel selection failed: ' + prettyApiError(error)));
 });
-byId('useThisParcelCancelBtn')?.addEventListener('click', exitParcelSelectMode);
+bindTurfLynkOnce(byId('useThisParcelCancelBtn'), 'click', 'use-this-parcel-cancel', exitParcelSelectMode);
 
 // copy-addr delegated handler → public/js/jobs/jobs-ui.js
 
-window.addEventListener('popstate', () => {
+bindTurfLynkOnce(window, 'popstate', 'local-landing-popstate', () => {
   renderLocalLandingFromPath();
   setActiveView('dashboard');
 });
@@ -2745,9 +2865,20 @@ window.addEventListener('popstate', () => {
 // handleCheckoutReturn, renderCheckoutSuccess, submitSuccessSetPassword → public/js/quote/checkout-request.js
 
 (async function init() {
+  window.__turflynkInitCount = Number(window.__turflynkInitCount || 0) + 1;
+  if (window.__turflynkAppInitialized) {
+    console.warn('[App Init] duplicate init blocked');
+    window.turflynkCanvasDiagnostics?.('app init duplicate blocked', { initCount: window.__turflynkInitCount });
+    return;
+  }
+  window.__turflynkAppInitialized = true;
+  console.info('[App Init] init() start', { initCount: window.__turflynkInitCount });
+  window.turflynkCanvasDiagnostics?.('app init start', { initCount: window.__turflynkInitCount });
+
   applySocialLoginVisibility();
   initNavigation();
   initMap();
+  window.turflynkCanvasDiagnostics?.('app init after initMap');
 
   renderHomepageContent();
   renderCoverage();
@@ -2785,6 +2916,9 @@ window.addEventListener('popstate', () => {
   if (checkoutReturned) {
     console.log('[init] checkout return handled; skipping default property route');
     updateSessionStatus();
+    window.turflynkCanvasDiagnostics?.('checkout open');
+    console.info('[App Init] init() complete', { initCount: window.__turflynkInitCount, checkoutReturned: true });
+    window.turflynkCanvasDiagnostics?.('app init complete', { initCount: window.__turflynkInitCount, checkoutReturned: true });
     return;
   }
 
@@ -2794,7 +2928,7 @@ window.addEventListener('popstate', () => {
   const _role = state.currentUser?.role;
   const _pageLoads = [loadProviders()];
   if (_role === 'provider' || _role === 'admin') _pageLoads.push(loadJobs());
-  await Promise.allSettled(_pageLoads);
+  Promise.allSettled(_pageLoads).catch(() => {});
 
   const form = byId('quoteForm');
   const lat = form?.elements?.lat?.value;
@@ -2803,12 +2937,14 @@ window.addEventListener('popstate', () => {
   if (lat && lng) {
     placeMarker(lat, lng);
     // Skip parcel lookup on auth return because it would navigate back to Property and undo the resume.
-    if (!authResumed) lookupParcel().catch((error) => showWarning(prettyApiError(error)));
+    if (!authResumed) lookupParcel({ source: 'initial-load', navigate: false }).catch((error) => showWarning(prettyApiError(error)));
   } else if (!authResumed && !checkoutReturned) {
     updateMowAreaHelper(0, 0);
     showQuoteFlowStep(state.quoteFlowStep || 'property', { scroll: false });
   }
   updateQuoteFlowState();
+  console.info('[App Init] init() complete', { initCount: window.__turflynkInitCount });
+  window.turflynkCanvasDiagnostics?.('app init complete', { initCount: window.__turflynkInitCount });
 })();
 
 
@@ -2816,13 +2952,17 @@ window.addEventListener('popstate', () => {
 
 // Guard: keep property/parcel confirmation UI hidden outside quote flow
 (function guardPropertyUiOutsideQuote() {
+  if (window.__turflynkPropertyUiOutsideQuoteGuardInstalled) return;
+  window.__turflynkPropertyUiOutsideQuoteGuardInstalled = true;
   function sync() {
     const isQuote = document.body?.dataset?.activeView === "quote";
     if (isQuote) return;
     showSearch();
   }
 
-  document.addEventListener("DOMContentLoaded", sync);
-  document.addEventListener("click", () => setTimeout(sync, 50));
-  setInterval(sync, 1000);
+  bindTurfLynkOnce(document, "DOMContentLoaded", "property-ui-outside-quote-sync", sync);
+  bindTurfLynkOnce(document, "click", "property-ui-outside-quote-click-sync", () => setTimeout(sync, 50));
+  if (!window.__turflynkPropertyUiOutsideQuoteInterval) {
+    window.__turflynkPropertyUiOutsideQuoteInterval = setInterval(sync, 1000);
+  }
 })();

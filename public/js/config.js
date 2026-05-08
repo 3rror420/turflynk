@@ -20,12 +20,51 @@ const EPSG26915 = '+proj=utm +zone=15 +datum=NAD83 +units=m +no_defs';
 const PARCEL_FIT_OPTIONS = { padding: [40, 40], maxZoom: 18 };
 const DEFAULT_MAP_CENTER = [36.1867, -94.1288];
 const DEFAULT_MAP_ZOOM = 11;
-const ARKANSAS_BOUNDS = {
-  south: 33.0041,
-  west: -94.6179,
-  north: 36.4996,
-  east: -89.6448,
+const ARKANSAS_ONLY_MESSAGE = 'MowNWA currently supports Arkansas properties only.';
+const ARKANSAS_MAP_BUFFERED_BOUNDS = {
+  west: -95.75,
+  south: 32.25,
+  east: -88.75,
+  north: 37.25,
 };
+const ARKANSAS_BOUNDS = {
+  west: -94.65,
+  south: 33.00,
+  east: -89.60,
+  north: 36.55,
+};
+const ARKANSAS_VALIDATION_BOUNDS = ARKANSAS_BOUNDS;
+let lastArkansasOnlyToastAt = 0;
+
+function isLngLatInBounds(lng, lat, bounds = ARKANSAS_VALIDATION_BOUNDS) {
+  const pointLng = Number(lng?.lng ?? lng?.lon ?? lng?.longitude ?? (Array.isArray(lng) ? lng[0] : lng));
+  const pointLat = Number(lng?.lat ?? lng?.latitude ?? (Array.isArray(lng) ? lng[1] : lat));
+  return Number.isFinite(pointLng)
+    && Number.isFinite(pointLat)
+    && pointLng >= bounds.west
+    && pointLng <= bounds.east
+    && pointLat >= bounds.south
+    && pointLat <= bounds.north;
+}
+
+function isArkansasStateValue(value) {
+  const stateValue = String(value || '').trim().toLowerCase();
+  return !stateValue || stateValue === 'ar' || stateValue === 'arkansas';
+}
+
+function isLngLatInArkansas(lng, lat, stateValue = '') {
+  const pointState = lng?.state_code ?? lng?.stateCode ?? lng?.state ?? lng?.administrativeArea ?? stateValue;
+  if (!isArkansasStateValue(pointState)) return false;
+  return isLngLatInBounds(lng, lat, ARKANSAS_VALIDATION_BOUNDS);
+}
+
+function showArkansasOnlyWarning(options = {}) {
+  const now = Date.now();
+  const throttleMs = Number(options.throttleMs || 2500);
+  if (!options.force && now - lastArkansasOnlyToastAt < throttleMs) return;
+  lastArkansasOnlyToastAt = now;
+  if (typeof showWarning === 'function') showWarning(ARKANSAS_ONLY_MESSAGE);
+}
 const MOWABLE_ESTIMATE_FIELDS = [
   'parcelAreaSqft',
   'buildingFootprintSqft',

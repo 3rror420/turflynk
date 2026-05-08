@@ -45,6 +45,134 @@
    SHOW / HIDE LEAD REQUEST PANEL
 ───────────────────────────────────────────────────────────────────────── */
 
+function checkoutUiIcon(name, label) {
+  return `<img src="/assets/icons/lucide/${name}.svg" alt="" class="ui-icon"><span class="ui-label">${escapeHtml(label)}</span>`;
+}
+
+function checkoutBindOnce(target, type, key, handler, options) {
+  if (!target || typeof target.addEventListener !== 'function' || !key) return false;
+  const registry = target.__turflynkListenerKeys || (target.__turflynkListenerKeys = new Set());
+  const registryKey = `${type}:${key}`;
+  if (registry.has(registryKey)) {
+    console.info('[ListenerGuard] duplicate checkout listener skipped', registryKey);
+    return false;
+  }
+  registry.add(registryKey);
+  target.addEventListener(type, handler, options);
+  return true;
+}
+
+const SMS_CONSENT_TEXT = 'I agree to receive SMS messages from MowNWA.com about my quote, booking, scheduling, job updates, payment/COD verification, and customer support. Message frequency may vary. Msg & data rates may apply. Reply STOP to opt out or HELP for help. Consent is not a condition of purchase. View our Privacy Policy and Terms of Service.';
+const SMS_CONSENT_REQUIRED_MESSAGE = 'SMS consent is required before we can send verification texts.';
+const PHONE_VERIFICATION_CODE_SENT_MESSAGE = 'Text code sent. Enter the 6-digit code below.';
+const CHECKOUT_PII_STORAGE_KEYS = ['turflynk.authReturn.v1', 'turflynk.quoteDraft.v5'];
+const CHECKOUT_CONTACT_NAMES = new Set(['customerName', 'customerPhone', 'customerEmail', 'name', 'phone', 'email', 'fullName']);
+const CHECKOUT_ADDRESS_NAMES = new Set(['address', 'city', 'state', 'zip', 'lat', 'lng', 'parcelId']);
+
+function checkoutPhoneForDisplay(value) {
+  return typeof formatUsPhoneNumber === 'function' ? formatUsPhoneNumber(value) : String(value || '').trim();
+}
+
+function checkoutPhoneForBackend(value) {
+  const raw = String(value || '').trim();
+  if (/^\+[1-9]\d{7,14}$/.test(raw)) return raw;
+  const digits = phoneDigits(raw);
+  if (digits.length === 10) return `+1${digits}`;
+  if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;
+  return raw;
+}
+
+function checkoutSetVisiblePhone(input, value) {
+  if (!input) return;
+  input.value = checkoutPhoneForDisplay(value);
+  if (typeof normalizeUsPhoneInput === 'function') normalizeUsPhoneInput(input);
+}
+
+function checkoutSetInputValue(input, value) {
+  if (!input) return;
+  const isPhone = input.matches?.('input[name="customerPhone"], input[name="phone"]')
+    || String(input.type || '').toLowerCase() === 'tel';
+  if (isPhone) {
+    checkoutSetVisiblePhone(input, value);
+    return;
+  }
+  input.value = value || '';
+}
+
+function checkoutClearFormPii(form, options = {}) {
+  if (!form?.elements) return;
+  const clearAddress = Boolean(options.clearAddress);
+  Array.from(form.elements).forEach((field) => {
+    const name = field?.name || '';
+    if (!name || field.type === 'hidden' && !clearAddress) return;
+    if (!CHECKOUT_CONTACT_NAMES.has(name) && !(clearAddress && CHECKOUT_ADDRESS_NAMES.has(name))) return;
+    if (field.type === 'checkbox' || field.type === 'radio') field.checked = false;
+    else field.value = name === 'state' ? 'AR' : '';
+  });
+}
+
+function clearCheckoutPii(options = {}) {
+  const clearAddress = Boolean(options.clearAddress);
+  const clearStorage = options.clearStorage !== false;
+  const clearQuoteState = options.clearQuoteState !== false;
+
+  if (clearStorage) {
+    if (typeof clearAuthReturnContext === 'function') clearAuthReturnContext();
+    if (typeof clearQuoteDraft === 'function') clearQuoteDraft();
+    CHECKOUT_PII_STORAGE_KEYS.forEach((key) => {
+      try { localStorage.removeItem(key); } catch {}
+      try { sessionStorage.removeItem(key); } catch {}
+    });
+  }
+
+  ['leadRequestForm', 'manualQuoteForm', 'accountRecommendRegisterForm', 'accountRecommendLoginForm', 'gateLoginForm', 'gateRegisterForm'].forEach((id) => {
+    checkoutClearFormPii(byId(id), { clearAddress });
+  });
+  if (clearAddress) checkoutClearFormPii(byId('quoteForm'), { clearAddress: true });
+
+  if (clearQuoteState) {
+    state.lastQuote = null;
+    state.pendingQuote = null;
+    state.pendingCheckoutUrl = null;
+    state.pendingCheckoutResume = false;
+    if (state.currentEstimate) state.currentEstimate = { ...state.currentEstimate, payload: null, status: 'empty' };
+    if (clearAddress) state.currentServiceAddress = { street: '', address: '', city: '', state: 'AR', zip: '', full: '', source: options.reason || 'checkout-pii-clear', updatedAt: Date.now() };
+  }
+
+  if (typeof checkoutPhoneVerificationState !== 'undefined') {
+    checkoutPhoneVerificationState.phone = '';
+    checkoutPhoneVerificationState.verifiedAt = 0;
+    checkoutPhoneVerificationState.resendLockedUntil = 0;
+    clearPendingCodBookingResume();
+  }
+
+  if (typeof applyUsPhoneFormatting === 'function') applyUsPhoneFormatting(document);
+}
+
+function checkoutOtpInputHtml(name, placeholder = '123456') {
+  return `<input name="${escapeHtml(name)}" type="text" inputmode="numeric" autocomplete="one-time-code" autocorrect="off" autocapitalize="off" spellcheck="false" maxlength="10" placeholder="${escapeHtml(placeholder)}" pattern="\\d{4,10}" data-otp="true" />`;
+}
+
+function checkoutVerificationCodeValue(input) {
+  return String(input?.value || '').replace(/\D/g, '');
+}
+
+function checkoutRefreshMapPreview(reason = 'checkout-visible') {
+  const refresh = () => {
+    const map = window.turflynkMap || state.map;
+    const mapEl = byId('quoteMap');
+    if (!map || typeof map.resize !== 'function') return;
+    if (!mapEl || !mapEl.offsetWidth || !mapEl.offsetHeight) return;
+    try { map.resize(); } catch {}
+  };
+  requestAnimationFrame(refresh);
+  setTimeout(refresh, 80);
+  setTimeout(() => {
+    refresh();
+    if (typeof refreshMapAfterStepVisible === 'function') refreshMapAfterStepVisible(reason);
+  }, 160);
+}
+
 function showLeadRequestPanel(payload) {
   const panel = byId('leadRequestPanel');
   if (!panel) return;
@@ -86,11 +214,16 @@ setTimeout(() => {
     submitBtn.disabled = false;
     submitBtn.textContent = 'Book & Pay Securely';
   }
+  const scopeGrid = byId('leadScopeGrid');
+  if (scopeGrid) {
+    scopeGrid.innerHTML = '';
+    scopeGrid.hidden = true;
+  }
   const leadForm = byId('leadRequestForm');
   if (leadForm) {
     const fillBlank = (name, value) => {
       const field = leadForm.elements[name];
-      if (field && !String(field.value || '').trim() && value) field.value = value;
+      if (field && !String(field.value || '').trim() && value) checkoutSetInputValue(field, value);
     };
     fillBlank('customerName', payload.customerName || payload.name || '');
     fillBlank('customerPhone', payload.customerPhone || payload.phone || '');
@@ -99,6 +232,8 @@ setTimeout(() => {
 
   panel.classList.remove('hidden');
   showQuoteFlowStep('request');
+  checkoutRefreshMapPreview('checkout-request-visible');
+  window.turflynkCanvasDiagnostics?.('checkout open');
   updateQuoteStepper();
 
   // Fill blank customer fields from logged-in user profile (does not overwrite typed values)
@@ -106,6 +241,7 @@ setTimeout(() => {
   if (state.currentUser) console.info('[Auth UI] showing signed-in controls on request panel');
 
   applyServiceAddressToLeadForm();
+  window.MowNWAWeatherScheduler?.scheduleRefresh?.('checkout-request-visible', { initialDelay: 120 });
   console.log('[FINAL FORM STATE]', {
     city: document.getElementById('leadCity')?.value,
     state: document.getElementById('leadState')?.value,
@@ -143,7 +279,7 @@ function showManualQuotePanel(payload = {}) {
   const form = byId('manualQuoteForm');
   if (form) {
     if (form.elements.name) form.elements.name.value = payload.name || payload.customerName || form.elements.name.value || '';
-    if (form.elements.phone) form.elements.phone.value = payload.phone || payload.customerPhone || form.elements.phone.value || '';
+    if (form.elements.phone && (payload.phone || payload.customerPhone || !form.elements.phone.value)) checkoutSetVisiblePhone(form.elements.phone, payload.phone || payload.customerPhone || form.elements.phone.value || '');
     if (form.elements.email) form.elements.email.value = payload.email || payload.customerEmail || form.elements.email.value || '';
     if (form.elements.notes) form.elements.notes.value = form.elements.notes.value || quoteFields.notes || '';
   }
@@ -158,6 +294,7 @@ function showManualQuotePanel(payload = {}) {
   panel.classList.remove('hidden');
   panel.hidden = false;
   panel.setAttribute('aria-hidden', 'false');
+  window.turflynkCanvasDiagnostics?.('checkout manual quote open');
   panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
@@ -177,7 +314,7 @@ function buildManualQuoteRequestPayload(form) {
     quotePayload.yard_access_notes ? `Yard access notes: ${quotePayload.yard_access_notes}` : '',
   ].filter(Boolean).join('\n');
 
-  return {
+  return applySmsConsentToPayload({
     ...quotePayload,
     name: String(contact.name || '').trim(),
     phone: String(contact.phone || '').trim(),
@@ -196,21 +333,33 @@ function buildManualQuoteRequestPayload(form) {
     status: 'manual_requested',
     estimate,
     final_price: estimate,
+  }, form);
+}
+
+function checkoutArkansasValidationPoint(payload = {}) {
+  const point = parcelLookupPointFromGeometry(state.parcelGeometry) || {
+    lat: Number(payload.lat || 0),
+    lng: Number(payload.lng || 0),
   };
+  return { ...point, state: payload.state || state.currentServiceAddress?.state || '' };
+}
+
+function blockCheckoutOutsideArkansas(resultId = 'quoteResult') {
+  showArkansasOnlyPropertyBlock({ resultId, toast: { force: true } });
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
    CLOSE HANDLERS — lead request and manual quote panels
 ───────────────────────────────────────────────────────────────────────── */
 
-byId('closeleadRequestPanel')?.addEventListener('click', () => {
+checkoutBindOnce(byId('closeleadRequestPanel'), 'click', 'close-lead-request-panel', () => {
   byId('leadRequestPanel')?.classList.add('hidden');
   showQuoteFlowStep('estimate');
   updateQuoteStepper();
 });
 
-byId('closeManualQuotePanel')?.addEventListener('click', hideManualQuotePanel);
-byId('cancelManualQuotePanel')?.addEventListener('click', hideManualQuotePanel);
+checkoutBindOnce(byId('closeManualQuotePanel'), 'click', 'close-manual-quote-panel', hideManualQuotePanel);
+checkoutBindOnce(byId('cancelManualQuotePanel'), 'click', 'cancel-manual-quote-panel', hideManualQuotePanel);
 
 /* ─────────────────────────────────────────────────────────────────────────
    REQUEST SERVICE BTN — delegated click handler (survives DOM re-renders)
@@ -255,7 +404,7 @@ if (!window.__requestServiceDelegatedHandlerBound) {
   });
 }
 
-byId('manualQuoteBtn')?.addEventListener('click', async () => {
+checkoutBindOnce(byId('manualQuoteBtn'), 'click', 'manual-quote-button', async () => {
   const form = byId('quoteForm');
   if (!form) return;
   try {
@@ -283,7 +432,7 @@ byId('manualQuoteBtn')?.addEventListener('click', async () => {
    MANUAL QUOTE FORM submit
 ───────────────────────────────────────────────────────────────────────── */
 
-byId('manualQuoteForm')?.addEventListener('submit', async (e) => {
+checkoutBindOnce(byId('manualQuoteForm'), 'submit', 'manual-quote-form-submit', async (e) => {
   e.preventDefault();
   const btn = byId('manualQuoteSubmitBtn');
   const result = byId('manualQuoteResult');
@@ -291,6 +440,11 @@ byId('manualQuoteForm')?.addEventListener('submit', async (e) => {
 
   try {
     const payload = buildManualQuoteRequestPayload(e.target);
+    if (!isLngLatInArkansas(checkoutArkansasValidationPoint(payload))) {
+      blockCheckoutOutsideArkansas('manualQuoteResult');
+      return;
+    }
+
     const missing = [];
     if (!payload.name) missing.push('name');
     if (!isValidLookingPhone(payload.phone)) missing.push('phone');
@@ -299,20 +453,30 @@ byId('manualQuoteForm')?.addEventListener('submit', async (e) => {
       else showError(`Add ${missing.join(', ')} to request an in-person quote.`);
       return;
     }
+    if (!smsConsentAccepted(payload)) {
+      showSmsConsentRequiredError('manualQuoteResult', e.target);
+      return;
+    }
 
     if (btn) {
       btn.disabled = true;
       btn.textContent = 'Submitting...';
     }
 
+    const requestPayload = {
+      ...payload,
+      phone: checkoutPhoneForBackend(payload.phone),
+      customerPhone: checkoutPhoneForBackend(payload.customerPhone || payload.phone),
+    };
+
     const data = await api('/api/quotes', {
       method: 'POST',
-      body: JSON.stringify(payload),
+      body: JSON.stringify(requestPayload),
     });
 
     state.lastQuote = { ...payload, ...data.quote };
     state.pendingQuote = state.lastQuote;
-    rememberProfilePhoneIfBlank(payload.phone);
+    rememberProfilePhoneIfBlank(requestPayload.phone);
     if (result) {
       result.innerHTML = `<strong>Request sent.</strong><br>Quote ID: ${escapeHtml(data.quote?.id || '')}<br><span class="meta">No payment was started.</span>`;
       result.classList.remove('hidden');
@@ -337,20 +501,20 @@ byId('manualQuoteForm')?.addEventListener('submit', async (e) => {
    LEAD REQUEST FORM — public service request submission
 ───────────────────────────────────────────────────────────────────────── */
 
-byId('leadRequestForm')?.addEventListener('submit', async (e) => {
+checkoutBindOnce(byId('leadRequestForm'), 'submit', 'lead-request-form-submit', async (e) => {
   e.preventDefault();
   console.log('[Checkout Trace] button click fired');
   console.log('[Checkout Trace] leadRequestForm submit fired');
-  const btn = byId('leadSubmitBtn');
+  const isPayOnsite = e.submitter?.id === 'leadPayOnsiteBtn';
+  const btn = isPayOnsite ? byId('leadPayOnsiteBtn') : byId('leadSubmitBtn');
 
   try {
     const form = e.target;
     const currentServiceAddress = syncServiceAddressFields();
     const fd = new FormData(form);
     const payload = Object.fromEntries(fd.entries());
-    if (form.elements.customerPhone) form.elements.customerPhone.value = String(form.elements.customerPhone.value || '').trim();
-    payload.customerPhone = String(payload.customerPhone || '').trim();
-    payload.phone = payload.customerPhone;
+    applySmsConsentToPayload(payload, form);
+    Object.assign(payload, currentCheckoutContactAliases({ form, includeBlank: true, visibleOnly: false }));
     const requestAvailableDays = checkedValues('available_days_json', form);
 
     // Merge in the quote form address/service data from hidden fields
@@ -423,27 +587,38 @@ byId('leadRequestForm')?.addEventListener('submit', async (e) => {
     const bookingQuote = normalizeBookingContact({
       ...(state.pendingQuote || state.lastQuote || {}),
       ...payload,
+      ...currentCheckoutContactAliases({ form, includeBlank: true, visibleOnly: false }),
       estimate,
       final_price: estimate,
       scope_locked: true,
       standardMowScopeAck: true,
     });
 
-    console.log('[Checkout Trace] payload built', bookingQuote);
+    console.log('[Checkout Trace] payload built', {
+      serviceType: bookingQuote.serviceType,
+      hasPhone: Boolean(bookingQuote.phone || bookingQuote.customerPhone),
+      hasEmail: Boolean(bookingQuote.email || bookingQuote.customerEmail),
+      mowAreaSqft: Number(bookingQuote.mowAreaSqft || 0),
+      paymentMethod: isPayOnsite ? 'onsite_cash_check' : 'stripe'
+    });
     const missing = bookingContactMissing(bookingQuote);
     console.log('[Checkout Trace] bookingContactMissing result:', missing);
     if (missing.length) {
       if (missing.includes('phone')) showPhoneRequiredError('leadRequestResult');
-      else showError(`Add ${missing.join(', ')} to continue to secure checkout.`);
+      else showError(`Add ${missing.join(', ')} to ${isPayOnsite ? 'reserve and pay onsite' : 'continue to secure checkout'}.`);
+      return;
+    }
+    if (!smsConsentAccepted(bookingQuote)) {
+      showSmsConsentRequiredError('leadRequestResult', form);
       return;
     }
 
     // Validation passed — disable button now
-    if (btn) { btn.disabled = true; btn.textContent = 'Opening checkout...'; }
+    if (btn) { btn.disabled = true; btn.textContent = isPayOnsite ? 'Reserving...' : 'Opening checkout...'; }
 
     state.lastQuote = bookingQuote;
     state.pendingQuote = bookingQuote;
-    await bookQuoteAsJob(btn);
+    await bookQuoteAsJob(btn, { payOnsite: isPayOnsite });
 
   } catch (err) {
     const result = byId('leadRequestResult');
@@ -452,7 +627,7 @@ byId('leadRequestForm')?.addEventListener('submit', async (e) => {
       result.classList.remove('hidden');
     }
     showError(err.message);
-    if (btn) { btn.disabled = false; btn.textContent = 'Book & Pay Securely'; }
+    if (btn) { btn.disabled = false; btn.textContent = isPayOnsite ? 'Reserve & Pay Onsite' : 'Book & Pay Securely'; }
   }
 });
 
@@ -513,7 +688,620 @@ function trackPurchaseForCheckoutSuccess(session = {}, context = {}) {
   }
 }
 
-async function bookQuoteAsJob(explicitBtn) {
+function codVerificationJobId(checkout = {}) {
+  return checkout.job?.id
+    || checkout.jobId
+    || checkout.job_id
+    || checkout.id
+    || checkout.payment?.job_id
+    || checkout.payment?.jobId
+    || '';
+}
+
+function codVerificationPanelHtml(jobId) {
+  return `
+    <div class="cod-verification-panel stack" data-cod-verification-panel data-job-id="${escapeHtml(jobId || '')}" style="gap:10px">
+      <strong>Verify your phone</strong>
+      <p class="meta">${PHONE_VERIFICATION_CODE_SENT_MESSAGE}</p>
+      <label><span>Verification code</span>${checkoutOtpInputHtml('codVerificationCode')}</label>
+      <div class="checkout-action-bar" style="justify-content:flex-start">
+        <button class="btn primary small ui-icon-btn" type="button" data-confirm-cod-code>${checkoutUiIcon('circle-check', 'Verify')}</button>
+        <button class="btn secondary small ui-icon-btn" type="button" data-resend-cod-code>${checkoutUiIcon('refresh-cw', 'Resend code')}</button>
+      </div>
+      <p class="meta cod-verification-note">Your job is reserved but won’t be opened until the phone number is verified.</p>
+      <div class="meta" data-cod-verification-message></div>
+    </div>
+  `;
+}
+
+const PHONE_VERIFICATION_PURPOSE_COD = 'cod_checkout';
+const PHONE_VERIFICATION_UNAVAILABLE_MESSAGE = 'Phone verification is temporarily unavailable. Please try again shortly.';
+const checkoutPhoneVerificationState = {
+  phone: '',
+  purpose: PHONE_VERIFICATION_PURPOSE_COD,
+  verifiedAt: 0,
+  resendLockedUntil: 0,
+  pendingCodResume: false,
+  resumingCodBooking: false,
+  resumeButtonId: '',
+  resumeQuote: null,
+};
+
+function phoneVerificationErrorMessage(error) {
+  if (
+    error?.data?.code === 'PHONE_VERIFICATION_UNAVAILABLE'
+    || error?.status === 502
+    || error?.status === 503
+  ) {
+    return PHONE_VERIFICATION_UNAVAILABLE_MESSAGE;
+  }
+  return prettyApiError(error);
+}
+
+function checkoutPhoneVerificationPhone(value) {
+  return checkoutPhoneForBackend(value);
+}
+
+function checkoutPhoneVerificationMatches(value) {
+  const phone = checkoutPhoneVerificationPhone(value);
+  return Boolean(
+    phone
+    && checkoutPhoneVerificationState.phone === phone
+    && checkoutPhoneVerificationState.purpose === PHONE_VERIFICATION_PURPOSE_COD
+    && checkoutPhoneVerificationState.verifiedAt
+    && Date.now() - checkoutPhoneVerificationState.verifiedAt < 30 * 60 * 1000
+  );
+}
+
+function rememberPendingCodBookingResume(button) {
+  const quote = state.lastQuote || state.pendingQuote || null;
+  checkoutPhoneVerificationState.pendingCodResume = true;
+  checkoutPhoneVerificationState.resumingCodBooking = false;
+  checkoutPhoneVerificationState.resumeButtonId = button?.id || 'leadPayOnsiteBtn';
+  checkoutPhoneVerificationState.resumeQuote = quote ? { ...quote } : null;
+}
+
+function clearPendingCodBookingResume() {
+  checkoutPhoneVerificationState.pendingCodResume = false;
+  checkoutPhoneVerificationState.resumingCodBooking = false;
+  checkoutPhoneVerificationState.resumeButtonId = '';
+  checkoutPhoneVerificationState.resumeQuote = null;
+}
+
+async function resumePendingCodBookingAfterPhoneVerification() {
+  if (!checkoutPhoneVerificationState.pendingCodResume) return false;
+  if (checkoutPhoneVerificationState.resumingCodBooking) return true;
+
+  checkoutPhoneVerificationState.resumingCodBooking = true;
+  if (!state.lastQuote && checkoutPhoneVerificationState.resumeQuote) {
+    state.lastQuote = checkoutPhoneVerificationState.resumeQuote;
+  }
+  if (!state.pendingQuote && checkoutPhoneVerificationState.resumeQuote) {
+    state.pendingQuote = checkoutPhoneVerificationState.resumeQuote;
+  }
+
+  const btn = byId(checkoutPhoneVerificationState.resumeButtonId) || byId('leadPayOnsiteBtn');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Reserving...';
+  }
+
+  try {
+    await bookQuoteAsJob(btn, { payOnsite: true });
+    return true;
+  } finally {
+    clearPendingCodBookingResume();
+  }
+}
+
+function phoneVerificationPanelHtml(phone, message = '') {
+  return `
+    <div class="cod-verification-panel stack" data-phone-verification-panel data-phone="${escapeHtml(phone || '')}" style="gap:10px">
+      <strong>Verify your phone</strong>
+      <p class="meta">${escapeHtml(message || PHONE_VERIFICATION_CODE_SENT_MESSAGE)}</p>
+      <label><span>Verification code</span>${checkoutOtpInputHtml('phoneVerificationCode')}</label>
+      <div class="checkout-action-bar" style="justify-content:flex-start">
+        <button class="btn primary small ui-icon-btn" type="button" data-confirm-phone-code>${checkoutUiIcon('circle-check', 'Verify')}</button>
+        <button class="btn secondary small ui-icon-btn" type="button" data-resend-phone-code>${checkoutUiIcon('refresh-cw', 'Resend code')}</button>
+      </div>
+      <div class="meta" data-phone-verification-message>${escapeHtml(message || '')}</div>
+    </div>
+  `;
+}
+
+async function showPhoneVerificationPanelForCod(phone) {
+  const resultEl = byId('leadRequestResult');
+  const normalizedPhone = checkoutPhoneVerificationPhone(phone);
+  if (!resultEl || !normalizedPhone) return false;
+  resultEl.innerHTML = phoneVerificationPanelHtml(normalizedPhone, PHONE_VERIFICATION_CODE_SENT_MESSAGE);
+  resultEl.classList.remove('hidden');
+  checkoutRefreshMapPreview('phone-verification-panel-visible');
+  resultEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  const data = await api('/api/phone-verification/start', {
+    method: 'POST',
+    body: JSON.stringify({ phone: normalizedPhone, purpose: PHONE_VERIFICATION_PURPOSE_COD }),
+  });
+  const messageEl = resultEl.querySelector('[data-phone-verification-message]');
+  if (messageEl) messageEl.textContent = data.message || PHONE_VERIFICATION_CODE_SENT_MESSAGE;
+  checkoutPhoneVerificationState.phone = normalizedPhone;
+  checkoutPhoneVerificationState.purpose = PHONE_VERIFICATION_PURPOSE_COD;
+  checkoutPhoneVerificationState.verifiedAt = 0;
+  checkoutPhoneVerificationState.resendLockedUntil = Date.now() + 60 * 1000;
+  const codeInput = resultEl.querySelector('input[name="phoneVerificationCode"]');
+  codeInput?.focus();
+  checkoutScrollFieldIntoView(codeInput, { delay: 160 });
+  return true;
+}
+
+function checkoutIsMobileViewport() {
+  return window.matchMedia?.('(max-width: 640px)').matches || window.innerWidth <= 640;
+}
+
+function checkoutScrollFieldIntoView(field, options = {}) {
+  if (!field || !field.isConnected || !checkoutIsMobileViewport()) return;
+  if (!field.closest?.('#leadRequestForm, [data-cod-verification-panel], [data-phone-verification-panel]')) return;
+  const delay = Number.isFinite(options.delay) ? options.delay : 90;
+  window.setTimeout(() => {
+    if (!field.isConnected || !checkoutIsMobileViewport()) return;
+    field.scrollIntoView({
+      behavior: options.behavior || 'smooth',
+      block: 'center',
+      inline: 'nearest',
+    });
+  }, delay);
+}
+
+function showCodVerificationPanel(checkout = {}) {
+  const resultEl = byId('leadRequestResult');
+  if (!resultEl) return;
+  const jobId = codVerificationJobId(checkout);
+  resultEl.innerHTML = codVerificationPanelHtml(jobId);
+  resultEl.classList.remove('hidden');
+  checkoutRefreshMapPreview('cod-verification-panel-visible');
+  resultEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  const codeInput = resultEl.querySelector('input[name="codVerificationCode"]');
+  codeInput?.focus();
+  checkoutScrollFieldIntoView(codeInput, { delay: 160 });
+}
+
+function checkoutHideFlowForCodSuccess() {
+  $$('[data-quote-step-panel]').forEach((panel) => {
+    panel.classList.remove('is-active');
+    panel.classList.add('is-hidden', 'hidden');
+    panel.hidden = true;
+    panel.setAttribute('aria-hidden', 'true');
+  });
+  ['leadRequestPanel', 'manualQuotePanel'].forEach((id) => {
+    const panel = byId(id);
+    if (!panel) return;
+    panel.classList.add('hidden');
+    panel.hidden = true;
+    panel.setAttribute('aria-hidden', 'true');
+  });
+  byId('liveBidPanel')?.classList.add('hidden');
+  ['accountRecommendPanel', 'checkoutCancelPanel'].forEach((id) => {
+    const panel = byId(id);
+    if (!panel) return;
+    panel.classList.add('hidden');
+    panel.style.display = 'none';
+  });
+  const stepper = byId('quoteStepper');
+  if (stepper) stepper.style.display = 'none';
+  const leadResult = byId('leadRequestResult');
+  if (leadResult) {
+    leadResult.innerHTML = '';
+    leadResult.classList.add('hidden');
+  }
+}
+
+function hideCodSuccessPanel() {
+  const successPanel = byId('checkoutSuccessPanel');
+  if (successPanel) {
+    successPanel.style.display = 'none';
+    successPanel.classList.add('hidden');
+  }
+  const stepper = byId('quoteStepper');
+  if (stepper) stepper.style.display = '';
+}
+
+function checkoutRestoreQuoteFlowStart() {
+  const stepper = byId('quoteStepper');
+  if (stepper) stepper.style.display = '';
+  hideCodSuccessPanel();
+  if (typeof setServiceFlow === 'function') setServiceFlow('instant_mow');
+  checkoutUseAppView('quote');
+  checkoutUseQuoteStep('property', { scroll: true });
+}
+
+async function renderCodVerifiedSuccess(response = {}, options = {}) {
+  const isLoggedIn = typeof hasActiveSession === 'function' && hasActiveSession();
+  const job = response.job || {};
+  const jobId = options.jobId || response.jobId || response.job_id || job.id || '';
+  const successPanel = byId('checkoutSuccessPanel');
+
+  if (!successPanel) {
+    if (options.allowReloadFallback !== false) window.location.href = '/?cod_verified=1';
+    return false;
+  }
+
+  checkoutUseAppView('quote');
+  checkoutHideFlowForCodSuccess();
+
+  successPanel.hidden = false;
+  successPanel.style.display = '';
+  successPanel.classList.remove('hidden');
+  successPanel.setAttribute('aria-hidden', 'false');
+  successPanel.innerHTML = `
+    <div class="panel-head">
+      <div>
+        <h2>Job confirmed</h2>
+        <p class="section-copy" style="margin:0">Your onsite-payment job is confirmed.</p>
+      </div>
+    </div>
+    <div style="padding:4px 0">
+      <div class="estimate-card" style="margin:0">
+        <div class="estimate-head">
+          <div>
+            <span class="pill">Onsite payment confirmed</span>
+            <h3>Your onsite-payment job is confirmed.</h3>
+            <p>We'll review the details and contact you if anything else is needed.</p>
+          </div>
+        </div>
+        <div class="final-review" style="margin-top:12px">
+          <h4>${isLoggedIn ? 'Track this job from your account' : 'Create an account to track this job'}</h4>
+          <p class="meta">${isLoggedIn
+            ? 'Open your jobs list to see this booking and future updates.'
+            : 'Create or sign in to an account so you can track this job and manage future bookings.'}</p>
+          ${jobId ? `<p class="meta">Booking ID: <strong>${escapeHtml(jobId)}</strong></p>` : ''}
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
+          ${isLoggedIn
+            ? `<button class="btn primary small ui-icon-btn" type="button" data-cod-success-action="jobs">${checkoutUiIcon('clipboard-check', 'View My Jobs')}</button>`
+            : `<button class="btn primary small ui-icon-btn" type="button" data-cod-success-action="account">${checkoutUiIcon('user', 'Create account to track this job')}</button>
+               <button class="btn secondary small ui-icon-btn" type="button" data-cod-success-action="home">${checkoutUiIcon('home', 'Continue as guest')}</button>`}
+          <button class="btn ghost small ui-icon-btn" type="button" data-cod-success-action="another">${checkoutUiIcon('calculator', 'Get another quote')}</button>
+          <button class="btn ghost small ui-icon-btn" type="button" data-cod-success-action="home">${checkoutUiIcon('home', 'Back to home')}</button>
+        </div>
+      </div>
+    </div>`;
+
+  successPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  showSuccess(response.message || 'Your onsite-payment job is confirmed.');
+
+  if (isLoggedIn && typeof loadMyJobs === 'function') {
+    await loadMyJobs().catch(() => {});
+  }
+  clearCheckoutPii({ reason: 'completed-cod-checkout', clearAddress: true });
+  return true;
+}
+
+function handleCodSuccessAction(action) {
+  if (action === 'jobs') {
+    hideCodSuccessPanel();
+    if (typeof showAccountPanel === 'function') {
+      showAccountPanel('jobs');
+      return;
+    }
+    if (typeof checkoutUseAppView === 'function') checkoutUseAppView('jobs');
+    return;
+  }
+  if (action === 'account') {
+    if (typeof toggleAuthPanel === 'function') {
+      toggleAuthPanel(true);
+      return;
+    }
+    byId('openAuth')?.click();
+    return;
+  }
+  if (action === 'another') {
+    clearCheckoutPii({ reason: 'cod-start-another', clearAddress: true });
+    checkoutRestoreQuoteFlowStart();
+    return;
+  }
+  if (action === 'home') {
+    clearCheckoutPii({ reason: 'cod-home', clearAddress: true });
+    hideCodSuccessPanel();
+    checkoutUseAppView('dashboard');
+  }
+}
+
+function isCheckoutAccountContactConflict(error) {
+  return error?.status === 409 || error?.data?.code === 'ACCOUNT_CONTACT_CONFLICT';
+}
+
+function checkoutContactInputSelectors(field) {
+  return field === 'phone'
+    ? [
+        '#leadRequestForm [name="customerPhone"]',
+        '#leadRequestForm [name="phone"]',
+        '#manualQuoteForm [name="phone"]',
+        '#quoteForm [name="customerPhone"]',
+        '#quoteForm [name="phone"]',
+      ]
+    : [
+        '#leadRequestForm [name="customerEmail"]',
+        '#leadRequestForm [name="email"]',
+        '#manualQuoteForm [name="email"]',
+        '#quoteForm [name="customerEmail"]',
+        '#quoteForm [name="email"]',
+      ];
+}
+
+function checkoutInputVisible(input) {
+  return Boolean(input && input.type !== 'hidden' && (input.offsetWidth || input.offsetHeight || input.getClientRects().length));
+}
+
+function findCheckoutContactInput(field, options = {}) {
+  const selectors = checkoutContactInputSelectors(field);
+  const roots = options.form ? [options.form] : [];
+  roots.push(document);
+
+  for (const root of roots) {
+    const candidates = selectors.flatMap((selector) => Array.from(root.querySelectorAll?.(selector) || []));
+    const input = options.visibleOnly
+      ? candidates.find((candidate) => checkoutInputVisible(candidate))
+      : candidates[0];
+    if (input) return input;
+  }
+  return null;
+}
+
+function currentCheckoutContactAliases(options = {}) {
+  const includeBlank = Boolean(options.includeBlank);
+  const visibleOnly = options.visibleOnly !== false && !options.form;
+  const emailInput = findCheckoutContactInput('email', { form: options.form, visibleOnly });
+  const phoneInput = findCheckoutContactInput('phone', { form: options.form, visibleOnly });
+  const contact = {};
+
+  if (emailInput) {
+    const email = String(emailInput.value || '').trim().toLowerCase();
+    emailInput.value = email;
+    if (includeBlank || email) {
+      contact.email = email;
+      contact.customerEmail = email;
+    }
+  }
+
+  if (phoneInput) {
+    const phone = typeof normalizeUsPhoneInput === 'function'
+      ? normalizeUsPhoneInput(phoneInput)
+      : String(phoneInput.value || '').trim();
+    phoneInput.value = phone;
+    if (includeBlank || phone) {
+      contact.phone = phone;
+      contact.customerPhone = phone;
+    }
+  }
+
+  return contact;
+}
+
+function checkoutConflictField(error) {
+  const field = error?.data?.field || error?.field || '';
+  return field === 'phone' ? 'phone' : 'email';
+}
+
+function focusCheckoutConflictField(field) {
+  document.querySelectorAll('[data-checkout-contact-conflict="true"]').forEach((input) => {
+    input.removeAttribute('aria-invalid');
+    input.style.borderColor = '';
+    input.removeAttribute('data-checkout-contact-conflict');
+  });
+
+  const input = findCheckoutContactInput(field, { visibleOnly: true }) || findCheckoutContactInput(field);
+  if (!input) return;
+  input.setAttribute('aria-invalid', 'true');
+  input.setAttribute('data-checkout-contact-conflict', 'true');
+  input.style.borderColor = 'var(--danger, #b91c1c)';
+  input.focus?.();
+}
+
+function openCheckoutConflictSignIn() {
+  if (typeof toggleAuthPanel === 'function') {
+    toggleAuthPanel(true);
+    return;
+  }
+  byId('openAuth')?.click();
+}
+
+function showCheckoutAccountContactConflict(error) {
+  const message = prettyApiError(error);
+  const field = checkoutConflictField(error);
+  const resultEl = byId('leadRequestResult');
+  if (resultEl) {
+    resultEl.innerHTML = `<strong>Sign in needed.</strong><br>${escapeHtml(message)} <button type="button" class="link-btn" data-checkout-conflict-signin>Sign in</button>`;
+    resultEl.dataset.checkoutContactConflict = 'true';
+    resultEl.classList.remove('hidden');
+    resultEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    checkoutBindOnce(resultEl.querySelector('[data-checkout-conflict-signin]'), 'click', 'checkout-conflict-signin', openCheckoutConflictSignIn);
+  }
+  showResult('quoteResult', `<strong>Sign in needed:</strong> ${escapeHtml(message)}`);
+  showError(message);
+  focusCheckoutConflictField(field);
+}
+
+function clearCheckoutContactConflict() {
+  document.querySelectorAll('[data-checkout-contact-conflict="true"]').forEach((input) => {
+    input.removeAttribute('aria-invalid');
+    input.style.borderColor = '';
+    input.removeAttribute('data-checkout-contact-conflict');
+  });
+
+  const resultEl = byId('leadRequestResult');
+  if (resultEl?.dataset.checkoutContactConflict === 'true') {
+    resultEl.innerHTML = '';
+    resultEl.classList.add('hidden');
+    delete resultEl.dataset.checkoutContactConflict;
+  }
+
+  const submitBtn = byId('leadSubmitBtn');
+  if (submitBtn) {
+    submitBtn.disabled = false;
+    submitBtn.textContent = 'Book & Pay Securely';
+  }
+  const payOnsiteBtn = byId('leadPayOnsiteBtn');
+  if (payOnsiteBtn) {
+    payOnsiteBtn.disabled = false;
+    payOnsiteBtn.textContent = 'Reserve & Pay Onsite';
+  }
+}
+
+checkoutBindOnce(document, 'input', 'checkout-contact-conflict-clear-input', (event) => {
+  const target = event.target;
+  const autocomplete = String(target?.getAttribute?.('autocomplete') || '').toLowerCase();
+  const name = String(target?.getAttribute?.('name') || '').toLowerCase();
+  const id = String(target?.getAttribute?.('id') || '').toLowerCase();
+  if (target?.hasAttribute?.('data-otp') || autocomplete.includes('one-time-code') || name.includes('code') || id.includes('code')) {
+    const digits = checkoutVerificationCodeValue(target);
+    if (target.value !== digits) target.value = digits;
+    return;
+  }
+  if (!event.target?.matches?.('input[name="customerEmail"], input[name="email"], input[name="customerPhone"], input[name="phone"]')) return;
+  if (!event.target.closest?.('#leadRequestForm, #manualQuoteForm, #quoteForm')) return;
+  if (event.target.matches('input[name="customerPhone"], input[name="phone"]')) {
+    checkoutPhoneVerificationState.verifiedAt = 0;
+    clearPendingCodBookingResume();
+  }
+  clearCheckoutContactConflict();
+});
+
+checkoutBindOnce(document, 'change', 'checkout-contact-conflict-clear-change', (event) => {
+  const target = event.target;
+  const autocomplete = String(target?.getAttribute?.('autocomplete') || '').toLowerCase();
+  const name = String(target?.getAttribute?.('name') || '').toLowerCase();
+  const id = String(target?.getAttribute?.('id') || '').toLowerCase();
+  if (target?.hasAttribute?.('data-otp') || autocomplete.includes('one-time-code') || name.includes('code') || id.includes('code')) return;
+  if (!event.target?.matches?.('input[name="customerEmail"], input[name="email"], input[name="customerPhone"], input[name="phone"]')) return;
+  if (!event.target.closest?.('#leadRequestForm, #manualQuoteForm, #quoteForm')) return;
+  if (event.target.matches('input[name="customerPhone"], input[name="phone"]')) {
+    checkoutPhoneVerificationState.verifiedAt = 0;
+    clearPendingCodBookingResume();
+  }
+  clearCheckoutContactConflict();
+});
+
+document.addEventListener('turflynk:auth-identity-change', (event) => {
+  const reason = event.detail?.reason || 'account-switch';
+  clearCheckoutPii({ reason, clearAddress: true });
+});
+
+checkoutBindOnce(document, 'focusin', 'checkout-scroll-focused-field', (event) => {
+  const field = event.target;
+  if (!field?.matches?.('input, select, textarea')) return;
+  checkoutScrollFieldIntoView(field);
+});
+
+checkoutBindOnce(document, 'click', 'checkout-cod-success-actions', (event) => {
+  const button = event.target.closest?.('[data-cod-success-action]');
+  if (!button) return;
+  event.preventDefault();
+  handleCodSuccessAction(button.dataset.codSuccessAction || '');
+});
+
+checkoutBindOnce(document, 'click', 'checkout-phone-verification-actions', async (event) => {
+  const confirmPhoneBtn = event.target.closest('[data-confirm-phone-code]');
+  const resendPhoneBtn = event.target.closest('[data-resend-phone-code]');
+  if (!confirmPhoneBtn && !resendPhoneBtn) return;
+
+  const panel = event.target.closest('[data-phone-verification-panel]');
+  const phone = panel?.dataset?.phone || checkoutPhoneVerificationState.phone || '';
+  const messageEl = panel?.querySelector('[data-phone-verification-message]');
+  if (!panel || !phone) return;
+
+  try {
+    if (confirmPhoneBtn) {
+      const code = checkoutVerificationCodeValue(panel.querySelector('input[name="phoneVerificationCode"]'));
+      if (!/^\d{4,10}$/.test(code)) {
+        if (messageEl) messageEl.textContent = 'Enter the code from your text message.';
+        return;
+      }
+      confirmPhoneBtn.disabled = true;
+      const data = await api('/api/phone-verification/check', {
+        method: 'POST',
+        body: JSON.stringify({ phone, code, purpose: PHONE_VERIFICATION_PURPOSE_COD }),
+      });
+      checkoutPhoneVerificationState.phone = checkoutPhoneVerificationPhone(phone);
+      checkoutPhoneVerificationState.purpose = PHONE_VERIFICATION_PURPOSE_COD;
+      checkoutPhoneVerificationState.verifiedAt = Date.now();
+      if (messageEl) messageEl.textContent = 'Phone verified. Reserving your onsite-payment job...';
+      showSuccess(data.message || 'Phone verified');
+      const resumed = await resumePendingCodBookingAfterPhoneVerification();
+      if (!resumed) {
+        if (messageEl) messageEl.textContent = 'Phone verified. Select Reserve & Pay Onsite to continue.';
+        byId('leadPayOnsiteBtn')?.focus();
+      }
+      return;
+    }
+
+    if (Date.now() < Number(checkoutPhoneVerificationState.resendLockedUntil || 0)) {
+      if (messageEl) messageEl.textContent = 'Please wait before requesting another code.';
+      return;
+    }
+    resendPhoneBtn.disabled = true;
+    const data = await api('/api/phone-verification/start', {
+      method: 'POST',
+      body: JSON.stringify({ phone, purpose: PHONE_VERIFICATION_PURPOSE_COD }),
+    });
+    checkoutPhoneVerificationState.resendLockedUntil = Date.now() + 60 * 1000;
+    if (messageEl) messageEl.textContent = data.message || PHONE_VERIFICATION_CODE_SENT_MESSAGE;
+    showSuccess(data.message || PHONE_VERIFICATION_CODE_SENT_MESSAGE);
+  } catch (error) {
+    const unavailable = error?.data?.code === 'PHONE_VERIFICATION_UNAVAILABLE' || error?.status === 502 || error?.status === 503;
+    const message = confirmPhoneBtn && !unavailable
+      ? 'We could not verify that code. Please try again.'
+      : phoneVerificationErrorMessage(error);
+    if (messageEl) messageEl.textContent = message;
+    showError(message);
+  } finally {
+    if (confirmPhoneBtn) confirmPhoneBtn.disabled = false;
+    if (resendPhoneBtn) setTimeout(() => { resendPhoneBtn.disabled = false; }, 1000);
+  }
+});
+
+checkoutBindOnce(document, 'click', 'checkout-cod-verification-actions', async (event) => {
+  const confirmBtn = event.target.closest('[data-confirm-cod-code]');
+  const resendBtn = event.target.closest('[data-resend-cod-code]');
+  if (!confirmBtn && !resendBtn) return;
+
+  const panel = event.target.closest('[data-cod-verification-panel]');
+  const jobId = panel?.dataset?.jobId || '';
+  const messageEl = panel?.querySelector('[data-cod-verification-message]');
+  if (!panel || !jobId) return;
+
+  try {
+    if (confirmBtn) {
+      const code = checkoutVerificationCodeValue(panel.querySelector('input[name="codVerificationCode"]'));
+      if (!/^\d{6}$/.test(code)) {
+        if (messageEl) messageEl.textContent = 'Enter the 6-digit code from your text message.';
+        return;
+      }
+      confirmBtn.disabled = true;
+      const data = await api(`/api/jobs/${encodeURIComponent(jobId)}/verify-cod`, {
+        method: 'POST',
+        body: JSON.stringify({ code }),
+      });
+      await renderCodVerifiedSuccess(data, { jobId });
+      return;
+    }
+
+    resendBtn.disabled = true;
+    const data = await api(`/api/jobs/${encodeURIComponent(jobId)}/resend-cod-code`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+    if (messageEl) messageEl.textContent = data.message || 'A new verification code was sent.';
+    showSuccess(data.message || 'A new verification code was sent.');
+  } catch (error) {
+    const message = phoneVerificationErrorMessage(error);
+    if (messageEl) messageEl.textContent = message;
+    showError(message);
+  } finally {
+    if (confirmBtn) confirmBtn.disabled = false;
+    if (resendBtn) setTimeout(() => { resendBtn.disabled = false; }, 1000);
+  }
+});
+
+async function bookQuoteAsJob(explicitBtn, options = {}) {
   if (!state.lastQuote && state.pendingQuote) {
     state.lastQuote = state.pendingQuote;
   }
@@ -524,11 +1312,22 @@ async function bookQuoteAsJob(explicitBtn) {
   }
 
   const btn = explicitBtn || byId('bookJobBtn') || byId('leadSubmitBtn') || byId('requestServiceBtn');
-  const originalText = btn?.id === 'leadSubmitBtn' ? 'Book & Pay Securely' : (btn?.textContent || 'Book & Pay Securely');
+  const payOnsite = Boolean(options.payOnsite);
+  const originalText = payOnsite
+    ? 'Reserve & Pay Onsite'
+    : btn?.id === 'leadSubmitBtn' ? 'Book & Pay Securely' : (btn?.textContent || 'Book & Pay Securely');
   console.log('[MowNWA Checkout Debug] bookQuoteAsJob start | btn=' + (btn?.id || 'none'));
 
   try {
-    const q = normalizeBookingContact(state.lastQuote);
+    const q = normalizeBookingContact({
+      ...state.lastQuote,
+      ...currentCheckoutContactAliases(),
+    });
+    if (!isLngLatInArkansas(checkoutArkansasValidationPoint(q))) {
+      blockCheckoutOutsideArkansas('leadRequestResult');
+      return;
+    }
+
     const missing = bookingContactMissing(q);
     if (missing.length) {
       showBookingContactPanel(q);
@@ -540,13 +1339,38 @@ async function bookQuoteAsJob(explicitBtn) {
       if (btn) { btn.disabled = false; btn.textContent = originalText; }
       return;
     }
+    if (!smsConsentAccepted(q)) {
+      showBookingContactPanel(q);
+      showSmsConsentRequiredError('leadRequestResult', byId('leadRequestForm'));
+      if (btn) { btn.disabled = false; btn.textContent = originalText; }
+      return;
+    }
+    if (payOnsite && !checkoutPhoneVerificationMatches(q.phone || q.customerPhone || '')) {
+      if (btn) { btn.disabled = false; btn.textContent = originalText; }
+      rememberPendingCodBookingResume(btn);
+      try {
+        await showPhoneVerificationPanelForCod(q.phone || q.customerPhone || '');
+        showSuccess(PHONE_VERIFICATION_CODE_SENT_MESSAGE);
+      } catch (error) {
+        clearPendingCodBookingResume();
+        const resultEl = byId('leadRequestResult');
+        const message = phoneVerificationErrorMessage(error);
+        if (resultEl) {
+          resultEl.innerHTML = `<strong>Could not send verification code:</strong> ${escapeHtml(message)}`;
+          resultEl.classList.remove('hidden');
+        }
+        showError(message);
+      }
+      return;
+    }
 
-    if (btn) { btn.disabled = true; btn.textContent = 'Opening checkout...'; }
+    if (btn) { btn.disabled = true; btn.textContent = payOnsite ? 'Reserving...' : 'Opening checkout...'; }
 
     const svcLabel = q.serviceType
       ? String(q.serviceType).replace(/_/g, ' ').replace(/\b\w/g, (m) => m.toUpperCase())
       : 'Mowing';
     const currentScopeFields = currentJobScopeSnapshotFields();
+    const backendPhone = checkoutPhoneForBackend(q.phone || q.customerPhone || '');
 
     const detailParts = [
       q.notes ? `Notes: ${q.notes}` : '',
@@ -573,10 +1397,10 @@ async function bookQuoteAsJob(explicitBtn) {
     const payload = {
       title: `${svcLabel} — ${q.address || 'Property'}`,
       customerName: q.customerName || q.name || '',
-      customerPhone: q.customerPhone || q.phone || '',
-      customerEmail: q.customerEmail || q.email || '',
+      customerPhone: backendPhone,
+      customerEmail: q.email || q.customerEmail || '',
       name: q.name || q.customerName || '',
-      phone: q.phone || q.customerPhone || '',
+      phone: backendPhone,
       email: q.email || q.customerEmail || '',
       address: q.address || '',
       city: q.city || '',
@@ -589,6 +1413,9 @@ async function bookQuoteAsJob(explicitBtn) {
       details: detailParts,
       photos: [],
       quote_id: q.id || q.quote_id || null,
+      parcelId: q.parcelId || currentScopeFields.parcelId || '',
+      parcelLabel: q.parcelLabel || currentScopeFields.parcelLabel || '',
+      addressLabel: q.addressLabel || currentScopeFields.addressLabel || '',
 
       // Critical for server-side Stripe pricing.
       // The checkout route recalculates from mowAreaSqft/settings and must not receive zero area.
@@ -597,7 +1424,12 @@ async function bookQuoteAsJob(explicitBtn) {
       areaSqft: Number(q.mowAreaSqft || 0),
 
       final_price: Number(q.estimate || 0),
-      payment_status: 'checkout_pending',
+      payment_status: payOnsite ? 'onsite_pending' : 'checkout_pending',
+      payment_method: payOnsite ? 'onsite_cash_check' : 'stripe',
+      smsConsent: true,
+      sms_consent: true,
+      smsConsentText: SMS_CONSENT_TEXT,
+      sms_consent_text: SMS_CONSENT_TEXT,
       scope_locked: true,
       included_tasks_json: INCLUDED_MOW_TASKS,
       excluded_tasks_json: EXCLUDED_MOW_TASKS,
@@ -612,23 +1444,75 @@ async function bookQuoteAsJob(explicitBtn) {
     const checkoutBody = {
       quote_id: q.id || q.quote_id || '',
       serviceType: q.serviceType || 'mowing',
+      email: q.email || '',
+      customerEmail: q.email || '',
+      phone: backendPhone,
+      customerPhone: backendPhone,
       estimate: Number(q.estimate || 0),
       final_price: Number(q.estimate || 0),
       mowAreaSqft: Number(q.mowAreaSqft || 0),
       lotAreaSqft: Number(q.lotAreaSqft || 0),
+      smsConsent: true,
+      sms_consent: true,
+      smsConsentText: SMS_CONSENT_TEXT,
+      sms_consent_text: SMS_CONSENT_TEXT,
       job: payload,
     };
-    console.log('[Checkout Trace] calling checkout endpoint');
-    console.log('[Checkout Trace] payload to /api/checkout/instant-mow | mowAreaSqft=' + checkoutBody.mowAreaSqft + ' estimate=' + checkoutBody.estimate);
-    trackInitiateCheckoutForQuote(checkoutBody);
-    const checkout = await api('/api/checkout/instant-mow', {
+    const checkoutEndpoint = payOnsite ? '/api/checkout/pay-onsite' : '/api/checkout/instant-mow';
+    console.log('[Checkout Trace] calling checkout endpoint', checkoutEndpoint);
+    console.log('[Checkout Trace] payload to checkout endpoint | mowAreaSqft=' + checkoutBody.mowAreaSqft + ' estimate=' + checkoutBody.estimate);
+    if (!payOnsite) trackInitiateCheckoutForQuote(checkoutBody);
+    const checkout = await api(checkoutEndpoint, {
       method: 'POST',
       body: JSON.stringify(checkoutBody),
     });
-    rememberProfilePhoneIfBlank(q.phone || q.customerPhone);
+    rememberProfilePhoneIfBlank(backendPhone);
     console.log('[Checkout Trace] checkout response status', checkout.ok);
-    console.log('[Checkout Trace] checkout response body', checkout);
+    console.log('[Checkout Trace] checkout response body', {
+      ok: checkout.ok,
+      jobId: codVerificationJobId(checkout),
+      paymentStatus: checkout.paymentStatus || '',
+      paymentMethod: checkout.paymentMethod || '',
+      hasCheckoutUrl: Boolean(checkout.checkoutUrl || checkout.url),
+      verificationRequired: Boolean(checkout.verification_required || checkout.verificationRequired)
+    });
     const stripeUrl = checkout.checkoutUrl || checkout.url;
+    if (payOnsite && checkout.ok) {
+      payload.payment_status = checkout.paymentStatus || 'onsite_pending';
+      payload.payment_method = checkout.paymentMethod || 'onsite_cash_check';
+      state.lastQuote = { ...payload, ...checkout.job };
+      state.pendingQuote = state.lastQuote;
+      if (checkout.verification_required || checkout.verificationRequired) {
+        showCodVerificationPanel(checkout);
+        showSuccess('Verification code sent');
+        if (btn) { btn.disabled = false; btn.textContent = originalText; }
+        if (hasActiveSession() && typeof loadMyJobs === 'function') {
+          loadMyJobs().catch(() => {});
+        }
+        return;
+      } else {
+        const rendered = await renderCodVerifiedSuccess(checkout, {
+          jobId: codVerificationJobId(checkout),
+          allowReloadFallback: false,
+        });
+        if (rendered) {
+          if (btn) { btn.disabled = false; btn.textContent = originalText; }
+          return;
+        }
+        const resultEl = byId('leadRequestResult');
+        if (resultEl) {
+          resultEl.innerHTML = `<strong>Reserved.</strong> Cash or check will be collected at time of service.<br><span class="meta">Booking ID: ${escapeHtml(codVerificationJobId(checkout))}</span>`;
+          resultEl.classList.remove('hidden');
+        }
+        showSuccess('Reserved - pay onsite');
+      }
+      if (btn) { btn.disabled = false; btn.textContent = originalText; }
+      if (hasActiveSession() && typeof showAccountPanel === 'function') {
+        await loadMyJobs().catch(() => {});
+        showAccountPanel('jobs');
+      }
+      return;
+    }
     if (stripeUrl) {
       console.log('[Checkout Trace] redirecting to Stripe', stripeUrl);
       if (btn) { btn.disabled = false; btn.textContent = btn.id === 'leadSubmitBtn' ? 'Book & Pay Securely' : (btn.textContent || 'Book & Pay Securely'); }
@@ -667,7 +1551,7 @@ async function bookQuoteAsJob(explicitBtn) {
         state: q.state || 'AR',
         zip: q.zip || '',
         customerName: q.name || '',
-        customerPhone: q.phone || '',
+        customerPhone: backendPhone,
         customerEmail: q.email || '',
         notes: state.pendingExtraBid.notes || '',
         preferredTiming: state.pendingExtraBid.preferredTiming || 'flexible',
@@ -690,8 +1574,8 @@ async function bookQuoteAsJob(explicitBtn) {
        Service area: ${escapeHtml(sanitizeJobForPublic(data.job).location)}<br>
        Price: <strong>${money(data.job.budget)}</strong><br>
        Status: <span class="status-badge ${escapeHtml(data.job.status)}">${escapeHtml(data.job.status)}</span>${extraBidMessage}<br><br>
-       <button class="btn secondary small" type="button"
-         onclick="showAccountPanel('jobs')">View My Bookings &rarr;</button>`
+       <button class="btn secondary small ui-icon-btn" type="button"
+         onclick="showAccountPanel('jobs')">${checkoutUiIcon('clipboard-check', 'View My Bookings')}</button>`
     );
 
     await loadMyJobs();
@@ -699,6 +1583,11 @@ async function bookQuoteAsJob(explicitBtn) {
   } catch (error) {
     const errMsg = prettyApiError(error);
     console.log('[Checkout Trace] checkout error', error.message);
+    if (isCheckoutAccountContactConflict(error)) {
+      showCheckoutAccountContactConflict(error);
+      if (btn) { btn.disabled = false; btn.textContent = originalText; }
+      return;
+    }
     const resultEl = byId('leadRequestResult');
     if (resultEl) {
       resultEl.innerHTML = `<strong>Booking failed:</strong> ${escapeHtml(errMsg)}`;
@@ -719,6 +1608,15 @@ function showAccountRecommend(checkoutUrl, estimate) {
   const panel = byId('accountRecommendPanel');
   const estimateEl = byId('accountRecommendEstimate');
   if (estimateEl && estimate > 0) estimateEl.textContent = money(estimate);
+  const quote = state.lastQuote || state.pendingQuote || {};
+  const registerForm = byId('accountRecommendRegisterForm');
+  if (registerForm) {
+    if (registerForm.elements.fullName && quote.name && !registerForm.elements.fullName.value) registerForm.elements.fullName.value = quote.name;
+    if (registerForm.elements.email && quote.email && !registerForm.elements.email.value) registerForm.elements.email.value = quote.email;
+    if (registerForm.elements.phone && (quote.phone || quote.customerPhone) && !registerForm.elements.phone.value) {
+      checkoutSetVisiblePhone(registerForm.elements.phone, quote.phone || quote.customerPhone);
+    }
+  }
   // Hide other panels
   byId('leadRequestPanel')?.classList.add('hidden');
   byId('checkoutSuccessPanel')?.classList.add('hidden');
@@ -741,6 +1639,7 @@ function proceedToCheckout() {
   state.pendingCheckoutUrl = null;
   hideAccountRecommend();
   if (url) {
+    window.turflynkCanvasDiagnostics?.('checkout open');
     trackInitiateCheckoutForQuote({
       estimate: pending.estimate || pending.final_price || pending.budget,
     });
@@ -748,7 +1647,7 @@ function proceedToCheckout() {
   }
 }
 
-byId('accountRecommendGuestBtn')?.addEventListener('click', () => {
+checkoutBindOnce(byId('accountRecommendGuestBtn'), 'click', 'account-recommend-guest', () => {
   if (state.pendingCheckoutResume) {
     showError('Please log in or create an account to continue to payment.');
     return;
@@ -756,31 +1655,59 @@ byId('accountRecommendGuestBtn')?.addEventListener('click', () => {
   proceedToCheckout();
 });
 
-byId('accountRecommendCreateBtn')?.addEventListener('click', () => {
+checkoutBindOnce(byId('accountRecommendCreateBtn'), 'click', 'account-recommend-create', () => {
   const authForm = byId('accountRecommendAuthForm');
   if (authForm) authForm.classList.toggle('hidden');
 });
 
-byId('accountRecommendLoginToggle')?.addEventListener('click', () => {
+checkoutBindOnce(byId('accountRecommendLoginToggle'), 'click', 'account-recommend-login-toggle', () => {
   byId('accountRecommendRegisterForm')?.classList.add('hidden');
   byId('accountRecommendLoginForm')?.classList.remove('hidden');
 });
 
-byId('accountRecommendRegisterToggle')?.addEventListener('click', () => {
+checkoutBindOnce(byId('accountRecommendRegisterToggle'), 'click', 'account-recommend-register-toggle', () => {
   byId('accountRecommendLoginForm')?.classList.add('hidden');
   byId('accountRecommendRegisterForm')?.classList.remove('hidden');
 });
 
-byId('accountRecommendRegisterForm')?.addEventListener('submit', async (e) => {
+function clearAccountRecommendSignupError(form) {
+  form?.querySelectorAll('[aria-invalid="true"]').forEach((input) => {
+    input.removeAttribute('aria-invalid');
+    input.style.borderColor = '';
+  });
+}
+
+function showAccountRecommendSignupError(form, error, result) {
+  const payload = error?.data || {};
+  const message = prettyApiError(error);
+  if (result) {
+    result.innerHTML = `<strong>Could not create account:</strong> ${escapeHtml(message)} <button type="button" class="link-btn" data-account-signin-instead>Sign in instead</button>`;
+    result.classList.remove('hidden');
+    checkoutBindOnce(result.querySelector('[data-account-signin-instead]'), 'click', 'account-signin-instead', () => {
+      byId('accountRecommendRegisterForm')?.classList.add('hidden');
+      byId('accountRecommendLoginForm')?.classList.remove('hidden');
+    });
+  }
+  const field = payload.field && form?.elements?.[payload.field];
+  if (field) {
+    field.setAttribute('aria-invalid', 'true');
+    field.style.borderColor = 'var(--danger, #b91c1c)';
+    field.focus();
+  }
+}
+
+checkoutBindOnce(byId('accountRecommendRegisterForm'), 'submit', 'account-recommend-register-submit', async (e) => {
   e.preventDefault();
+  clearAccountRecommendSignupError(e.target);
   const btn = byId('accountRecommendRegisterBtn');
   const result = byId('accountRecommendAuthResult');
   if (btn) { btn.disabled = true; btn.textContent = 'Creating account...'; }
+  if (result) { result.classList.add('hidden'); result.textContent = ''; }
   try {
     const fd = new FormData(e.target);
     const data = await api('/api/auth/register', {
       method: 'POST',
-      body: JSON.stringify({ fullName: fd.get('fullName'), email: fd.get('email'), password: fd.get('password') }),
+      body: JSON.stringify({ fullName: fd.get('fullName'), email: fd.get('email'), phone: checkoutPhoneForBackend(fd.get('phone')), password: fd.get('password') }),
     });
     window.trackMetaEvent?.('CompleteRegistration', {
       content_name: 'Customer Account Created',
@@ -802,15 +1729,12 @@ byId('accountRecommendRegisterForm')?.addEventListener('submit', async (e) => {
       proceedToCheckout();
     }
   } catch (err) {
-    if (result) {
-      result.innerHTML = `<strong>Could not create account:</strong> ${escapeHtml(prettyApiError(err))}`;
-      result.classList.remove('hidden');
-    }
+    showAccountRecommendSignupError(e.target, err, result);
     if (btn) { btn.disabled = false; btn.textContent = 'Create Account & Proceed to Checkout'; }
   }
 });
 
-byId('accountRecommendLoginForm')?.addEventListener('submit', async (e) => {
+checkoutBindOnce(byId('accountRecommendLoginForm'), 'submit', 'account-recommend-login-submit', async (e) => {
   e.preventDefault();
   const btn = byId('accountRecommendLoginBtn');
   const result = byId('accountRecommendAuthResult');
@@ -845,6 +1769,174 @@ byId('accountRecommendLoginForm')?.addEventListener('submit', async (e) => {
    CHECKOUT RETURN — success / cancel UI helpers
 ───────────────────────────────────────────────────────────────────────── */
 
+function isCheckoutCancelSignal(params = new URLSearchParams(window.location.search)) {
+  const checkout = String(params.get('checkout') || '').toLowerCase();
+  const canceled = String(params.get('canceled') || params.get('cancelled') || '').toLowerCase();
+  return ['cancel', 'canceled', 'cancelled'].includes(checkout)
+    || ['1', 'true', 'yes', 'cancel', 'canceled', 'cancelled'].includes(canceled)
+    || params.has('checkout_canceled')
+    || params.has('checkout_cancelled')
+    || params.has('payment_canceled')
+    || params.has('payment_cancelled');
+}
+
+function checkoutHasSavedQuoteState() {
+  const quote = state.lastQuote || state.pendingQuote || state.currentEstimate?.payload || null;
+  if (quote && Object.keys(quote).length) return true;
+  const draft = typeof loadQuoteDraft === 'function' ? loadQuoteDraft() : null;
+  if (draft && Object.keys(draft).some((key) => String(draft[key] || '').trim())) return true;
+  const form = byId('quoteForm');
+  if (!form) return false;
+  return ['address', 'city', 'zip', 'lat', 'lng', 'mowAreaSqft', 'lotAreaSqft'].some((name) => {
+    return String(form.elements?.[name]?.value || '').trim();
+  });
+}
+
+function checkoutManualSetActiveView(view) {
+  state.activeView = view;
+  document.body.dataset.activeView = view;
+  $$('[data-view-panel]').forEach((panel) => {
+    const visible = panel.dataset.viewPanel === view;
+    panel.classList.toggle('active', visible);
+    panel.style.display = visible ? '' : 'none';
+  });
+  $$('[data-view]').forEach((btn) => {
+    const active = btn.dataset.view === view;
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-current', active ? 'page' : 'false');
+  });
+}
+
+function checkoutManualShowQuoteStep(step) {
+  const nextStep = ['property', 'draw', 'estimate', 'request'].includes(step) ? step : 'property';
+  state.quoteFlowStep = nextStep;
+  document.body.dataset.quoteFlowStep = nextStep;
+  $$('[data-quote-step-panel]').forEach((panel) => {
+    const active = panel.dataset.quoteStepPanel === nextStep;
+    panel.classList.toggle('is-active', active);
+    panel.classList.toggle('is-hidden', !active);
+    panel.classList.toggle('hidden', !active);
+    panel.hidden = !active;
+    panel.setAttribute('aria-hidden', active ? 'false' : 'true');
+  });
+  if (typeof updateQuoteStepper === 'function') updateQuoteStepper();
+}
+
+function checkoutHideQuoteStepsForCancel() {
+  $$('[data-quote-step-panel]').forEach((panel) => {
+    panel.classList.remove('is-active');
+    panel.classList.add('is-hidden', 'hidden');
+    panel.hidden = true;
+    panel.setAttribute('aria-hidden', 'true');
+  });
+  byId('leadRequestPanel')?.classList.add('hidden');
+  byId('manualQuotePanel')?.classList.add('hidden');
+  byId('accountRecommendPanel')?.classList.add('hidden');
+}
+
+function checkoutUseAppView(view) {
+  if (typeof setActiveView === 'function') {
+    try {
+      setActiveView(view);
+      return true;
+    } catch (error) {
+      console.warn('[Checkout Cancel] setActiveView fallback:', error.message);
+    }
+  }
+  checkoutManualSetActiveView(view);
+  return false;
+}
+
+function checkoutUseQuoteStep(step, options = {}) {
+  if (typeof showQuoteFlowStep === 'function') {
+    try {
+      showQuoteFlowStep(step, options);
+      return true;
+    } catch (error) {
+      console.warn('[Checkout Cancel] showQuoteFlowStep fallback:', error.message);
+    }
+  }
+  checkoutManualShowQuoteStep(step);
+  if (options.scroll !== false) {
+    document.querySelector(`[data-quote-step-panel="${state.quoteFlowStep}"]`)
+      ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+  return false;
+}
+
+function hideCheckoutCancelPanel() {
+  const cancelPanel = byId('checkoutCancelPanel');
+  if (!cancelPanel) return;
+  cancelPanel.style.display = 'none';
+  cancelPanel.classList.add('hidden');
+}
+
+function renderCheckoutCancel() {
+  checkoutUseAppView('quote');
+  checkoutHideQuoteStepsForCancel();
+  const successPanel = byId('checkoutSuccessPanel');
+  const cancelPanel = byId('checkoutCancelPanel');
+  if (successPanel) { successPanel.style.display = 'none'; successPanel.classList.add('hidden'); }
+  if (!cancelPanel) return false;
+
+  cancelPanel.style.display = '';
+  cancelPanel.classList.remove('hidden');
+  const contentEl = byId('checkoutCancelContent');
+  if (contentEl) {
+    contentEl.innerHTML = `<p><strong>Payment was canceled.</strong> No charge was made. You can return to your quote, start over, or open your jobs/account.</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
+        <button class="btn primary ui-icon-btn" type="button" data-checkout-cancel-action="return-quote">${checkoutUiIcon('calculator', 'Return to Quote')}</button>
+        <button class="btn ghost ui-icon-btn" type="button" data-checkout-cancel-action="start-over">${checkoutUiIcon('rotate-ccw', 'Start Over')}</button>
+        <button class="btn secondary ui-icon-btn" type="button" data-checkout-cancel-action="account-jobs">${checkoutUiIcon('clipboard-check', 'My Jobs / Account')}</button>
+      </div>`;
+  }
+  cancelPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  return true;
+}
+
+function handleCheckoutCancelAction(action) {
+  if (action === 'return-quote') {
+    hideCheckoutCancelPanel();
+    checkoutUseAppView('quote');
+    checkoutUseQuoteStep(checkoutHasSavedQuoteState() ? 'estimate' : 'property');
+    return;
+  }
+  if (action === 'start-over') {
+    hideCheckoutCancelPanel();
+    clearCheckoutPii({ reason: 'checkout-cancel-start-over', clearAddress: true });
+    checkoutUseAppView('quote');
+    checkoutUseQuoteStep('property');
+    return;
+  }
+  if (action === 'account-jobs') {
+    if (typeof showAccountPanel === 'function') {
+      showAccountPanel('jobs');
+      return;
+    }
+    if (typeof toggleAuthPanel === 'function' && !(typeof hasActiveSession === 'function' && hasActiveSession())) {
+      toggleAuthPanel(true);
+      return;
+    }
+    window.location.href = '/';
+  }
+}
+
+function bindCheckoutCancelActions() {
+  if (window.__checkoutCancelActionsBound) return;
+  window.__checkoutCancelActionsBound = true;
+  document.addEventListener('click', (event) => {
+    const button = event.target.closest?.('[data-checkout-cancel-action]');
+    if (!button) return;
+    event.preventDefault();
+    handleCheckoutCancelAction(button.dataset.checkoutCancelAction || '');
+  });
+}
+
+function renderCheckoutCancelFromUrlEarly() {
+  if (!isCheckoutCancelSignal()) return;
+  renderCheckoutCancel();
+}
+
 async function handleCheckoutReturn() {
   const params = new URLSearchParams(window.location.search);
   const returnUrl = window.location.href;
@@ -852,16 +1944,26 @@ async function handleCheckoutReturn() {
   const sessionId = params.get('session_id');
   const jobId = params.get('job_id');
   const successFlag = params.get('success') || params.get('payment');
+  const codVerifiedFlag = String(params.get('cod_verified') || '').toLowerCase();
 
   // Detect any payment-return signal
-  const isCancel = checkout === 'cancel';
+  const isCancel = isCheckoutCancelSignal(params);
   const isSuccess = checkout === 'success' || Boolean(sessionId)
     || successFlag === 'true' || successFlag === 'success';
+  const isCodVerified = ['1', 'true', 'yes', 'success'].includes(codVerifiedFlag);
 
-  if (!isSuccess && !isCancel) return false;
+  if (!isSuccess && !isCancel && !isCodVerified) return false;
 
   // Clear URL params early so refresh doesn't re-trigger
   window.history.replaceState({}, '', window.location.pathname);
+
+  if (isCodVerified && !isSuccess && !isCancel) {
+    await renderCodVerifiedSuccess(
+      { message: 'Your onsite-payment job is confirmed.' },
+      { jobId: params.get('job_id') || '', allowReloadFallback: false }
+    );
+    return true;
+  }
 
   if (isSuccess) {
     let successSession = null;
@@ -872,6 +1974,7 @@ async function handleCheckoutReturn() {
       } catch {}
     }
     trackPurchaseForCheckoutSuccess(successSession, { sessionId, jobId, fallbackUrl: returnUrl });
+    clearCheckoutPii({ reason: 'completed-checkout', clearAddress: true });
 
     const isLoggedIn = hasActiveSession();
     const successPanel = byId('checkoutSuccessPanel');
@@ -911,25 +2014,7 @@ async function handleCheckoutReturn() {
     return true;
   }
 
-  // checkout === 'cancel': return to quote so user can re-book
-  setActiveView('quote');
-  showQuoteFlowStep('estimate');
-  const successPanel = byId('checkoutSuccessPanel');
-  const cancelPanel = byId('checkoutCancelPanel');
-  if (successPanel) { successPanel.style.display = 'none'; successPanel.classList.add('hidden'); }
-  if (cancelPanel) {
-    cancelPanel.style.display = '';
-    cancelPanel.classList.remove('hidden');
-    const contentEl = byId('checkoutCancelContent');
-    if (contentEl) {
-      contentEl.innerHTML = `<p>Your card was not charged. You can return to the quote and book when ready.</p>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
-          <button class="btn primary" type="button" onclick="showQuoteFlowStep('estimate')">Return to Quote</button>
-          <button class="btn ghost" type="button" onclick="setActiveView('quote')">Start Over</button>
-        </div>`;
-    }
-    cancelPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  }
+  renderCheckoutCancel();
   showWarning('Checkout canceled. Your card was not charged.');
   return true;
 }
@@ -947,8 +2032,8 @@ function _showGuestPostPaymentContent() {
     <div style="padding:4px 0">
       <p class="meta" style="margin-top:12px">Create an account to track your job, get updates, and manage bookings.</p>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
-        <button class="btn primary small" type="button" id="postPayGuestCreateBtn">Create Account</button>
-        <button class="btn ghost small" type="button" onclick="setActiveView('dashboard')">Continue as Guest / Return Home</button>
+        <button class="btn primary small ui-icon-btn" type="button" id="postPayGuestCreateBtn">${checkoutUiIcon('user', 'Create Account')}</button>
+        <button class="btn ghost small ui-icon-btn" type="button" onclick="setActiveView('dashboard')">${checkoutUiIcon('home', 'Continue as Guest / Return Home')}</button>
       </div>
     </div>`;
   byId('postPayGuestCreateBtn')?.addEventListener('click', () => { byId('openAuth')?.click(); });
@@ -1011,20 +2096,20 @@ function renderCheckoutSuccess(session) {
             ? `This booking is linked to ${escapeHtml(setupEmail)}. Log in to manage your jobs.`
             : `We'll review your access details and schedule your mow. You'll be contacted to confirm the appointment.`}</p>
         ${canSetPassword ? `
-          <button class="btn primary small" type="button" id="successCreateAccountBtn">Create Account / Set Password</button>
+          <button class="btn primary small ui-icon-btn" type="button" id="successCreateAccountBtn">${checkoutUiIcon('user', 'Create Account / Set Password')}</button>
           <form id="successSetPasswordForm" class="stack hidden" style="gap:10px;margin-top:12px">
             <input type="hidden" name="token" value="${escapeHtml(accountSetup.token)}" />
             <label><span>Password</span><input name="password" type="password" autocomplete="new-password" required minlength="8" /></label>
             <label><span>Confirm Password</span><input name="confirmPassword" type="password" autocomplete="new-password" required minlength="8" /></label>
-            <button class="btn primary" type="submit" id="successSetPasswordSubmitBtn">Set Password</button>
+            <button class="btn primary ui-icon-btn" type="submit" id="successSetPasswordSubmitBtn">${checkoutUiIcon('shield', 'Set Password')}</button>
             <div id="successSetPasswordResult" class="result hidden"></div>
           </form>
         ` : ''}
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
-        ${hasActiveSession() ? `<button class="btn secondary small" type="button" onclick="showAccountPanel('jobs')">View My Bookings</button>` : ''}
-        ${isGuest && !canSetPassword ? `<button class="btn secondary small" type="button" id="successCreateAccountBtn">Log In / Create Account</button>` : ''}
-        <button class="btn ghost small" type="button" onclick="setActiveView('quote')">Return Home</button>
+        ${hasActiveSession() ? `<button class="btn secondary small ui-icon-btn" type="button" onclick="showAccountPanel('jobs')">${checkoutUiIcon('clipboard-check', 'View My Bookings')}</button>` : ''}
+        ${isGuest && !canSetPassword ? `<button class="btn secondary small ui-icon-btn" type="button" id="successCreateAccountBtn">${checkoutUiIcon('user', 'Log In / Create Account')}</button>` : ''}
+        <button class="btn ghost small ui-icon-btn" type="button" onclick="setActiveView('quote')">${checkoutUiIcon('home', 'Return Home')}</button>
       </div>
     </div>`;
 
@@ -1096,7 +2181,7 @@ function isValidLookingPhone(value) {
 }
 
 function bookingPhoneValue(payload = {}) {
-  return String(payload.phone || payload.customerPhone || '').trim();
+  return String(payload.customerPhone || payload.phone || '').trim();
 }
 
 function focusBookingPhoneField() {
@@ -1106,6 +2191,41 @@ function focusBookingPhoneField() {
     || byId('quoteForm')?.elements?.phone
     || null;
   phoneField?.focus?.();
+}
+
+function smsConsentAccepted(payload = {}) {
+  return payload.smsConsent === true
+    || payload.sms_consent === true
+    || String(payload.smsConsent || '').toLowerCase() === 'true'
+    || String(payload.sms_consent || '').toLowerCase() === 'true';
+}
+
+function applySmsConsentToPayload(payload = {}, form) {
+  const checked = Boolean(form?.elements?.smsConsent?.checked);
+  payload.smsConsent = checked;
+  payload.sms_consent = checked;
+  payload.smsConsentText = SMS_CONSENT_TEXT;
+  payload.sms_consent_text = SMS_CONSENT_TEXT;
+  return payload;
+}
+
+function focusSmsConsentField(form) {
+  const field = form?.elements?.smsConsent
+    || byId('leadRequestForm')?.elements?.smsConsent
+    || byId('manualQuoteForm')?.elements?.smsConsent
+    || byId('liveBidForm')?.elements?.smsConsent
+    || null;
+  field?.focus?.();
+}
+
+function showSmsConsentRequiredError(resultId = 'leadRequestResult', form) {
+  const result = byId(resultId);
+  if (result) {
+    result.innerHTML = `<strong>SMS consent required.</strong><br>${escapeHtml(SMS_CONSENT_REQUIRED_MESSAGE)}`;
+    result.classList.remove('hidden');
+  }
+  showError(SMS_CONSENT_REQUIRED_MESSAGE);
+  focusSmsConsentField(form);
 }
 
 function showPhoneRequiredError(resultId = 'leadRequestResult') {
@@ -1156,15 +2276,16 @@ function bookingContactMissing(payload = {}) {
 function normalizeBookingContact(payload = {}) {
   const serviceAddress = getCurrentServiceAddress(payload);
   const phone = bookingPhoneValue(payload);
+  const email = String(payload.customerEmail || payload.email || '').trim().toLowerCase();
   return {
     ...payload,
     ...(hasServiceAddress(serviceAddress) ? serviceAddress : {}),
     name: payload.name || payload.customerName || '',
     phone,
-    email: payload.email || payload.customerEmail || '',
+    email,
     customerName: payload.customerName || payload.name || '',
     customerPhone: phone,
-    customerEmail: payload.customerEmail || payload.email || '',
+    customerEmail: email,
   };
 }
 
@@ -1184,7 +2305,7 @@ function showQuoteContactRequest(missing) {
   showResult(
     'quoteResult',
     `<strong>Almost there.</strong><br>Add your ${escapeHtml(missing.join(', '))}, then accept the quote.<br><br>
-     <button class="btn primary" type="button" id="acceptQuoteBtn">Book &amp; Pay Securely</button>`
+     <button class="btn primary ui-icon-btn" type="button" id="acceptQuoteBtn">${checkoutUiIcon('credit-card', 'Book & Pay Securely')}</button>`
   );
 
   byId('acceptQuoteBtn')?.addEventListener('click', acceptPendingQuote);
@@ -1254,6 +2375,10 @@ async function uploadPhotoInput(input) {
 }
 
 async function submitBidRequest(payload, resultId = 'liveBidResult') {
+  if (!smsConsentAccepted(payload)) {
+    showSmsConsentRequiredError(resultId, byId('liveBidForm'));
+    throw new Error(SMS_CONSENT_REQUIRED_MESSAGE);
+  }
   const res = await fetch('/api/bid-requests', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1274,6 +2399,9 @@ async function submitBidRequest(payload, resultId = 'liveBidResult') {
    WINDOW EXPORTS — functions called from app.js or other modules
 ───────────────────────────────────────────────────────────────────────── */
 
+bindCheckoutCancelActions();
+renderCheckoutCancelFromUrlEarly();
+
 window.showLeadRequestPanel = showLeadRequestPanel;
 window.showManualQuotePanel = showManualQuotePanel;
 window.hideManualQuotePanel = hideManualQuotePanel;
@@ -1283,13 +2411,20 @@ window.hideAccountRecommend = hideAccountRecommend;
 window.proceedToCheckout = proceedToCheckout;
 window.bookQuoteAsJob = bookQuoteAsJob;
 window.handleCheckoutReturn = handleCheckoutReturn;
+window.renderCheckoutCancel = renderCheckoutCancel;
 window.renderCheckoutSuccess = renderCheckoutSuccess;
 window.submitSuccessSetPassword = submitSuccessSetPassword;
+window.clearCheckoutPii = clearCheckoutPii;
+window.checkoutPhoneForBackend = checkoutPhoneForBackend;
+window.checkoutPhoneForDisplay = checkoutPhoneForDisplay;
 // phone / contact / bid helpers (moved from app.js Phase 13c)
 window.phoneDigits = phoneDigits;
 window.isValidLookingPhone = isValidLookingPhone;
 window.bookingPhoneValue = bookingPhoneValue;
 window.focusBookingPhoneField = focusBookingPhoneField;
+window.smsConsentAccepted = smsConsentAccepted;
+window.applySmsConsentToPayload = applySmsConsentToPayload;
+window.showSmsConsentRequiredError = showSmsConsentRequiredError;
 window.showPhoneRequiredError = showPhoneRequiredError;
 window.quoteContactMissing = quoteContactMissing;
 window.bookingAccessNotesRequired = bookingAccessNotesRequired;

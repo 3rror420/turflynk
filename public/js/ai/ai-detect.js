@@ -66,6 +66,13 @@ async function aiDetectGrassDraft() {
     );
     return;
   }
+  const validationPoint = aiGeoJsonCenter({ type: 'Feature', properties: {}, geometry: geoJsonGeometry }) || aiQuoteFormLatLng();
+  const validationState = byId('quoteForm')?.elements?.state?.value || state.currentServiceAddress?.state || '';
+  if (!isLngLatInArkansas({ ...validationPoint, state: validationState })) {
+    showResult('parcelInfo', `<strong>${escapeHtml(ARKANSAS_ONLY_MESSAGE)}</strong>`);
+    showArkansasOnlyWarning({ force: true });
+    return;
+  }
 
   if (!window.TurfLynkAiGrass || typeof window.TurfLynkAiGrass.detectGrass !== 'function') {
     showResult(
@@ -140,10 +147,65 @@ function normalizeAiParcelGeoJson(value, properties = {}) {
   return cloneGeoJson({ type: 'FeatureCollection', features });
 }
 
+function aiGeoJsonCenter(value) {
+  const feature = validPolygonalFeaturesFromValue(value)[0];
+  if (!feature?.geometry) return null;
+  if (typeof turf !== 'undefined' && typeof turf.centroid === 'function') {
+    try {
+      const centroid = turf.centroid(feature);
+      const coords = centroid?.geometry?.coordinates;
+      if (Array.isArray(coords) && Number.isFinite(Number(coords[0])) && Number.isFinite(Number(coords[1]))) {
+        return { lng: Number(coords[0]), lat: Number(coords[1]) };
+      }
+    } catch (error) {
+      console.debug('[AI Detect] could not compute turf parcel center', error);
+    }
+  }
+
+  const pairs = [];
+  const collectPairs = (coords) => {
+    if (!Array.isArray(coords)) return;
+    if (coords.length >= 2 && Number.isFinite(Number(coords[0])) && Number.isFinite(Number(coords[1]))) {
+      pairs.push([Number(coords[0]), Number(coords[1])]);
+      return;
+    }
+    coords.forEach(collectPairs);
+  };
+  collectPairs(feature.geometry.coordinates);
+  if (!pairs.length) return null;
+  const bounds = pairs.reduce((acc, pair) => ({
+    minLng: Math.min(acc.minLng, pair[0]),
+    maxLng: Math.max(acc.maxLng, pair[0]),
+    minLat: Math.min(acc.minLat, pair[1]),
+    maxLat: Math.max(acc.maxLat, pair[1]),
+  }), { minLng: Infinity, maxLng: -Infinity, minLat: Infinity, maxLat: -Infinity });
+  if (!Number.isFinite(bounds.minLng) || !Number.isFinite(bounds.minLat)) return null;
+  return {
+    lng: (bounds.minLng + bounds.maxLng) / 2,
+    lat: (bounds.minLat + bounds.maxLat) / 2,
+  };
+}
+
+function aiQuoteFormLatLng() {
+  const form = byId('quoteForm');
+  const lat = Number(form?.elements?.lat?.value || 0);
+  const lng = Number(form?.elements?.lng?.value || 0);
+  return Number.isFinite(lat) && Number.isFinite(lng) && lat && lng ? { lat, lng } : null;
+}
+
 function currentAiParcelGeoJson() {
-  const parcelProps = state.selectedParcelProperties || state.parcelProperties || state.parcelFeature?.properties || {};
+  const parcelProps = state.confirmedParcelProperties
+    || state.currentParcelProperties
+    || state.selectedParcelProperties
+    || state.parcelProperties
+    || state.parcelFeature?.properties
+    || {};
   const candidateGetters = [
+    () => (state.parcelSelectMode ? state.pendingParcelPreviewFeature : null),
+    () => state.confirmedParcel,
+    () => window.confirmedParcel,
     () => state.currentParcelGeoJSONData,
+    () => state.currentParcel,
     () => state.selectedParcelGeoJson,
     () => state.selectedParcelGeoJSON,
     () => state.parcelGeoJson,
@@ -153,6 +215,7 @@ function currentAiParcelGeoJson() {
     () => state.parcelLayer,
     () => state.selectedParcel,
     () => window.currentParcelGeoJSONData,
+    () => window.currentParcel,
     () => window.selectedParcelGeoJson,
     () => window.selectedParcelGeoJSON,
     () => window.parcelGeoJson,
@@ -266,6 +329,20 @@ async function aiDetectMowableArea() {
     return;
   }
 
+  if (state.parcelSelectMode) {
+    if (state.pendingParcelFeature && typeof confirmParcelSelection === 'function') {
+      try {
+        await confirmParcelSelection({ nextStep: 'draw' });
+        if (state.pendingParcelFeature) return;
+      } catch (error) {
+        showError('Parcel selection failed: ' + prettyApiError(error));
+        return;
+      }
+    } else if (typeof exitParcelSelectMode === 'function') {
+      exitParcelSelectMode();
+    }
+  }
+
   const parcelGeoJson = currentAiParcelGeoJson();
   if (!parcelGeoJson) {
     const msg = 'Select a parcel first, then run AI Detect.';
@@ -282,8 +359,24 @@ async function aiDetectMowableArea() {
     console.debug('[AI Detect] mode:', 'full-parcel');
   }
 
-  const center = map.getCenter?.();
   const form = byId('quoteForm');
+  const mapCenter = map.getCenter?.();
+  const parcelCenter = aiGeoJsonCenter(parcelGeoJson);
+  const formPoint = aiQuoteFormLatLng();
+  const center = parcelCenter || (mapCenter ? {
+    lng: Number(mapCenter.lng ?? mapCenter[0]),
+    lat: Number(mapCenter.lat ?? mapCenter[1]),
+  } : null);
+  const validationPoint = parcelCenter || formPoint || center;
+  const validationState = form?.elements?.state?.value || state.currentServiceAddress?.state || '';
+  if (!isLngLatInArkansas({ ...validationPoint, state: validationState })) {
+    showResult('parcelInfo', `<strong>${escapeHtml(ARKANSAS_ONLY_MESSAGE)}</strong>`);
+    showArkansasOnlyWarning({ force: true });
+    updateQuoteFlowState();
+    return;
+  }
+
+  const metadataPoint = formPoint || center;
   const parcelFeature = validPolygonalFeaturesFromValue(state.parcelFeature)[0]
     || validPolygonalFeaturesFromValue(parcelGeoJson)[0]
     || null;
@@ -294,8 +387,8 @@ async function aiDetectMowableArea() {
       lng: Number(center.lng ?? center[0]),
       lat: Number(center.lat ?? center[1]),
     } : null,
-    lng: center ? Number(center.lng ?? center[0]) : null,
-    lat: center ? Number(center.lat ?? center[1]) : null,
+    lng: metadataPoint ? Number(metadataPoint.lng ?? metadataPoint[0]) : null,
+    lat: metadataPoint ? Number(metadataPoint.lat ?? metadataPoint[1]) : null,
     zoom: Number(map.getZoom?.() || 0) || null,
     address: form ? [form.elements.address?.value, form.elements.city?.value, form.elements.state?.value, form.elements.zip?.value].filter(Boolean).join(', ') : '',
     source: 'maplibre',
@@ -526,8 +619,21 @@ function applyAiCutouts() {
 }
 
 // Event listeners — wired here; app.js no longer registers these
-byId('aiDetectPrimaryBtn')?.addEventListener('click', aiDetectMowableArea);
-byId('aiDetectMowableBtn')?.addEventListener('click', aiDetectMowableArea);
-byId('aiRefineMowableBtn')?.addEventListener('click', aiRefineMowableArea);
-byId('applyAiCutoutsBtn')?.addEventListener('click', applyAiCutouts);
-byId('editAiCutoutsBtn')?.addEventListener('click', startEditAiCutouts);
+function bindAiDetectOnce(id, key, handler) {
+  const target = byId(id);
+  if (!target) return;
+  if (typeof bindTurfLynkOnce === 'function') {
+    bindTurfLynkOnce(target, 'click', key, handler);
+    return;
+  }
+  const registry = target.__turflynkAiListenerKeys || (target.__turflynkAiListenerKeys = new Set());
+  if (registry.has(key)) return;
+  registry.add(key);
+  target.addEventListener('click', handler);
+}
+
+bindAiDetectOnce('aiDetectPrimaryBtn', 'ai-detect-primary', aiDetectMowableArea);
+bindAiDetectOnce('aiDetectMowableBtn', 'ai-detect-mowable', aiDetectMowableArea);
+bindAiDetectOnce('aiRefineMowableBtn', 'ai-refine-mowable', aiRefineMowableArea);
+bindAiDetectOnce('applyAiCutoutsBtn', 'apply-ai-cutouts', applyAiCutouts);
+bindAiDetectOnce('editAiCutoutsBtn', 'edit-ai-cutouts', startEditAiCutouts);

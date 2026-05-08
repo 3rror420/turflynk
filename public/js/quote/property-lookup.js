@@ -20,7 +20,67 @@
 //   scheduleEstimateRefresh, saveQuoteDraft, formToObject,
 //   prettyApiError, hydrateLiveBidForm, resetParcelQuoteStateForNewAddress
 
+const QUOTE_FLOW_PARCEL_LOOKUP_TIMEOUT_MS = 6500;
+const QUOTE_FLOW_PARCEL_LOOKUP_REUSE_MS = 8000;
+let activeParcelLookupRequest = null;
+let lastParcelLookupRequest = null;
+let lookupInFlight = null;
+
+function propertyQuoteFlowDebugEnabled() {
+  try {
+    return Boolean(window.DEBUG_QUOTE_FLOW)
+      || localStorage.getItem('DEBUG_QUOTE_FLOW') === '1'
+      || localStorage.getItem('DEBUG_QUOTE_FLOW') === 'true';
+  } catch {
+    return false;
+  }
+}
+
+function quoteFlowTrace(label, data = {}) {
+  if (!propertyQuoteFlowDebugEnabled()) return;
+  console.log(`[QuoteFlow] ${label}`, {
+    step: document.body?.dataset?.quoteFlowStep || state.quoteFlowStep || '',
+    ...data,
+  });
+}
+
+function quoteFlowTimeStart(label, data = {}) {
+  if (!propertyQuoteFlowDebugEnabled()) return '';
+  const timerLabel = `[QuoteFlow] ${label} ${Date.now()}`;
+  console.time(timerLabel);
+  quoteFlowTrace(`${label}:start`, data);
+  return timerLabel;
+}
+
+function quoteFlowTimeEnd(timerLabel, label, data = {}) {
+  if (!propertyQuoteFlowDebugEnabled() || !timerLabel) return;
+  quoteFlowTrace(`${label}:end`, data);
+  console.timeEnd(timerLabel);
+}
+
+function setAddressLookupLoading(isLoading, message = '') {
+  const btn = byId('locateAddressBtn');
+  if (btn) {
+    if (isLoading) {
+      btn.dataset.originalHtml = btn.innerHTML || '';
+      btn.disabled = true;
+      btn.innerHTML = `<img src="/assets/icons/lucide/search.svg" alt="" class="ui-icon"><span class="ui-label">${escapeHtml(message || 'Finding property...')}</span>`;
+    } else {
+      btn.disabled = false;
+      if (btn.dataset.originalHtml) btn.innerHTML = btn.dataset.originalHtml;
+      else btn.textContent = 'Find Property';
+      delete btn.dataset.originalHtml;
+    }
+  }
+}
+
+function normalizeParcelLookupError(error) {
+  if (error?.name === 'AbortError') return new Error('Parcel lookup timed out.');
+  return error;
+}
+
 async function geocodeAddress() {
+  const timer = quoteFlowTimeStart('address geocode');
   const form = byId('quoteForm');
   if (!form) return;
 
@@ -31,22 +91,32 @@ async function geocodeAddress() {
 
   if (!q.trim()) {
     showPropertyConfirmationPanel(true);
-    return showResult('parcelInfo', '<strong>Enter an address first.</strong>');
+    showResult('parcelInfo', '<strong>Enter an address first.</strong>');
+    return false;
   }
 
-  const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&countrycodes=us&q=${encodeURIComponent(q)}`;
+  const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&countrycodes=us&addressdetails=1&q=${encodeURIComponent(q)}`;
   const res = await fetch(url, { headers: { Accept: 'application/json' } });
   const data = await res.json();
 
   if (!Array.isArray(data) || !data.length) {
     showPropertyConfirmationPanel(true);
-    return showResult(
+    showResult(
       'parcelInfo',
       '<strong>Address not found.</strong> Try adding city/state or use autocomplete.'
     );
+    return false;
   }
 
   const { lat, lon } = data[0];
+  const point = { lat: Number(lat), lng: Number(lon) };
+  const resultState = String(data[0]?.address?.state_code || data[0]?.address?.state || '').trim().toLowerCase();
+  if (!isLngLatInArkansas({ ...point, state: resultState })) {
+    showArkansasOnlyPropertyBlock({ toast: { force: true } });
+    quoteFlowTimeEnd(timer, 'address geocode', { blocked: 'outside-arkansas', lat: point.lat, lng: point.lng });
+    return false;
+  }
+
   setCurrentServiceAddress(getQuoteFormServiceAddress(), 'typed-address');
   setLatLng(lat, lon);
   placeMarker(lat, lon);
@@ -55,6 +125,8 @@ async function geocodeAddress() {
     'parcelInfo',
     `<strong>Address located.</strong><br />Lat: ${Number(lat).toFixed(6)} · Lng: ${Number(lon).toFixed(6)}`
   );
+  quoteFlowTimeEnd(timer, 'address geocode', { lat: Number(lat), lng: Number(lon) });
+  return true;
 }
 
 function addressPartsFromGoogleComponents(components = []) {
@@ -156,6 +228,28 @@ async function fillMissingServiceAddressFromReverseGeocode(address, point = {}) 
   return merged;
 }
 
+function fillMissingServiceAddressFromReverseGeocodeLater(address, point = {}) {
+  const current = normalizeServiceAddressParts(address || {});
+  if (current.city && current.zip) return;
+  setTimeout(async () => {
+    const timer = quoteFlowTimeStart('reverse geocode fallback', point);
+    try {
+      const merged = await fillMissingServiceAddressFromReverseGeocode(current, point);
+      if (!hasServiceAddress(merged)) return;
+      setCurrentServiceAddress(merged, 'reverse-geocode-background', {
+        syncQuoteForm: true,
+        clearQuoteFormMissing: true,
+        replace: false,
+      });
+      saveQuoteDraft();
+    } catch (error) {
+      console.warn('[Reverse Geocode Background Failed]', error);
+    } finally {
+      quoteFlowTimeEnd(timer, 'reverse geocode fallback');
+    }
+  }, 0);
+}
+
 function parcelLookupPointFromGeometry(geometry = null) {
   const ring = geometry?.rings?.[0] || geometry?.coordinates?.[0]?.[0] || geometry?.coordinates?.[0] || [];
   const points = Array.isArray(ring) ? ring : [];
@@ -177,6 +271,17 @@ function quoteFormLatLng() {
   const lat = Number(form?.elements?.lat?.value || 0);
   const lng = Number(form?.elements?.lng?.value || 0);
   return Number.isFinite(lat) && Number.isFinite(lng) && lat && lng ? { lat, lng } : null;
+}
+
+function showArkansasOnlyPropertyBlock(options = {}) {
+  const resultId = options.resultId || 'parcelInfo';
+  showPropertyConfirmationPanel(options.showPanel !== false);
+  showResult(resultId, `<strong>${escapeHtml(ARKANSAS_ONLY_MESSAGE)}</strong>`);
+  showArkansasOnlyWarning(options.toast || {});
+}
+
+function parcelLookupArkansasPoint(geometry, fallbackPoint = null) {
+  return parcelLookupPointFromGeometry(geometry) || fallbackPoint || quoteFormLatLng();
 }
 
 function showPropertyConfirmationPanel(visible = true) {
@@ -203,7 +308,6 @@ function renderConfirmProperty(options = {}) {
   const parcelInfo = byId('parcelInfo');
   if (!parcelInfo) return;
 
-  const quoteForm = byId('quoteForm');
   const parcelProps = options.parcelProps
     || state.selectedParcelProperties
     || state.parcelProperties
@@ -230,15 +334,11 @@ function renderConfirmProperty(options = {}) {
     propText(parcelProps, 'county', 'countyid', 'COUNTY', 'COUNTY_NAME'),
     propText(attrs, 'county', 'countyid', 'COUNTY', 'COUNTY_NAME')
   );
-  const lotSqft = Number(options.lotSqft || quoteForm?.elements?.lotAreaSqft?.value || 0);
-  const mowSqft = Number(options.mowSqft || quoteForm?.elements?.mowAreaSqft?.value || 0);
   const method = firstTextValue(options.method, normalized.method);
   const customerLines = [
     `<strong>${escapeHtml(options.headline || 'Parcel found. Boundary loaded.')}</strong>`,
     addressLabel ? `Address: ${escapeHtml(addressLabel)}` : null,
     ownerName ? `Owner: ${escapeHtml(ownerName)}` : null,
-    lotSqft > 0 ? `<span class="parcel-customer-acres">Lot Area: ${formatAcres(lotSqft)}</span>` : null,
-    mowSqft > 0 ? `<span class="parcel-customer-acres">Mowable Area: ${formatAcres(mowSqft)}</span>` : null,
     'Use <strong>Lasso Yard</strong> to draw the mowable area.',
   ].filter(Boolean);
   const techLines = [
@@ -256,6 +356,7 @@ function renderConfirmProperty(options = {}) {
 }
 
 async function lookupParcel(options = {}) {
+  const timer = quoteFlowTimeStart('parcel lookup handler');
   const quoteForm = byId('quoteForm');
   const parcelInfo = byId('parcelInfo');
   if (!quoteForm || !parcelInfo) return;
@@ -271,104 +372,197 @@ async function lookupParcel(options = {}) {
     );
   }
 
+  const selectedPoint = { lat: Number(lat), lng: Number(lng) };
+  if (!isLngLatInArkansas(selectedPoint)) {
+    showArkansasOnlyPropertyBlock({ toast: { force: true } });
+    clearParcelLayer();
+    updateQuoteFlowState();
+    quoteFlowTimeEnd(timer, 'parcel lookup handler', { blocked: 'outside-arkansas', lat: selectedPoint.lat, lng: selectedPoint.lng });
+    return { ok: false, reason: 'outside_arkansas' };
+  }
+
   const address = quoteForm.elements.address?.value || '';
   const city = quoteForm.elements.city?.value || '';
   const zip = quoteForm.elements.zip?.value || '';
 
   const qs = new URLSearchParams({ lat, lng, address, city, zip });
-  const data = await api(`/api/parcel/lookup?${qs.toString()}`);
+  const lookupKey = qs.toString();
+  if (activeParcelLookupRequest?.key === lookupKey) {
+    quoteFlowTrace('parcel lookup:deduped', { lookupKey });
+    console.info('[ParcelLookup] reusing in-flight lookup', { lookupKey, source: options.source || '' });
+    window.turflynkCanvasDiagnostics?.('parcel lookup deduped', { lookupKey, source: options.source || '' });
+    lookupInFlight = activeParcelLookupRequest.promise;
+    return activeParcelLookupRequest.promise;
+  }
+  if (
+    !options.force
+    && lastParcelLookupRequest?.key === lookupKey
+    && Date.now() - Number(lastParcelLookupRequest.completedAt || 0) < QUOTE_FLOW_PARCEL_LOOKUP_REUSE_MS
+  ) {
+    quoteFlowTrace('parcel lookup:recent-result-reused', { lookupKey });
+    console.info('[ParcelLookup] recent duplicate lookup skipped', { lookupKey, source: options.source || '' });
+    window.turflynkCanvasDiagnostics?.('parcel lookup skipped', { lookupKey, source: options.source || '' });
+    return lastParcelLookupRequest.result;
+  }
 
-  if (!data.ok) {
-    const message = options.notFoundMessage || 'Parcel boundary not found. You can still draw the mowable area manually.';
-    parcelInfo.innerHTML = options.hideNotFoundDetails
-      ? `<strong>${escapeHtml(message)}</strong>`
-      : `
-        <strong>${escapeHtml(message)}</strong><br>
-        Reason: ${escapeHtml(data.reason || 'unknown')}<br>
-        You can still draw the mowable area manually.
-      `;
+  parcelInfo.innerHTML = '<strong>Finding property boundary...</strong>';
+  parcelInfo.classList.remove('hidden');
+  window.turflynkCanvasDiagnostics?.('parcel lookup start', { lookupKey, source: options.source || '' });
+
+  const lookupPromise = (async () => {
+    let data;
+    try {
+      data = await api(`/api/parcel/lookup?${qs.toString()}`, {
+        timeoutMs: options.timeoutMs || QUOTE_FLOW_PARCEL_LOOKUP_TIMEOUT_MS,
+      });
+    } catch (error) {
+      throw normalizeParcelLookupError(error);
+    }
+
+    if (!data.ok) {
+      const message = options.notFoundMessage || 'Parcel boundary not found. You can still draw the mowable area manually.';
+      parcelInfo.innerHTML = options.hideNotFoundDetails
+        ? `<strong>${escapeHtml(message)}</strong>`
+        : `
+          <strong>${escapeHtml(message)}</strong><br>
+          Reason: ${escapeHtml(data.reason || 'unknown')}<br>
+          You can still draw the mowable area manually.
+        `;
+      parcelInfo.classList.remove('hidden');
+      showPropertyConfirmationPanel(true);
+      clearParcelLayer();
+      updateQuoteFlowState();
+      if (!options.suppressNotFoundToast) {
+        showWarning('Parcel lookup failed. You can still draw the area manually.');
+      }
+      return data;
+    }
+
+    const normalized = data.normalized || {};
+    const attrs = normalized.attributes || {};
+    const parcelProps = parcelPropertiesFromLookupData(data);
+    const fallbackAddress = options.allowAddressFallback === false ? {} : getQuoteFormServiceAddress();
+    const serviceAddress = resolveServiceAddressFromParcel(parcelProps, fallbackAddress);
+    fillMissingServiceAddressFromReverseGeocodeLater(serviceAddress, { lat, lng });
+
+    const parcelId = normalized.parcelId || propText(attrs, 'parcelid', 'parcel_id', 'PARCELID', 'PIN') || '';
+    const addressLabel = propText(parcelProps, 'adrlabel') || 'n/a';
+    const county = normalized.county || propText(attrs, 'countyid', 'county', 'COUNTY') || 'n/a';
+    const geometry = data.feature?.geometry || null;
+    const validationPoint = parcelLookupArkansasPoint(geometry, selectedPoint);
+    const validationState = serviceAddress.state || addressPartsFromParcelProps(parcelProps).state || '';
+    if (!isLngLatInArkansas(validationPoint)) {
+      showArkansasOnlyPropertyBlock({ toast: { force: true } });
+      clearParcelLayer();
+      updateQuoteFlowState();
+      return { ok: false, reason: 'outside_arkansas', blocked: true };
+    }
+    if (validationState && !isLngLatInArkansas({ ...validationPoint, state: validationState })) {
+      showArkansasOnlyPropertyBlock({ toast: { force: true } });
+      clearParcelLayer();
+      updateQuoteFlowState();
+      return { ok: false, reason: 'outside_arkansas', blocked: true };
+    }
+
+    state.parcelProperties = parcelProps;
+    state.selectedParcelProperties = parcelProps;
+    state.selectedParcel = { type: 'Feature', geometry: null, properties: parcelProps };
+
+    quoteForm.elements.parcelId.value = parcelId;
+    quoteForm.elements.lotAreaSqft.value = '';
+    quoteForm.elements.mowAreaSqft.value = '';
+    if (quoteForm.elements.customerAdjustedMowableSqft) quoteForm.elements.customerAdjustedMowableSqft.value = '';
+    const serviceAddressSource = hasServiceAddress(serviceAddress)
+      ? `parcel-${data.method || 'lookup'}`
+      : options.allowAddressFallback === false
+        ? 'parcel-no-address'
+        : `parcel-${data.method || 'lookup'}`;
+    setCurrentServiceAddress(serviceAddress, serviceAddressSource, {
+      syncQuoteForm: true,
+      clearQuoteFormMissing: true,
+      replace: true,
+    });
+
+    if (geometry) {
+      drawParcel(geometry, parcelProps); // TODO: drawParcel is map-coupled, stays in app.js
+      const parcelAreaSqft = Number(normalized.areaSqft || 0)
+        || (state.parcelLayer ? layerAreaSqFt(state.parcelLayer) : 0);
+      quoteForm.elements.lotAreaSqft.value = parcelAreaSqft || '';
+      renderSuggestedMowablePanel(null);
+      scheduleEstimateRefresh('parcel-loaded');
+    }
+
+    updateMowAreaHelper(
+      Number(quoteForm.elements.lotAreaSqft.value || 0),
+      Number(quoteForm.elements.mowAreaSqft.value || 0)
+    );
+
+    renderConfirmProperty({
+      headline: 'Parcel found. Boundary loaded.',
+      parcelProps,
+      normalized,
+      attrs,
+      serviceAddress,
+      method: data.method || '',
+      parcelId,
+      addressLabel,
+      county,
+      lotSqft: Number(quoteForm.elements.lotAreaSqft.value || 0),
+      mowSqft: Number(quoteForm.elements.mowAreaSqft.value || 0),
+    });
+    showPropertyConfirmationPanel(true);
+
+    saveQuoteDraft();
+    scheduleEstimateRefresh('parcel-loaded');
+    updateQuoteFlowState();
+    if (options.navigate !== false) showQuoteFlowStep('property');
+    window.turflynkCanvasDiagnostics?.('parcel lookup complete', { lookupKey, source: options.source || '' });
+    return data;
+
+  })();
+
+  activeParcelLookupRequest = { key: lookupKey, promise: lookupPromise };
+  lookupInFlight = lookupPromise;
+  try {
+    const result = await lookupPromise;
+    lastParcelLookupRequest = {
+      key: lookupKey,
+      result,
+      completedAt: Date.now(),
+    };
+    return result;
+  } catch (error) {
+    const normalizedError = normalizeParcelLookupError(error);
+    const message = normalizedError.message === 'Parcel lookup timed out.'
+      ? 'Parcel lookup is taking longer than expected. You can search again or request an in-person quote.'
+      : prettyApiError(normalizedError);
+    parcelInfo.innerHTML = `<strong>${escapeHtml(message)}</strong>`;
     parcelInfo.classList.remove('hidden');
     showPropertyConfirmationPanel(true);
-    clearParcelLayer();
     updateQuoteFlowState();
-    if (!options.suppressNotFoundToast) {
-      showWarning('Parcel lookup failed. You can still draw the area manually.');
-    }
-    return;
+    if (!options.suppressNotFoundToast) showWarning(message);
+    throw normalizedError;
+  } finally {
+    if (activeParcelLookupRequest?.key === lookupKey) activeParcelLookupRequest = null;
+    if (lookupInFlight === lookupPromise) lookupInFlight = null;
+    quoteFlowTimeEnd(timer, 'parcel lookup handler');
   }
-
-  const normalized = data.normalized || {};
-  const attrs = normalized.attributes || {};
-  const parcelProps = parcelPropertiesFromLookupData(data);
-  const fallbackAddress = options.allowAddressFallback === false ? {} : getQuoteFormServiceAddress();
-  let serviceAddress = resolveServiceAddressFromParcel(parcelProps, fallbackAddress);
-  serviceAddress = await fillMissingServiceAddressFromReverseGeocode(serviceAddress, { lat, lng });
-
-  const parcelId = normalized.parcelId || propText(attrs, 'parcelid', 'parcel_id', 'PARCELID', 'PIN') || '';
-  const addressLabel = propText(parcelProps, 'adrlabel') || 'n/a';
-  const county = normalized.county || propText(attrs, 'countyid', 'county', 'COUNTY') || 'n/a';
-  const geometry = data.feature?.geometry || null;
-  state.parcelProperties = parcelProps;
-  state.selectedParcelProperties = parcelProps;
-  state.selectedParcel = { type: 'Feature', geometry: null, properties: parcelProps };
-
-  quoteForm.elements.parcelId.value = parcelId;
-  quoteForm.elements.lotAreaSqft.value = '';
-  quoteForm.elements.mowAreaSqft.value = '';
-  if (quoteForm.elements.customerAdjustedMowableSqft) quoteForm.elements.customerAdjustedMowableSqft.value = '';
-  const serviceAddressSource = hasServiceAddress(serviceAddress)
-    ? `parcel-${data.method || 'lookup'}`
-    : options.allowAddressFallback === false
-      ? 'parcel-no-address'
-      : `parcel-${data.method || 'lookup'}`;
-  setCurrentServiceAddress(serviceAddress, serviceAddressSource, {
-    syncQuoteForm: true,
-    clearQuoteFormMissing: true,
-    replace: true,
-  });
-
-  if (geometry) {
-    drawParcel(geometry, parcelProps); // TODO: drawParcel is map-coupled, stays in app.js
-    const parcelAreaSqft = Number(normalized.areaSqft || 0)
-      || (state.parcelLayer ? layerAreaSqFt(state.parcelLayer) : 0);
-    quoteForm.elements.lotAreaSqft.value = parcelAreaSqft || '';
-    renderSuggestedMowablePanel(null);
-    scheduleEstimateRefresh('parcel-loaded');
-  }
-
-  updateMowAreaHelper(
-    Number(quoteForm.elements.lotAreaSqft.value || 0),
-    Number(quoteForm.elements.mowAreaSqft.value || 0)
-  );
-
-  renderConfirmProperty({
-    headline: 'Parcel found. Boundary loaded.',
-    parcelProps,
-    normalized,
-    attrs,
-    serviceAddress,
-    method: data.method || '',
-    parcelId,
-    addressLabel,
-    county,
-    lotSqft: Number(quoteForm.elements.lotAreaSqft.value || 0),
-    mowSqft: Number(quoteForm.elements.mowAreaSqft.value || 0),
-  });
-  showPropertyConfirmationPanel(true);
-
-  saveQuoteDraft();
-  scheduleEstimateRefresh('parcel-loaded');
-  updateQuoteFlowState();
-  showQuoteFlowStep('property');
-
-// Weather refresh hook
-setTimeout(() => {
-  window.MowNWAWeatherScheduler?.refresh();
-}, 300);
-
 }
 
 async function lookupParcelByLatLng(lat, lng) {
+  const point = { lat: Number(lat), lng: Number(lng) };
+  if (!isLngLatInArkansas(point)) {
+    setGpsStatus(ARKANSAS_ONLY_MESSAGE);
+    showArkansasOnlyPropertyBlock({ showPanel: false, toast: { force: true } });
+    throw new Error(ARKANSAS_ONLY_MESSAGE);
+  }
+  const reverseAddress = await reverseGeocodeServiceAddress(point.lat, point.lng);
+  if (reverseAddress.state && !isLngLatInArkansas({ ...point, state: reverseAddress.state })) {
+    setGpsStatus(ARKANSAS_ONLY_MESSAGE);
+    showArkansasOnlyPropertyBlock({ showPanel: false, toast: { force: true } });
+    throw new Error(ARKANSAS_ONLY_MESSAGE);
+  }
+
   clearParcelLayer(); // TODO: clearParcelLayer is map-coupled, stays in app.js
   clearMowLayer();    // TODO: clearMowLayer is map-coupled, stays in app.js
   renderSuggestedMowablePanel(null);
@@ -443,7 +637,7 @@ async function requestCurrentLocation() {
       } catch (err) {
         const message = prettyApiError(err) || 'Could not get your location. Try again or type your address.';
         setGpsStatus(message);
-        showError(message);
+        if (message !== ARKANSAS_ONLY_MESSAGE) showError(message);
       } finally {
         setGpsButtonLocating(false);
       }
@@ -458,60 +652,90 @@ async function requestCurrentLocation() {
   );
 }
 
-// Continue to draw — only confirms parcel exists, then navigates
-byId('continueToDrawBtn')?.addEventListener('click', () => {
-  if (state.pendingParcelFeature && typeof confirmParcelSelection === 'function') {
-    confirmParcelSelection({ nextStep: 'draw' }).catch((error) => showError('Parcel selection failed: ' + prettyApiError(error)));
-    return;
-  }
-  if (!state.parcelLayer) {
-    showWarning('Lookup the parcel before drawing.');
-    return;
-  }
-  showQuoteFlowStep('draw');
-});
+if (!window.__turflynkPropertyLookupListenersInstalled) {
+  window.__turflynkPropertyLookupListenersInstalled = true;
 
-// Find address by typing
-byId('locateAddressBtn')?.addEventListener('click', async () => {
-  byId('gpsConfirmBar')?.classList.add('hidden');
-  try {
-    await geocodeAddress();
-    await lookupParcel();
-  } catch (error) {
-    showError(prettyApiError(error));
-  }
-});
+  // Continue to draw — only confirms parcel exists, then navigates
+  byId('continueToDrawBtn')?.addEventListener('click', () => {
+    const timer = quoteFlowTimeStart('continue to draw click');
+    if (state.pendingParcelFeature && typeof confirmParcelSelection === 'function') {
+      confirmParcelSelection({ nextStep: 'draw' })
+        .catch((error) => showError('Parcel selection failed: ' + prettyApiError(error)))
+        .finally(() => quoteFlowTimeEnd(timer, 'continue to draw click'));
+      return;
+    }
+    if (!state.parcelLayer) {
+      showWarning('Lookup the parcel before drawing.');
+      quoteFlowTimeEnd(timer, 'continue to draw click', { blocked: true });
+      return;
+    }
+    const validationPoint = parcelLookupPointFromGeometry(state.parcelGeometry) || quoteFormLatLng();
+    if (!isLngLatInArkansas(validationPoint)) {
+      showArkansasOnlyPropertyBlock({ toast: { force: true } });
+      quoteFlowTimeEnd(timer, 'continue to draw click', { blocked: 'outside-arkansas' });
+      return;
+    }
+    showQuoteFlowStep('draw');
+    quoteFlowTimeEnd(timer, 'continue to draw click');
+  });
 
-// Search again / change property
-byId('lookupParcelBtn')?.addEventListener('click', () => {
-  byId('gpsConfirmBar')?.classList.add('hidden');
-  resetParcelQuoteStateForNewAddress();
-  showPropertyConfirmationPanel(false);
-  showQuoteFlowStep('property');
-  byId('quoteForm')?.elements?.address?.focus?.();
-});
+  // Find address by typing
+  byId('locateAddressBtn')?.addEventListener('click', async () => {
+    const timer = quoteFlowTimeStart('find property click');
+    byId('gpsConfirmBar')?.classList.add('hidden');
+    setAddressLookupLoading(true);
+    try {
+      const located = await geocodeAddress();
+      if (located === false) return;
+      setAddressLookupLoading(true, 'Checking parcel...');
+      await lookupParcel({ source: 'manual-search' });
+    } catch (error) {
+      showError(prettyApiError(error));
+    } finally {
+      setAddressLookupLoading(false);
+      quoteFlowTimeEnd(timer, 'find property click');
+    }
+  });
 
-// Use Current Location buttons
-$$('[data-use-current-location]').forEach((btn) => btn.addEventListener('click', requestCurrentLocation));
+  // Search again / change property
+  byId('lookupParcelBtn')?.addEventListener('click', () => {
+    byId('gpsConfirmBar')?.classList.add('hidden');
+    if (typeof clearCheckoutPii === 'function') clearCheckoutPii({ reason: 'search-again', clearAddress: false });
+    resetParcelQuoteStateForNewAddress();
+    showPropertyConfirmationPanel(false);
+    showQuoteFlowStep('property');
+    byId('quoteForm')?.elements?.address?.focus?.();
+  });
 
-// GPS confirm bar — Yes: proceed to draw
-byId('gpsConfirmYesBtn')?.addEventListener('click', () => {
-  byId('gpsConfirmBar')?.classList.add('hidden');
-  showQuoteFlowStep('draw');
-});
+  // Use Current Location buttons
+  $$('[data-use-current-location]').forEach((btn) => btn.addEventListener('click', requestCurrentLocation));
 
-// GPS confirm bar — No: discard GPS parcel and return to property search
-byId('gpsConfirmNoBtn')?.addEventListener('click', () => {
-  byId('gpsConfirmBar')?.classList.add('hidden');
-  clearParcelLayer();
-  clearMowLayer();
-  byId('gpsStatusMsg')?.classList.add('hidden');
-  showPropertyConfirmationPanel(false);
-  showQuoteFlowStep('property');
-});
+  // GPS confirm bar — Yes: proceed to draw
+  byId('gpsConfirmYesBtn')?.addEventListener('click', () => {
+    const point = quoteFormLatLng();
+    if (!isLngLatInArkansas(point)) {
+      setGpsStatus(ARKANSAS_ONLY_MESSAGE);
+      showArkansasOnlyPropertyBlock({ showPanel: false, toast: { force: true } });
+      return;
+    }
+    byId('gpsConfirmBar')?.classList.add('hidden');
+    showQuoteFlowStep('draw');
+  });
+
+  // GPS confirm bar — No: discard GPS parcel and return to property search
+  byId('gpsConfirmNoBtn')?.addEventListener('click', () => {
+    byId('gpsConfirmBar')?.classList.add('hidden');
+    clearParcelLayer();
+    clearMowLayer();
+    byId('gpsStatusMsg')?.classList.add('hidden');
+    showPropertyConfirmationPanel(false);
+    showQuoteFlowStep('property');
+  });
+}
 
 // Expose globally — called from app.js (autocomplete, confirmParcelSelection, init, clearQuoteDraftBtn)
 window.lookupParcel = lookupParcel;
+window.lookupParcelInFlight = () => lookupInFlight;
 window.showPropertyConfirmationPanel = showPropertyConfirmationPanel;
 window.renderConfirmProperty = renderConfirmProperty;
 window.quoteFormLatLng = quoteFormLatLng;

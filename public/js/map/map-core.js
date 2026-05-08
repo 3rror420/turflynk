@@ -370,6 +370,7 @@ function refreshMapAfterStepVisible(reason = 'unknown') {
 
 function exposeTurfLynkMapGlobals() {
   if (state.map) window.map = state.map;
+  if (state.map) window.turflynkMap = state.map;
   window.mowableFeatureCollection = state.mowableFeatureCollection;
   window.drawnItems = state.mowableFeatureCollection;
   window.mowLayerGroup = state.mowableFeatureCollection;
@@ -378,14 +379,110 @@ function exposeTurfLynkMapGlobals() {
 
 // --- Map initialization ---
 
+function isUsableTurfLynkMap(map) {
+  return Boolean(
+    map
+    && !map.__turflynkRemoved
+    && typeof map.resize === 'function'
+    && typeof map.getContainer === 'function'
+  );
+}
+
+function reuseTurfLynkMap(map, reason = 'initMap') {
+  state.map = map;
+  installTurfLynkMapLifecycleDiagnostics(map);
+  installTurfLynkMapEventHandlers(map);
+  exposeTurfLynkMapGlobals();
+  console.log('[MapLibre] reusing existing map instance', reason);
+  requestAnimationFrame(() => {
+    try { map.resize(); } catch {}
+  });
+  return map;
+}
+
+function installTurfLynkMapLifecycleDiagnostics(map) {
+  if (!map || map.__turflynkLifecycleDiagnosticsInstalled) return;
+  map.__turflynkLifecycleDiagnosticsInstalled = true;
+  const originalRemove = map.remove;
+  if (typeof originalRemove !== 'function') return;
+  map.remove = function turflynkIntentionalMapRemove(...args) {
+    console.log('[MapLibre] map removed intentionally');
+    map.__turflynkRemoved = true;
+    if (window.turflynkMap === map) window.turflynkMap = null;
+    if (window.map === map) window.map = null;
+    if (state.map === map) state.map = null;
+    return originalRemove.apply(this, args);
+  };
+}
+
+function installTurfLynkMapEventHandlers(map) {
+  if (!map || map.__turflynkQuoteHandlersInstalled) return;
+  map.__turflynkQuoteHandlersInstalled = true;
+
+  map.on('click', (e) => {
+    if (getMapMode() !== 'select' || !state.parcelSelectMode) return;
+    e.preventDefault?.();
+    applyParcelFromClick({ lat: e.lngLat.lat, lng: e.lngLat.lng });
+  });
+
+  map.on('click', 'mowable-fill', (e) => {
+    if (getMapMode() === 'lasso' || state.quoteUiMode === 'drawing') return;
+    const feature = e.features?.[0];
+    const featureId = feature?.properties?.id || feature?.id;
+    if (!featureId) return;
+    e.preventDefault?.();
+    selectMowableFeature(featureId);
+    setMapToolPanelOpen(true);
+  });
+  map.on('mouseenter', 'mowable-fill', () => {
+    try { map.getCanvas().style.cursor = 'pointer'; } catch {}
+  });
+  map.on('mouseleave', 'mowable-fill', () => {
+    try { map.getCanvas().style.cursor = ''; } catch {}
+  });
+
+  map.on('dblclick', (e) => {
+    if (getMapMode() !== 'select' || !state.parcelSelectMode) return;
+    e.preventDefault?.();
+    state.parcelDblClick = true;
+    if (state.pendingParcelFeature) {
+      state.parcelDblClick = false;
+      confirmParcelSelection().catch((error) => showError('Parcel selection failed: ' + prettyApiError(error)));
+    }
+  });
+}
+
 function initMap() {
   const mapEl = byId('quoteMap');
   if (!mapEl || typeof maplibregl === 'undefined') return;
 
+  if (isUsableTurfLynkMap(window.turflynkMap)) {
+    if (window.turflynkMap.getContainer?.() === mapEl) {
+      window.__mapLibreCreateCount = Number(window.__mapLibreCreateCount || 0);
+    }
+    return reuseTurfLynkMap(window.turflynkMap, 'window.turflynkMap');
+  }
+  if (isUsableTurfLynkMap(state.map)) {
+    return reuseTurfLynkMap(state.map, 'state.map');
+  }
+
+  window.__mapLibreCreateCount = Number(window.__mapLibreCreateCount || 0) + 1;
+  if (window.__mapLibreCreateCount > 1) {
+    console.warn('[MapLibre] duplicate map creation blocked');
+    if (isUsableTurfLynkMap(window.turflynkMap)) return reuseTurfLynkMap(window.turflynkMap, 'duplicate-create-window');
+    if (isUsableTurfLynkMap(state.map)) return reuseTurfLynkMap(state.map, 'duplicate-create-state');
+    return;
+  }
+
+  console.log('[MapLibre] creating new map instance');
   state.map = new maplibregl.Map({
     container: 'quoteMap',
     center: latLngToLngLat(DEFAULT_MAP_CENTER),
     zoom: DEFAULT_MAP_ZOOM,
+    maxBounds: [
+      [ARKANSAS_MAP_BUFFERED_BOUNDS.west, ARKANSAS_MAP_BUFFERED_BOUNDS.south],
+      [ARKANSAS_MAP_BUFFERED_BOUNDS.east, ARKANSAS_MAP_BUFFERED_BOUNDS.north],
+    ],
     attributionControl: false,
     style: {
       version: 8,
@@ -400,6 +497,7 @@ function initMap() {
       layers: [{ id: 'sat', type: 'raster', source: 'sat' }],
     },
   });
+  installTurfLynkMapLifecycleDiagnostics(state.map);
   state.map.addControl(new maplibregl.AttributionControl({ compact: true }), 'bottom-right');
   state.map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-left');
   setMapGestureCapture(false);
@@ -415,41 +513,8 @@ function initMap() {
   });
 
   exposeTurfLynkMapGlobals();
-
-  state.map.on('click', (e) => {
-    if (getMapMode() !== 'select' || !state.parcelSelectMode) return;
-    e.preventDefault?.();
-    applyParcelFromClick({ lat: e.lngLat.lat, lng: e.lngLat.lng });
-  });
-
-  if (!state._mowableSelectionHandlersInstalled) {
-    state._mowableSelectionHandlersInstalled = true;
-    state.map.on('click', 'mowable-fill', (e) => {
-      if (getMapMode() === 'lasso' || state.quoteUiMode === 'drawing') return;
-      const feature = e.features?.[0];
-      const featureId = feature?.properties?.id || feature?.id;
-      if (!featureId) return;
-      e.preventDefault?.();
-      selectMowableFeature(featureId);
-      setMapToolPanelOpen(true);
-    });
-    state.map.on('mouseenter', 'mowable-fill', () => {
-      try { state.map.getCanvas().style.cursor = 'pointer'; } catch {}
-    });
-    state.map.on('mouseleave', 'mowable-fill', () => {
-      try { state.map.getCanvas().style.cursor = ''; } catch {}
-    });
-  }
-
-  state.map.on('dblclick', (e) => {
-    if (getMapMode() !== 'select' || !state.parcelSelectMode) return;
-    e.preventDefault?.();
-    state.parcelDblClick = true;
-    if (state.pendingParcelFeature) {
-      state.parcelDblClick = false;
-      confirmParcelSelection().catch((error) => showError('Parcel selection failed: ' + prettyApiError(error)));
-    }
-  });
+  installTurfLynkMapEventHandlers(state.map);
+  return state.map;
 }
 
 // --- Window exposure ---
@@ -458,3 +523,4 @@ window.setTurfLynkMapMode = setMapMode;
 window.getTurfLynkMapMode = getMapMode;
 window.exposeTurfLynkMapGlobals = exposeTurfLynkMapGlobals;
 window.setTurfLynkLassoTempLine = setLassoTempLine;
+window.initMap = initMap;
