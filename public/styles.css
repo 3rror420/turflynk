@@ -3650,13 +3650,26 @@ body[data-active-view="quote"] .meta {
 }
 
 body[data-active-view="quote"] .topbar {
-  width: min(920px, 100%);
-  margin: 0 auto 20px;
-  padding: 16px 18px;
-  border: 1px solid #dfe8dc;
-  border-radius: 18px;
-  background: rgba(255, 255, 255, .86);
-  box-shadow: 0 12px 30px rgba(31, 39, 28, .08);
+  display: none;
+}
+body[data-active-view="quote"] .app-topbar {
+  background: rgba(255, 255, 255, .94);
+  border-bottom: 1px solid #dfe8dc;
+  box-shadow: 0 10px 28px rgba(31, 39, 28, .1);
+}
+body[data-active-view="quote"] .app-topbar-quote-btn {
+  display: none;
+}
+/* app-topbar extra actions: hidden on mobile (drawer/bottom-nav handle nav there),
+   shown on desktop for non-quote views only */
+.app-topbar-quote-btn { display: none; }
+@media (min-width: 921px) {
+  .app-topbar-quote-btn { display: inline-flex; }
+  body[data-active-view="quote"] .app-topbar-quote-btn { display: none; }
+  body[data-active-view="quote"] .topbar-view-chip {
+    color: #4a7c2f;
+    font-size: .85rem;
+  }
 }
 
 body[data-active-view="quote"] .sidebar-stat,

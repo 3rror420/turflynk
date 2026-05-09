@@ -99,3 +99,38 @@ playwright-report/
 test-results/
 coverage/
 
+
+# env/secrets
+
+.env
+.env.*
+*.pem
+*.key
+
+# dependencies
+
+node_modules/
+
+# backups
+
+backups/
+*.tar.gz
+
+# logs
+
+logs/
+*.log
+npm-debug.log*
+
+# cache
+
+.cache/
+tmp/
+dist/
+
+# local artifacts
+
+playwright-report/
+test-results/
+coverage/
+

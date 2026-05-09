@@ -114,26 +114,43 @@ const _QUOTE_STEP_HEADS = {
     region: 'NORTHWEST ARKANSAS',
     title: 'Find Your Property',
     sub: 'Enter your address to begin your lawn quote.',
+    chip: 'Find Property',
   },
   'property-confirm': {
     region: 'NORTHWEST ARKANSAS',
     title: 'Confirm Your Property',
     sub: 'Verify we found the correct parcel.',
+    chip: 'Confirm Property',
+  },
+  'draw': {
+    chip: 'Select Lawn Area',
+  },
+  'estimate': {
+    chip: 'Review Quote',
+  },
+  'request': {
+    chip: 'Complete Booking',
   },
 };
 
 function updateQuoteStepHeader(step, subState) {
   const header = byId('quoteStepDynamicHeader');
-  if (!header) return;
+  const chipEl = byId('mobileViewTitle');
+
   const key = step === 'property' ? `property-${subState || 'search'}` : step;
   const head = _QUOTE_STEP_HEADS[key];
-  if (head) {
+
+  // Sync compact chip in app-topbar for all steps
+  if (chipEl && head?.chip) chipEl.textContent = head.chip;
+
+  if (!header) return;
+  if (head?.title) {
     const regionEl = header.querySelector('.qsf-region');
     const titleEl = byId('quoteStepTitle');
     const subEl = byId('quoteStepSub');
     if (regionEl) regionEl.textContent = head.region || '';
     if (titleEl) titleEl.textContent = head.title;
-    if (subEl) subEl.textContent = head.sub;
+    if (subEl) subEl.textContent = head.sub || '';
     header.hidden = false;
     header.removeAttribute('aria-hidden');
   } else {
