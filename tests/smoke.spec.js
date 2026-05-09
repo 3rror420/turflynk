@@ -282,6 +282,94 @@ test('property step confirms parcel and returns from lawn area', async ({ page }
   await expect(page.locator('#quoteStartScreen')).toBeVisible();
 });
 
+test('street-only Arkansas parcel canonical location is accepted', async ({ page }) => {
+  await page.goto('http://127.0.0.1:3000/');
+  await page.waitForFunction(() => typeof window.buildSelectedServiceLocation === 'function');
+
+  const result = await page.evaluate(() => {
+    const selected = window.buildSelectedServiceLocation({
+      parcelProps: {
+        adrlabel: '18257 MERRY K LN',
+        parcelid: 'street-only-ar'
+      },
+      geometry: {
+        rings: [[
+          [-94.2092, 36.3726],
+          [-94.2084, 36.3726],
+          [-94.2084, 36.3732],
+          [-94.2092, 36.3732],
+          [-94.2092, 36.3726]
+        ]]
+      }
+    });
+    return {
+      selected,
+      validation: window.validateArkansasSelectedServiceLocation(selected)
+    };
+  });
+
+  expect(result.selected.displayAddress).toBe('18257 MERRY K LN');
+  expect(result.selected.street).toBe('18257 MERRY K LN');
+  expect(result.selected.state).toBe('AR');
+  expect(result.selected.validationSource).toBe('parcel_geometry_centroid');
+  expect(result.validation.accepted).toBe(true);
+});
+
+test('parcel without state text but Arkansas centroid is accepted', async ({ page }) => {
+  await page.goto('http://127.0.0.1:3000/');
+  await page.waitForFunction(() => typeof window.buildSelectedServiceLocation === 'function');
+
+  const result = await page.evaluate(() => {
+    const selected = window.buildSelectedServiceLocation({
+      parcelProps: {
+        situsaddress: 'NO STATE TEXT RD',
+        parcelid: 'centroid-ar'
+      },
+      geometry: {
+        rings: [[
+          [-93.7550, 35.2750],
+          [-93.7450, 35.2750],
+          [-93.7450, 35.2850],
+          [-93.7550, 35.2850],
+          [-93.7550, 35.2750]
+        ]]
+      }
+    });
+    return window.validateArkansasSelectedServiceLocation(selected);
+  });
+
+  expect(result.accepted).toBe(true);
+  expect(result.source).toBe('parcel_geometry_centroid');
+});
+
+test('out-of-state parcel geometry is rejected', async ({ page }) => {
+  await page.goto('http://127.0.0.1:3000/');
+  await page.waitForFunction(() => typeof window.buildSelectedServiceLocation === 'function');
+
+  const result = await page.evaluate(() => {
+    const selected = window.buildSelectedServiceLocation({
+      parcelProps: {
+        adrlabel: '100 MAIN ST',
+        parcelid: 'texas-parcel'
+      },
+      geometry: {
+        rings: [[
+          [-96.8000, 32.7750],
+          [-96.7900, 32.7750],
+          [-96.7900, 32.7850],
+          [-96.8000, 32.7850],
+          [-96.8000, 32.7750]
+        ]]
+      }
+    });
+    return window.validateArkansasSelectedServiceLocation(selected);
+  });
+
+  expect(result.accepted).toBe(false);
+  expect(result.source).toBe('parcel_geometry_centroid');
+  expect(result.reason).toBe('parcel_geometry_centroid_outside_arkansas');
+});
+
 test('ai detect button handles parcel-sized rejection without overwriting mowable area', async ({ page }) => {
   const parcelFeature = {
     type: 'Feature',
@@ -773,6 +861,8 @@ test('booking/payment without phone is blocked before checkout', async ({ page }
         city: 'Fayetteville',
         state: 'AR',
         zip: '72701',
+        lat: 36.0631,
+        lng: -94.1626,
         smsConsent: true,
         sms_consent: true,
         standardMowScopeAck: true
@@ -827,6 +917,8 @@ test('booking/payment with phone opens checkout flow', async ({ page }) => {
         city: 'Fayetteville',
         state: 'AR',
         zip: '72701',
+        lat: 36.0631,
+        lng: -94.1626,
         smsConsent: true,
         sms_consent: true,
         standardMowScopeAck: true
@@ -836,6 +928,246 @@ test('booking/payment with phone opens checkout flow', async ({ page }) => {
   });
 
   expect(checkoutRequests).toBe(1);
+});
+
+test('manual quote request opens form and verifies phone before submit', async ({ page }) => {
+  let checkoutRequests = 0;
+  let quoteRequests = 0;
+  let phoneStartRequests = 0;
+  let phoneCheckRequests = 0;
+  let submittedQuote = null;
+
+  await page.route('**/api/checkout/**', async (route) => {
+    checkoutRequests += 1;
+    await route.fulfill({ status: 500, json: { ok: false, error: 'Checkout should not be called for manual quote.' } });
+  });
+  await page.route('**/api/phone-verification/start', async (route) => {
+    phoneStartRequests += 1;
+    const body = route.request().postDataJSON();
+    expect(body.purpose).toBe('manual_quote');
+    await route.fulfill({
+      status: 200,
+      json: { ok: true, status: 'pending', message: 'Text code sent. Enter the 6-digit code below.' }
+    });
+  });
+  await page.route('**/api/phone-verification/check', async (route) => {
+    phoneCheckRequests += 1;
+    const body = route.request().postDataJSON();
+    expect(body.purpose).toBe('manual_quote');
+    expect(body.code).toBe('123456');
+    await route.fulfill({
+      status: 200,
+      json: { ok: true, status: 'approved', verified: true, message: 'Phone verified' }
+    });
+  });
+  await page.route('**/api/quotes', async (route) => {
+    quoteRequests += 1;
+    submittedQuote = route.request().postDataJSON();
+    await route.fulfill({
+      status: 201,
+      json: { ok: true, quote: { id: 'manual-quote-1', status: 'manual_requested' } }
+    });
+  });
+
+  await page.goto('http://127.0.0.1:3000/');
+  await page.waitForLoadState('networkidle');
+
+  await page.evaluate(() => {
+    const parcelGeoJSON = {
+      type: 'FeatureCollection',
+      features: [{
+        type: 'Feature',
+        properties: { parcelId: 'parcel-123' },
+        geometry: {
+          type: 'Polygon',
+          coordinates: [[
+            [-94.1632, 36.0626],
+            [-94.1619, 36.0626],
+            [-94.1619, 36.0637],
+            [-94.1632, 36.0637],
+            [-94.1632, 36.0626]
+          ]]
+        }
+      }]
+    };
+    const mowableGeoJSON = {
+      type: 'FeatureCollection',
+      features: [{
+        type: 'Feature',
+        properties: { id: 'mow-1' },
+        geometry: {
+          type: 'Polygon',
+          coordinates: [[
+            [-94.1630, 36.0628],
+            [-94.1622, 36.0628],
+            [-94.1622, 36.0634],
+            [-94.1630, 36.0634],
+            [-94.1630, 36.0628]
+          ]]
+        }
+      }]
+    };
+    const form = document.getElementById('quoteForm');
+    form.elements.address.value = '123 Test St';
+    form.elements.city.value = 'Fayetteville';
+    form.elements.state.value = 'AR';
+    form.elements.zip.value = '72701';
+    form.elements.regionId.value = 'nwa';
+    form.elements.serviceType.value = 'mowing';
+    form.elements.lotAreaSqft.value = '9000';
+    form.elements.parcelAreaSqft.value = '9000';
+    form.elements.parcelId.value = 'parcel-123';
+    state.selectedServiceLocation = {
+      displayAddress: '123 Test St, Fayetteville, AR 72701',
+      address: '123 Test St',
+      city: 'Fayetteville',
+      state: 'AR',
+      zip: '72701',
+      lat: 36.0631,
+      lng: -94.1626,
+      parcelId: 'parcel-123',
+      parcelGeoJson: parcelGeoJSON
+    };
+    state.parcelLayer = parcelGeoJSON;
+    state.parcelFeature = parcelGeoJSON;
+    state.parcelGeoJSON = parcelGeoJSON;
+    state.mowableFeatureCollection = mowableGeoJSON;
+    window.mowableFeatureCollection = mowableGeoJSON;
+    const payload = {
+      ...buildQuotePayload(form),
+      selectedServiceLocation: state.selectedServiceLocation,
+      parcelGeoJSON,
+      selectedMowableGeoJSON: mowableGeoJSON,
+      mowableGeoJSON,
+      estimate: 48,
+      lotAreaSqft: 9000
+    };
+    const signature = currentEstimateSignature();
+    state.pendingQuote = payload;
+    state.lastQuote = null;
+    state.currentEstimate = {
+      status: 'fresh',
+      estimate: 48,
+      signature,
+      payload,
+      breakdown: [{ label: 'Standard mow', amount: 48 }]
+    };
+    showQuoteFlowStep('estimate', { scroll: false });
+    renderEstimateState();
+    updateQuoteFlowState();
+  });
+
+  await expect(page.getByRole('heading', { name: 'Your Quote' })).toBeVisible();
+  await page.getByRole('button', { name: /Request In-Person Quote/i }).click();
+  await expect(page.locator('#manualQuotePanel')).toBeVisible();
+  await expect(page.locator('#manualQuoteForm')).toBeVisible();
+  await expect(page.locator('#manualQuoteContext')).toContainText('Selected quote summary');
+
+  await page.locator('#manualQuoteForm input[name="name"]').fill('Jane Manual');
+  await page.locator('#manualQuoteForm input[name="phone"]').fill('(479) 555-1212');
+  await page.locator('#manualQuoteForm select[name="preferredContactMethod"]').selectOption('sms');
+  await page.locator('#manualQuoteForm textarea[name="notes"]').fill('Please review the locked side gate and overgrown back corner.');
+  await page.locator('#manualQuoteForm input[name="manual_quote_extras"][value="overgrown_grass"]').check();
+  await page.locator('#manualQuoteForm input[name="smsConsent"]').check();
+  await page.locator('#manualQuoteSubmitBtn').click();
+
+  await expect(page.locator('[data-phone-verification-panel]')).toBeVisible();
+  expect(phoneStartRequests).toBe(1);
+  expect(quoteRequests).toBe(0);
+
+  await page.locator('input[name="phoneVerificationCode"]').fill('123456');
+  await page.locator('[data-confirm-phone-code]').click();
+
+  await expect(page.locator('#manualQuoteResult')).toContainText('Your in-person quote request was submitted. We’ll contact you to review the job.');
+  expect(phoneCheckRequests).toBe(1);
+  expect(quoteRequests).toBe(1);
+  expect(checkoutRequests).toBe(0);
+  expect(submittedQuote.requestMode).toBe('manual_quote');
+  expect(submittedQuote.quote_type).toBe('manual_quote');
+  expect(submittedQuote.selectedServiceLocation?.parcelId).toBe('parcel-123');
+  expect(Number(submittedQuote.mowAreaSqft)).toBeGreaterThan(0);
+  expect(Number(submittedQuote.lotAreaSqft)).toBe(9000);
+  expect(Number(submittedQuote.estimate)).toBe(48);
+  expect(submittedQuote.quoteBreakdown?.[0]?.label).toBe('Standard mow');
+  await expect(page).toHaveURL('http://127.0.0.1:3000/');
+  await expect(page.locator('#manualQuotePanel')).toBeVisible();
+});
+
+test('manual quote screen has fancy day scheduler and secondary summary', async ({ page }) => {
+  const mockWeatherDays = [
+    { date: '2026-05-09', code: 0, summary: 'Clear', highF: 78, lowF: 55, rainChance: 5, mowRisk: 'low' },
+    { date: '2026-05-10', code: 1, summary: 'Partly cloudy', highF: 72, lowF: 58, rainChance: 15, mowRisk: 'low' },
+    { date: '2026-05-11', code: 63, summary: 'Rain', highF: 65, lowF: 52, rainChance: 80, mowRisk: 'high' },
+    { date: '2026-05-12', code: 0, summary: 'Clear', highF: 75, lowF: 54, rainChance: 10, mowRisk: 'low' },
+    { date: '2026-05-13', code: 2, summary: 'Partly cloudy', highF: 77, lowF: 57, rainChance: 20, mowRisk: 'low' },
+    { date: '2026-05-14', code: 0, summary: 'Clear', highF: 80, lowF: 60, rainChance: 5, mowRisk: 'low' },
+    { date: '2026-05-15', code: 1, summary: 'Cloudy', highF: 73, lowF: 55, rainChance: 30, mowRisk: 'medium' },
+  ];
+
+  await page.route('**/api/weather?**', async (route) => {
+    await route.fulfill({ status: 200, json: { ok: true, days: mockWeatherDays } });
+  });
+  // Intercept Open-Meteo fallback too
+  await page.route('https://api.open-meteo.com/**', async (route) => {
+    await route.fulfill({ status: 200, json: { daily: { time: [], temperature_2m_max: [], temperature_2m_min: [], precipitation_probability_max: [], weather_code: [] } } });
+  });
+
+  await page.goto('http://127.0.0.1:3000/');
+  await page.waitForLoadState('networkidle');
+
+  await page.evaluate(() => {
+    const form = document.getElementById('quoteForm');
+    form.elements.lat.value = '36.0631';
+    form.elements.lng.value = '-94.1626';
+    state.selectedServiceLocation = {
+      displayAddress: '123 Test St, Fayetteville, AR 72701',
+      address: '123 Test St',
+      city: 'Fayetteville',
+      state: 'AR',
+      zip: '72701',
+      lat: 36.0631,
+      lng: -94.1626,
+    };
+    window.showManualQuotePanel?.({
+      estimate: 48,
+      address: '123 Test St',
+      city: 'Fayetteville',
+      state: 'AR',
+      zip: '72701',
+      lat: 36.0631,
+      lng: -94.1626,
+    });
+  });
+
+  await expect(page.locator('#manualQuotePanel')).toBeVisible();
+
+  // Trigger the weather scheduler
+  await page.evaluate(() => window.MowNWAWeatherScheduler?.scheduleRefresh('test', { force: true, initialDelay: 0 }));
+
+  // Fancy scheduler strip should appear
+  await expect(page.locator('#mownwaWeatherScheduler')).toBeVisible({ timeout: 5000 });
+  await expect(page.locator('#mownwaWeatherScheduler .weather-day-card').first()).toBeVisible();
+
+  // Generic fallback grid should be hidden by the scheduler
+  await expect(page.locator('#manualQuoteForm .preferred-days-grid')).toHaveClass(/weather-days-source-hidden/);
+
+  // Quote summary is present but collapsed/secondary (below the form)
+  await expect(page.locator('.manual-quote-summary-details')).toBeVisible();
+  await expect(page.locator('.manual-quote-summary-toggle')).toBeVisible();
+
+  // Form appears before summary in DOM order
+  const formBeforeSummary = await page.evaluate(() => {
+    const form = document.getElementById('manualQuoteForm');
+    const summary = document.querySelector('.manual-quote-summary-details');
+    if (!form || !summary) return false;
+    return !!(form.compareDocumentPosition(summary) & Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+  expect(formBeforeSummary).toBe(true);
+
+  // Expand summary and verify context is present
+  await page.locator('.manual-quote-summary-toggle').click();
+  await expect(page.locator('#manualQuoteContext')).toBeVisible();
+  await expect(page.locator('#manualQuoteContext')).toContainText('Selected quote summary');
 });
 
 test('profile phone saves only if missing', async ({ request }) => {

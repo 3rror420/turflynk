@@ -1,12 +1,14 @@
 import os
 import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import copy
 import io
 import json
 import math
 import os
 import shutil
 import tempfile
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -63,6 +65,23 @@ class DetectMowableRequest(BaseModel):
     address: Optional[str] = None
     debugArtifacts: bool = False
     constraintGeoJson: Optional[Dict[str, Any]] = None
+    mowableGeoJson: Optional[Dict[str, Any]] = None
+    boundarySource: Optional[str] = None
+    tuningOverrides: Optional[Dict[str, Any]] = None
+
+
+_TUNING_OVERRIDE_KEY = "_tuning_override"
+_tuning_lock = threading.Lock()
+
+
+def _deep_merge(base: Dict[str, Any], overrides: Dict[str, Any]) -> Dict[str, Any]:
+    result = copy.deepcopy(base)
+    for key, value in overrides.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            result[key] = _deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
 
 
 def empty_feature_collection() -> Dict[str, Any]:
@@ -94,7 +113,7 @@ def detection_preset_for_area(parcel_area_sqft: float) -> str:
 
 def normalize_detection_preset(value: Optional[str], parcel_area_sqft: float) -> str:
     preset = str(value or "").strip()
-    if preset in {"small_residential", "medium_residential", "large_rural"}:
+    if preset in {"small_residential", "medium_residential", "large_rural", _TUNING_OVERRIDE_KEY}:
         return preset
     return detection_preset_for_area(parcel_area_sqft)
 
@@ -515,6 +534,7 @@ def geospatial_args(
     *,
     debug_dir: Optional[Path] = None,
     detection_preset: str = "large_rural",
+    constrained_boundary_mode: bool = False,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         imagery=str(imagery_path),
@@ -523,6 +543,7 @@ def geospatial_args(
         mask_output="",
         debug_dir=str(debug_dir or ""),
         detection_preset=detection_preset,
+        constrained_boundary_mode=constrained_boundary_mode,
         sam_mask="",
         combine="intersect",
         parcel_crs="EPSG:4326",
@@ -662,6 +683,21 @@ def naip_diagnostics(
         "selectedCandidate": result.get("selectedCandidate", {}),
         "parcelAreaSqft": round(parcel_area_sqft, 2),
         "detectedAreaSqft": round(detected_area_sqft, 2),
+        "finalAcceptReason": result.get("finalAcceptReason", ""),
+        "constrainedBoundaryMode": (extra or {}).get("constrainedBoundaryMode", False),
+        "activeBoundarySqft": (extra or {}).get("activeBoundarySqft", 0),
+        "postExclusionCandidateSqft": result.get("vegetationCandidateAreaSqft", 0),
+        "constrainedHighRatioAllowed": (extra or {}).get("constrainedBoundaryMode", False) and result.get("hardscapeExcludedAreaSqft", 0) > 0,
+        "gravelExcludedPixels": result.get("gravelExcludedPixels", 0),
+        "gravelExcludedAreaSqft": result.get("gravelExcludedAreaSqft", 0.0),
+        "largeObjectExcludedPixels": result.get("largeObjectExcludedPixels", 0),
+        "largeObjectExcludedAreaSqft": result.get("largeObjectExcludedAreaSqft", 0.0),
+        "frozenExclusionPixels": result.get("frozenExclusionPixels", 0),
+        "morphologyBarrierPixels": result.get("morphologyBarrierPixels", 0),
+        "exclusionBarrierApplied": result.get("exclusionBarrierApplied", False),
+        "exclusionRules": result.get("exclusionRules", {}),
+        "structureExcludedPixels": result.get("structureExcludedPixels", 0),
+        "structureExcludedAreaSqft": result.get("structureExcludedAreaSqft", 0.0),
     }
     if extra:
         diagnostic.update(extra)
@@ -695,12 +731,15 @@ def run_naip_mowable_detection(req: DetectMowableRequest) -> Dict[str, Any]:
 
     # If a constraint polygon was provided, intersect it with the parcel so detection
     # runs only inside the user-selected area. Fall back to full parcel if invalid.
+    # Priority: mowableGeoJson (user-selected boundary) > constraintGeoJson (legacy).
+    active_boundary_geojson = req.mowableGeoJson or req.constraintGeoJson
     detection_geom = parcel_geom
-    print(f"[VISION] constraint received: {req.constraintGeoJson is not None}", flush=True)
+    has_constraint = False
+    print(f"[VISION] constraint received: {active_boundary_geojson is not None}", flush=True)
     print(f"[VISION] parcel_geom area: {parcel_geom.area}", flush=True)
-    if req.constraintGeoJson:
+    if active_boundary_geojson:
         try:
-            constraint_geom = geometry_from_geojson(req.constraintGeoJson)
+            constraint_geom = geometry_from_geojson(active_boundary_geojson)
             # Always buffer(0) both geometries before intersection to fix topology
             # issues that cause silent empty results even when geometries visually overlap.
             constraint_geom = constraint_geom.buffer(0)
@@ -713,6 +752,7 @@ def run_naip_mowable_detection(req: DetectMowableRequest) -> Dict[str, Any]:
                     print("[VISION] constraint failed → falling back to parcel", flush=True)
                 elif area_sqft(clipped) > 10:
                     detection_geom = clipped
+                    has_constraint = True
                     print(f"[Vision] constrained-selection area_sqft={round(area_sqft(detection_geom), 1)}", flush=True)
                 else:
                     print("[VISION] constraint failed → falling back to parcel", flush=True)
@@ -725,7 +765,14 @@ def run_naip_mowable_detection(req: DetectMowableRequest) -> Dict[str, Any]:
 
     parcel_area_sqft = area_sqft(detection_geom)
     requested_detection_preset = req.detectionPreset or req.detection_preset
-    detection_preset = normalize_detection_preset(requested_detection_preset, parcel_area_sqft)
+    # When constraint is active, always recalculate preset from actual detection area.
+    # Node may pass a preset based on the full parcel (e.g. large_rural) but the selected
+    # area may be much smaller and requires small_residential or medium_residential thresholds.
+    if has_constraint:
+        detection_preset = normalize_detection_preset(None, parcel_area_sqft)
+        print(f"[Vision] constraint active: recalculated detectionPreset={detection_preset} for constrained area {round(parcel_area_sqft)} sqft", flush=True)
+    else:
+        detection_preset = normalize_detection_preset(requested_detection_preset, parcel_area_sqft)
     parcel_bounds = list(detection_geom.bounds)
     is_large_parcel = parcel_area_sqft > 43560.0
     image_bounds = padded_bbox(parcel_geom)  # always fetch imagery for full parcel bounds
@@ -757,6 +804,8 @@ def run_naip_mowable_detection(req: DetectMowableRequest) -> Dict[str, Any]:
         "requestedImageHeight": requested_h,
         "metersPerPixel": pixel_size_m,
         "isLargeParcel": is_large_parcel,
+        "constrainedBoundaryMode": has_constraint,
+        "activeBoundarySqft": round(parcel_area_sqft, 2),
     }
 
     with tempfile.TemporaryDirectory(prefix="turflynk-naip-") as tmp_dir_name:
@@ -793,7 +842,7 @@ def run_naip_mowable_detection(req: DetectMowableRequest) -> Dict[str, Any]:
 
         try:
             result = mowable_geospatial.detect_mowable(
-                geospatial_args(parcel_path, imagery_path, output_path, debug_dir=debug_dir, detection_preset=detection_preset)
+                geospatial_args(parcel_path, imagery_path, output_path, debug_dir=debug_dir, detection_preset=detection_preset, constrained_boundary_mode=has_constraint)
             )
             print(f"[Vision] detection complete features={result.get('features', 0)} confidence={result.get('confidence')} rejectReason={result.get('selectedCandidate', {}).get('rejectReason', '')}", flush=True)
         except SystemExit as exc:
@@ -930,6 +979,10 @@ def run_naip_mowable_detection(req: DetectMowableRequest) -> Dict[str, Any]:
     print(f"[Vision] final: features={len(features)} area_sqft={round(detected_area_sqft, 1)} confidence={confidence} reason={diagnostics['reason']}", flush=True)
     log_naip_diagnostics(diagnostics, diagnostics["reason"])
     area = round(detected_area_sqft, 2) if features else 0
+    detection_boundary_source = req.boundarySource or (
+        "mowable" if req.mowableGeoJson else ("constraint" if req.constraintGeoJson else "parcel")
+    )
+    parcel_full_area_sqft = area_sqft(parcel_geom)
     return {
         "ok": True,
         "source": "naip",
@@ -942,6 +995,13 @@ def run_naip_mowable_detection(req: DetectMowableRequest) -> Dict[str, Any]:
         "features": features,
         "featureCollection": {"type": "FeatureCollection", "features": features},
         "areaSqft": area,
+        "detectionBoundarySource": detection_boundary_source,
+        "detectionBoundarySqft": round(parcel_area_sqft, 2),
+        "parcelSqft": round(parcel_full_area_sqft, 2),
+        "usedSelectedBoundary": has_constraint,
+        "constrainedBoundaryMode": has_constraint,
+        "activeBoundarySqft": round(parcel_area_sqft, 2),
+        "finalAcceptReason": result.get("finalAcceptReason", ""),
         "image": {
             "provider": "usgs-naip",
             "source": req.source or "maplibre",
@@ -1018,3 +1078,68 @@ def detect_mowable(req: DetectMowableRequest) -> Dict[str, Any]:
 @app.post("/detect-grass")
 def detect_grass(req: DetectMowableRequest) -> Dict[str, Any]:
     return run_naip_mowable_detection(req)
+
+
+@app.post("/detect-debug")
+def detect_debug(req: DetectMowableRequest) -> Dict[str, Any]:
+    """Admin-only debug endpoint. Accepts tuningOverrides that are merged into
+    the detection preset at runtime without requiring a service restart."""
+    overrides = req.tuningOverrides or {}
+    start_ts = datetime.now(timezone.utc)
+
+    if overrides:
+        try:
+            import mowable_geospatial as _mg
+        except Exception as exc:
+            return {"ok": False, "error": f"geospatial module unavailable: {exc}"}
+
+        base_preset_name = str(req.detectionPreset or req.detection_preset or "medium_residential").strip()
+        if base_preset_name not in _mg.DETECTION_PRESET_THRESHOLDS:
+            base_preset_name = "medium_residential"
+
+        base_preset = _mg.DETECTION_PRESET_THRESHOLDS[base_preset_name]
+        merged_preset = _deep_merge(base_preset, overrides)
+
+        with _tuning_lock:
+            _mg.DETECTION_PRESET_THRESHOLDS[_TUNING_OVERRIDE_KEY] = merged_preset
+            try:
+                modified = DetectMowableRequest(
+                    parcelGeoJson=req.parcelGeoJson,
+                    parcelFeature=req.parcelFeature,
+                    detectionPreset=_TUNING_OVERRIDE_KEY,
+                    detection_preset=_TUNING_OVERRIDE_KEY,
+                    center=req.center,
+                    lat=req.lat,
+                    lng=req.lng,
+                    zoom=req.zoom,
+                    source=req.source,
+                    imageSource=req.imageSource,
+                    address=req.address,
+                    debugArtifacts=req.debugArtifacts,
+                    constraintGeoJson=req.constraintGeoJson,
+                    mowableGeoJson=req.mowableGeoJson,
+                    boundarySource=req.boundarySource,
+                )
+                result = run_naip_mowable_detection(modified)
+            finally:
+                _mg.DETECTION_PRESET_THRESHOLDS.pop(_TUNING_OVERRIDE_KEY, None)
+    else:
+        result = run_naip_mowable_detection(req)
+
+    elapsed_ms = round((datetime.now(timezone.utc) - start_ts).total_seconds() * 1000)
+    result["_debugMode"] = True
+    result["_tuningOverrides"] = overrides
+    result["_elapsedMs"] = elapsed_ms
+    if overrides:
+        result["_mergedPreset"] = merged_preset
+    return result
+
+
+@app.get("/debug/presets")
+def debug_presets() -> Dict[str, Any]:
+    """Returns the built-in detection preset definitions for the admin tuning UI."""
+    try:
+        import mowable_geospatial as _mg
+        return {"ok": True, "presets": {k: v for k, v in _mg.DETECTION_PRESET_THRESHOLDS.items() if not k.startswith("_")}}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "presets": {}}

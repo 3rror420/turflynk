@@ -139,6 +139,13 @@
           <div class="qs-step" data-qs-step="4"><div class="qs-dot">4</div><div class="qs-label">Request</div></div>
         </div>
 
+        <!-- Dynamic step header — content updated by updateQuoteStepHeader() in quote-flow.js -->
+        <div class="qsf-header" id="quoteStepDynamicHeader" aria-live="polite">
+          <span class="qsf-region" aria-label="Service region">NORTHWEST ARKANSAS</span>
+          <h2 class="qsf-title" id="quoteStepTitle">Find Your Property</h2>
+          <p class="qsf-sub" id="quoteStepSub">Enter your address to begin your lawn quote.</p>
+        </div>
+
         <section class="quote-app" aria-label="Customer quote flow">
           <form id="quoteForm" class="quote-flow-form">
             <select name="serviceType" id="quoteServiceSelect" class="flow-hidden-field"></select>
@@ -184,9 +191,12 @@
               </div>
 
               <div id="parcel-confirm-panel">
-                <h2>Confirm your property</h2>
                 <div id="gpsConfirmBar" class="gps-confirm-bar hidden">
                   <p class="gps-confirm-msg">We found a parcel near your current location. Is this the property?</p>
+                </div>
+                <div id="drawStepHead" class="qsf-header qsf-header--above-map" hidden>
+                  <h2 class="qsf-title">Select Lawn Area</h2>
+                  <p class="qsf-sub">Outline the grass area that should be mowed.</p>
                 </div>
                 <div class="map-stage">
                   <div id="quoteMap" class="map-panel"></div>
@@ -204,6 +214,7 @@
                     <button class="btn primary ui-icon-btn" type="button" id="continueToDrawBtn"><img src="/assets/icons/lucide/circle-check.svg" alt="" class="ui-icon"><span class="ui-label">Yes, use this property</span></button>
                     <button class="btn secondary ui-icon-btn" type="button" id="lookupParcelBtn"><img src="/assets/icons/lucide/search.svg" alt="" class="ui-icon"><span class="ui-label">Search again</span></button>
                     <button class="btn ghost ui-icon-btn" type="button" id="selectParcelBtn"><img src="/assets/icons/lucide/map-pin.svg" alt="" class="ui-icon"><span class="ui-label">Select Different Parcel</span></button>
+                    <button class="btn ghost ui-icon-btn" type="button" data-use-current-location><img src="/assets/icons/lucide/locate-fixed.svg" alt="" class="ui-icon"><span class="ui-label">Use My Location</span></button>
                     <button class="btn ghost ui-icon-btn" type="button" id="propertyManualQuoteBtn"><img src="/assets/icons/lucide/user.svg" alt="" class="ui-icon"><span class="ui-label">Request in-person quote</span></button>
                   </div>
                   <div class="parcel-stat-row parcel-lot-stat-row">
@@ -217,35 +228,33 @@
             </section>
 
             <section class="quote-flow-screen draw-screen hidden" id="quoteDrawScreen" data-quote-step-panel="draw" hidden>
-              <div class="flow-screen-head">
-                <div>
-                  <h2>Select Lawn Area</h2>
-                  <p>Select the area of your yard that gets mowed.</p>
-                </div>
-              </div>
-              <div id="mowAreaHelper" class="draw-helper-text">Drag around the grass area. Lift your finger to finish.</div>
 
+              <!-- AI auto-detect hero — shown first when parcel is loaded, no area drawn yet -->
               <div id="drawAiHero" class="draw-ai-hero hidden">
                 <button class="btn primary draw-ai-primary-btn ui-icon-btn" type="button" id="aiDetectPrimaryBtn"><img src="/assets/icons/lucide/crosshair.svg" alt="" class="ui-icon"><span class="ui-label">Auto Detect My Yard</span></button>
                 <p class="draw-ai-helper-text">Recommended — we'll estimate your mowable area, then you can adjust it.</p>
                 <button class="btn ghost draw-ai-manual-btn ui-icon-btn" type="button" id="drawManuallyBtn"><img src="/assets/icons/lucide/pencil.svg" alt="" class="ui-icon"><span class="ui-label">Draw Yard Manually</span></button>
               </div>
 
-              <button class="btn secondary map-tools-toggle hidden ui-icon-btn" type="button" id="mapToolsToggle"><img src="/assets/icons/lucide/map.svg" alt="" class="ui-icon"><span class="ui-label">Adjust Area</span></button>
+              <!-- Toggle kept for JS compat — hidden via CSS so toolbar stays inline -->
+              <button class="btn secondary map-tools-toggle hidden ui-icon-btn" type="button" id="mapToolsToggle" style="display:none!important" aria-hidden="true"><img src="/assets/icons/lucide/map.svg" alt="" class="ui-icon"><span class="ui-label">Adjust Area</span></button>
+
+              <!-- Compact toolbar — directly under map, visible when parcel loaded -->
               <div class="map-tools-panel" id="mapToolsPanel">
-                <div class="map-tools-status">
+                <!-- Status row kept for JS compat but hidden from customers -->
+                <div class="map-tools-status" aria-hidden="true">
                   <div id="mowEditorMode" class="status-chip">Mode: Ready</div>
-                  <button class="app-icon-btn ui-icon-btn" type="button" id="closeMapTools"><img src="/assets/icons/lucide/x.svg" alt="" class="ui-icon"><span class="ui-label">Close</span></button>
+                  <button class="app-icon-btn ui-icon-btn" type="button" id="closeMapTools" tabindex="-1"><img src="/assets/icons/lucide/x.svg" alt="" class="ui-icon"><span class="ui-label">Close</span></button>
                 </div>
                 <div class="tool-row major-tools">
-                  <button class="btn primary ui-icon-btn" type="button" id="lassoYardBtn"><img src="/assets/icons/lucide/pencil.svg" alt="" class="ui-icon"><span class="ui-label">Draw Area</span></button>
+                  <button class="btn primary ui-icon-btn" type="button" id="lassoYardBtn" title="Outline the grass area"><img src="/assets/icons/lucide/pencil.svg" alt="" class="ui-icon"><span class="ui-label">Draw Area</span></button>
                   <button class="btn secondary ui-icon-btn" type="button" id="drawMowableBtn"><img src="/assets/icons/lucide/pencil.svg" alt="" class="ui-icon"><span class="ui-label">Redraw</span></button>
-                  <button class="btn secondary ui-icon-btn" type="button" id="editMowableBtn"><img src="/assets/icons/lucide/ruler.svg" alt="" class="ui-icon"><span class="ui-label">Edit Area</span></button>
-                  <button class="btn secondary utility-only ui-icon-btn" type="button" id="cutMowableBtn"><img src="/assets/icons/lucide/x.svg" alt="" class="ui-icon"><span class="ui-label">Cut Out</span></button>
-                  <button class="btn secondary ui-icon-btn" type="button" id="deleteMowableBtn"><img src="/assets/icons/lucide/trash.svg" alt="" class="ui-icon"><span class="ui-label">Delete Area</span></button>
-                  <button class="btn ghost ui-icon-btn" type="button" id="clearMowAreaBtn"><img src="/assets/icons/lucide/rotate-ccw.svg" alt="" class="ui-icon"><span class="ui-label">Clear</span></button>
-                  <button class="btn ghost utility-only ui-icon-btn" type="button" id="undoCutBtn"><img src="/assets/icons/lucide/undo.svg" alt="" class="ui-icon"><span class="ui-label">Undo Cut</span></button>
-                  <button class="btn secondary hidden ui-icon-btn" type="button" id="aiDetectMowableBtn" disabled><img src="/assets/icons/lucide/crosshair.svg" alt="" class="ui-icon"><span class="ui-label">AI Detect Yard (Beta)</span></button>
+                  <button class="btn secondary ui-icon-btn" type="button" id="editMowableBtn" title="Adjust drawn boundaries"><img src="/assets/icons/lucide/ruler.svg" alt="" class="ui-icon"><span class="ui-label">Edit Area</span></button>
+                  <button class="btn secondary utility-only ui-icon-btn" type="button" id="cutMowableBtn" title="Remove pools, landscaping, etc."><img src="/assets/icons/lucide/scissors.svg" alt="" class="ui-icon"><span class="ui-label">Cut Out</span></button>
+                  <button class="btn secondary ui-icon-btn" type="button" id="deleteMowableBtn" title="Remove this drawn area"><img src="/assets/icons/lucide/trash.svg" alt="" class="ui-icon"><span class="ui-label">Delete Area</span></button>
+                  <button class="btn ghost ui-icon-btn" type="button" id="clearMowAreaBtn" title="Clear all drawn areas and start fresh"><img src="/assets/icons/lucide/rotate-ccw.svg" alt="" class="ui-icon"><span class="ui-label">Clear</span></button>
+                  <button class="btn ghost utility-only ui-icon-btn" type="button" id="undoCutBtn" title="Undo last cutout"><img src="/assets/icons/lucide/undo.svg" alt="" class="ui-icon"><span class="ui-label">Undo Cut</span></button>
+                  <button class="btn secondary hidden ui-icon-btn" type="button" id="aiDetectMowableBtn" title="Try automatic grass detection" disabled><img src="/assets/icons/lucide/crosshair.svg" alt="" class="ui-icon"><span class="ui-label">Auto Detect Lawn</span></button>
                   <button class="btn secondary ui-icon-btn" type="button" id="finishLassoBtn"><img src="/assets/icons/lucide/check.svg" alt="" class="ui-icon"><span class="ui-label">Finish</span></button>
                   <button class="btn secondary ui-icon-btn" type="button" id="useParcelShapeBtn"><img src="/assets/icons/lucide/map-pin.svg" alt="" class="ui-icon"><span class="ui-label">Use Parcel</span></button>
                   <button class="btn primary ui-icon-btn" type="button" id="saveAreaBtn"><img src="/assets/icons/lucide/save.svg" alt="" class="ui-icon"><span class="ui-label">Save</span></button>
@@ -257,18 +266,23 @@
                 </div>
               </div>
 
+              <!-- Helper / status text — below toolbar -->
+              <div id="mowAreaHelper" class="draw-helper-text">Drag around the grass area. Lift your finger to finish.</div>
+
+              <!-- Back / Next — at bottom after interaction tools -->
               <div class="draw-action-bar">
                 <button class="btn secondary ui-icon-btn" type="button" data-quote-back="property"><img src="/assets/icons/lucide/arrow-left.svg" alt="" class="ui-icon"><span class="ui-label">Back</span></button>
                 <button class="btn primary ui-icon-btn" type="button" id="drawContinueBtn"><img src="/assets/icons/lucide/check.svg" alt="" class="ui-icon"><span class="ui-label">Next</span></button>
               </div>
+
             </section>
 
             <section class="quote-flow-screen hidden" id="quoteEstimateScreen" data-quote-step-panel="estimate" hidden>
               <div class="flow-screen-head">
                 <button class="flow-back-btn ui-icon-btn" type="button" data-quote-back="draw"><img src="/assets/icons/lucide/arrow-left.svg" alt="" class="ui-icon"><span class="ui-label">Back</span></button>
                 <div>
-                  <h2>Your Quote</h2>
-                  <p>Price updates as you adjust options below.</p>
+                  <h2>Review Your Quote</h2>
+                  <p>Adjust options and continue to booking.</p>
                 </div>
               </div>
               <div class="price-hero">
@@ -407,12 +421,8 @@
               <button class="flow-back-btn ui-icon-btn" type="button" id="closeManualQuotePanel"><img src="/assets/icons/lucide/arrow-left.svg" alt="" class="ui-icon"><span class="ui-label">Back</span></button>
               <div>
                 <h2>Request In-Person Quote</h2>
-                <p>Want us to check it in person? No payment required.</p>
+                <p>We'll come take a look — no payment required. Fill in your details and we'll reach out to schedule.</p>
               </div>
-            </div>
-            <div class="price-hero compact">
-              <span>Estimate</span>
-              <strong id="manualQuoteEstimateDisplay">-</strong>
             </div>
             <div class="quote-auth-options" data-auth-options="manual">
               <div>
@@ -444,20 +454,70 @@
                 <span>I agree to receive SMS messages from MowNWA.com about my quote, booking, scheduling, job updates, payment/COD verification, and customer support. Message frequency may vary. Msg &amp; data rates may apply. Reply STOP to opt out or HELP for help. Consent is not a condition of purchase. View our <a href="/privacy.html">Privacy Policy</a> and <a href="/terms.html">Terms of Service</a>.</span>
               </label>
               <label><span>Email <em>optional</em></span><input name="email" type="email" placeholder="you@example.com" autocomplete="email" /></label>
-              <label><span>Preferred day/time <em>optional</em></span><input name="preferredDayTime" placeholder="Tuesday morning, after 3 PM, flexible" /></label>
-              <label><span>Notes <em>optional</em></span><textarea name="notes" rows="4" placeholder="Anything we should check in person?"></textarea></label>
+              <label><span>Preferred contact method</span>
+                <select name="preferredContactMethod" required>
+                  <option value="">Select one</option>
+                  <option value="phone">Phone call</option>
+                  <option value="sms">Text message</option>
+                  <option value="email">Email</option>
+                </select>
+              </label>
+              <section class="intake-section">
+                <div class="section-label">What needs looked at</div>
+                <div class="checks compact-checks">
+                  <label><input type="checkbox" name="manual_quote_extras" value="overgrown_grass" /> Overgrown grass</label>
+                  <label><input type="checkbox" name="manual_quote_extras" value="leaf_cleanup" /> Leaf cleanup</label>
+                  <label><input type="checkbox" name="manual_quote_extras" value="hauling_debris" /> Hauling/debris</label>
+                  <label><input type="checkbox" name="manual_quote_extras" value="trimming_landscaping" /> Trimming/landscaping</label>
+                  <label><input type="checkbox" name="manual_quote_extras" value="pet_waste" /> Pet waste</label>
+                  <label><input type="checkbox" name="manual_quote_extras" value="locked_gate_access_issue" /> Locked gate/access issue</label>
+                  <label><input type="checkbox" name="manual_quote_extras" value="other" /> Other</label>
+                </div>
+              </section>
+              <section class="intake-section">
+                <div class="section-label">Preferred days</div>
+                <div class="preferred-days-grid" aria-label="Preferred days of the week">
+                  <label class="preferred-day-card"><input type="checkbox" name="available_days_json" value="monday" /><span class="preferred-day-check" aria-hidden="true">✓</span><span class="preferred-day-icon" aria-hidden="true"><img src="/assets/icons/lucide/calendar-days.svg" alt="" class="ui-icon"></span><span class="preferred-day-name">Monday</span><span class="preferred-day-helper">Start of week</span></label>
+                  <label class="preferred-day-card"><input type="checkbox" name="available_days_json" value="tuesday" /><span class="preferred-day-check" aria-hidden="true">✓</span><span class="preferred-day-icon" aria-hidden="true"><img src="/assets/icons/lucide/calendar-days.svg" alt="" class="ui-icon"></span><span class="preferred-day-name">Tuesday</span><span class="preferred-day-helper">Early week</span></label>
+                  <label class="preferred-day-card"><input type="checkbox" name="available_days_json" value="wednesday" /><span class="preferred-day-check" aria-hidden="true">✓</span><span class="preferred-day-icon" aria-hidden="true"><img src="/assets/icons/lucide/calendar-days.svg" alt="" class="ui-icon"></span><span class="preferred-day-name">Wednesday</span><span class="preferred-day-helper">Midweek</span></label>
+                  <label class="preferred-day-card"><input type="checkbox" name="available_days_json" value="thursday" /><span class="preferred-day-check" aria-hidden="true">✓</span><span class="preferred-day-icon" aria-hidden="true"><img src="/assets/icons/lucide/calendar-days.svg" alt="" class="ui-icon"></span><span class="preferred-day-name">Thursday</span><span class="preferred-day-helper">Before Friday</span></label>
+                  <label class="preferred-day-card"><input type="checkbox" name="available_days_json" value="friday" /><span class="preferred-day-check" aria-hidden="true">✓</span><span class="preferred-day-icon" aria-hidden="true"><img src="/assets/icons/lucide/calendar-days.svg" alt="" class="ui-icon"></span><span class="preferred-day-name">Friday</span><span class="preferred-day-helper">End of week</span></label>
+                  <label class="preferred-day-card"><input type="checkbox" name="available_days_json" value="saturday" /><span class="preferred-day-check" aria-hidden="true">✓</span><span class="preferred-day-icon" aria-hidden="true"><img src="/assets/icons/lucide/calendar-days.svg" alt="" class="ui-icon"></span><span class="preferred-day-name">Saturday</span><span class="preferred-day-helper">Weekend</span></label>
+                  <label class="preferred-day-card"><input type="checkbox" name="available_days_json" value="sunday" /><span class="preferred-day-check" aria-hidden="true">✓</span><span class="preferred-day-icon" aria-hidden="true"><img src="/assets/icons/lucide/calendar-days.svg" alt="" class="ui-icon"></span><span class="preferred-day-name">Sunday</span><span class="preferred-day-helper">Weekend</span></label>
+                </div>
+                <label><span>Time window</span>
+                  <select name="preferredTimeWindow">
+                    <option value="">Flexible</option>
+                    <option value="morning">Morning</option>
+                    <option value="midday">Midday</option>
+                    <option value="afternoon">Afternoon</option>
+                    <option value="evening">Evening</option>
+                  </select>
+                </label>
+              </section>
+              <label><span>Notes / what needs looked at</span><textarea name="notes" rows="4" placeholder="Anything we should check in person?" required></textarea></label>
               <button class="btn primary ui-icon-btn" type="submit" id="manualQuoteSubmitBtn"><img src="/assets/icons/lucide/clipboard-check.svg" alt="" class="ui-icon"><span class="ui-label">Submit Request</span></button>
               <button class="btn ghost ui-icon-btn" type="button" id="cancelManualQuotePanel"><img src="/assets/icons/lucide/x.svg" alt="" class="ui-icon"><span class="ui-label">Cancel</span></button>
             </form>
             <div id="manualQuoteResult" class="result hidden" style="margin-top:12px"></div>
+            <details class="manual-quote-summary-details" style="margin-top:16px">
+              <summary class="manual-quote-summary-toggle">Quote &amp; property summary</summary>
+              <div class="manual-quote-summary-body">
+                <div class="price-hero compact">
+                  <span>Estimate</span>
+                  <strong id="manualQuoteEstimateDisplay">-</strong>
+                </div>
+                <div id="manualQuoteContext" class="manual-quote-context" aria-live="polite"></div>
+              </div>
+            </details>
           </section>
 
           <section id="leadRequestPanel" class="quote-flow-screen lead-request-panel hidden" data-quote-step-panel="request" hidden>
             <div class="flow-screen-head">
               <button class="flow-back-btn ui-icon-btn" type="button" data-quote-back="estimate"><img src="/assets/icons/lucide/arrow-left.svg" alt="" class="ui-icon"><span class="ui-label">Back</span></button>
               <div>
-                <h2>Secure Checkout</h2>
-                <p>Enter details once. Payment opens securely in Stripe.</p>
+                <h2>Complete Booking</h2>
+                <p>Secure your lawn service appointment.</p>
               </div>
             </div>
             <div class="price-hero compact">
@@ -821,6 +881,8 @@
   <!-- Phase 2 modules: API helper and estimate rendering extracted from app.js -->
   <script src="/js/core/api.js"></script>
   <script src="/js/quote/estimate.js"></script>
+  <!-- Terrain card renderer — safe no-op when TERRAIN_MODE=off -->
+  <script src="/js/quote/terrain-card.js"></script>
 
   <!-- Phase 6 module: auth/session/account UI extracted from app.js -->
   <script src="/js/auth/auth-ui.js"></script>
@@ -851,9 +913,6 @@
 
   <!-- Phase 8: Provider dashboard/jobs/profile/areas UI extracted from app.js -->
   <script src="/js/provider/provider-ui.js"></script>
-
-  <!-- Phase 9: Admin dashboard/leads/pricing UI extracted from app.js -->
-  <script src="/js/admin/admin-ui.js"></script>
 
   <!-- Phase 10: Checkout, lead/service request, manual quote, account recommendation extracted from app.js -->
   <script src="/js/quote/checkout-request.js"></script>

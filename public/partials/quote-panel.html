@@ -35,6 +35,10 @@
 
             <section class="quote-flow-screen is-active is-searching" id="quoteStartScreen" data-quote-step-panel="property">
               <div id="parcel-search-panel">
+                <div class="qf-step-head">
+                  <h2>Find Your Property</h2>
+                  <p>Enter your service address to get started.</p>
+                </div>
                 <div class="flow-card">
                   <label><span>Street Address</span><input name="address" placeholder="123 Main St" autocomplete="street-address" required /></label>
                   <div class="grid-2 compact-location-grid">
@@ -77,7 +81,10 @@
             </section>
 
             <section class="quote-flow-screen draw-screen hidden" id="quoteDrawScreen" data-quote-step-panel="draw" hidden>
-              <div id="mowAreaHelper" class="draw-helper-text">Drag around the grass area. Lift your finger to finish.</div>
+              <div class="qf-step-head">
+                <h2>Select Lawn Area</h2>
+                <p>Select the area of your yard that gets mowed.</p>
+              </div>
 
               <div class="map-stage">
                 <div id="quoteMap" class="map-panel"></div>
@@ -90,6 +97,13 @@
                 </div>
                 <div class="map-credit">Map powered by MapLibre. Tiles &copy; Esri.</div>
               </div>
+
+              <div class="draw-action-bar">
+                <button class="btn secondary ui-icon-btn" type="button" data-quote-back="property"><img src="/assets/icons/lucide/arrow-left.svg" alt="" class="ui-icon"><span class="ui-label">Back</span></button>
+                <button class="btn primary ui-icon-btn" type="button" id="drawContinueBtn"><img src="/assets/icons/lucide/check.svg" alt="" class="ui-icon"><span class="ui-label">Next</span></button>
+              </div>
+
+              <div id="mowAreaHelper" class="draw-helper-text">Drag around the grass area. Lift your finger to finish.</div>
 
               <button class="btn secondary map-tools-toggle hidden ui-icon-btn" type="button" id="mapToolsToggle"><img src="/assets/icons/lucide/map.svg" alt="" class="ui-icon"><span class="ui-label">Adjust Area</span></button>
               <div class="map-tools-panel" id="mapToolsPanel">
@@ -117,10 +131,6 @@
                 </div>
               </div>
 
-              <div class="draw-action-bar">
-                <button class="btn secondary ui-icon-btn" type="button" data-quote-back="property"><img src="/assets/icons/lucide/arrow-left.svg" alt="" class="ui-icon"><span class="ui-label">Back</span></button>
-                <button class="btn primary ui-icon-btn" type="button" id="drawContinueBtn"><img src="/assets/icons/lucide/check.svg" alt="" class="ui-icon"><span class="ui-label">Next</span></button>
-              </div>
             </section>
 
             <section class="quote-flow-screen hidden" id="quoteEstimateScreen" data-quote-step-panel="estimate" hidden>
@@ -137,6 +147,10 @@
                 <small id="quotePreviewMirror">Draw area</small>
               </div>
               <div id="quoteResult" class="result hidden"></div>
+              <!-- Terrain card — shown only when TERRAIN_MODE=display_only or pricing_enabled AND terrain.available=true -->
+              <div id="terrainCard" hidden></div>
+              <!-- Terrain guardrail card — shown when manualReviewRequired=true -->
+              <div id="terrainGuardrailCard" hidden></div>
 
               <section class="flow-card">
                 <div class="section-label">Service Options</div>
@@ -166,6 +180,19 @@
                   </label>
                 </div>
               </section>
+
+              <button class="btn primary ui-icon-btn" type="submit" id="getEstimateBtn"><img src="/assets/icons/lucide/calculator.svg" alt="" class="ui-icon"><span class="ui-label">Recalculate</span></button>
+              <button class="btn primary request-service-cta hidden ui-icon-btn" type="button" id="requestServiceBtn">
+                <img src="/assets/icons/lucide/credit-card.svg" alt="" class="ui-icon">
+                <span class="ui-label">Book This Service</span>
+                <small class="ui-helper">You'll confirm details on the next step</small>
+              </button>
+              <button class="btn secondary manual-quote-cta hidden ui-icon-btn" type="button" id="manualQuoteBtn">
+                <img src="/assets/icons/lucide/user.svg" alt="" class="ui-icon">
+                <span class="ui-label">Request In-Person Quote</span>
+                <small class="ui-helper">Want us to check it in person? No payment required.</small>
+              </button>
+              <p class="meta hidden" id="checkoutTestModeNote" style="margin:8px 0 0">Stripe test checkout enabled. Use card 4242 4242 4242 4242.</p>
 
               <section class="flow-card" style="display:none" hidden>
                 <div class="section-label">Gate and Access</div>
@@ -240,18 +267,6 @@
                 <input type="hidden" name="gates" value="" />
               </section>
 
-              <button class="btn primary request-service-cta hidden ui-icon-btn" type="button" id="requestServiceBtn">
-                <img src="/assets/icons/lucide/credit-card.svg" alt="" class="ui-icon">
-                <span class="ui-label">Book This Service</span>
-                <small class="ui-helper">You'll confirm details on the next step</small>
-              </button>
-              <button class="btn secondary manual-quote-cta hidden ui-icon-btn" type="button" id="manualQuoteBtn">
-                <img src="/assets/icons/lucide/user.svg" alt="" class="ui-icon">
-                <span class="ui-label">Request In-Person Quote</span>
-                <small class="ui-helper">Want us to check it in person? No payment required.</small>
-              </button>
-              <p class="meta hidden" id="checkoutTestModeNote" style="margin:8px 0 0">Stripe test checkout enabled. Use card 4242 4242 4242 4242.</p>
-              <button class="btn primary ui-icon-btn" type="submit" id="getEstimateBtn"><img src="/assets/icons/lucide/calculator.svg" alt="" class="ui-icon"><span class="ui-label">Recalculate</span></button>
             </section>
           </form>
 
@@ -260,12 +275,8 @@
               <button class="flow-back-btn ui-icon-btn" type="button" id="closeManualQuotePanel"><img src="/assets/icons/lucide/arrow-left.svg" alt="" class="ui-icon"><span class="ui-label">Back</span></button>
               <div>
                 <h2>Request In-Person Quote</h2>
-                <p>Want us to check it in person? No payment required.</p>
+                <p>We'll come take a look — no payment required. Fill in your details and we'll reach out to schedule.</p>
               </div>
-            </div>
-            <div class="price-hero compact">
-              <span>Estimate</span>
-              <strong id="manualQuoteEstimateDisplay">-</strong>
             </div>
             <div class="quote-auth-options" data-auth-options="manual">
               <div>
@@ -294,12 +305,62 @@
                 <span>I agree to receive SMS messages from MowNWA.com about my quote, booking, scheduling, job updates, payment/COD verification, and customer support. Message frequency may vary. Msg &amp; data rates may apply. Reply STOP to opt out or HELP for help. Consent is not a condition of purchase. View our <a href="/privacy.html">Privacy Policy</a> and <a href="/terms.html">Terms of Service</a>.</span>
               </label>
               <label><span>Email <em>optional</em></span><input name="email" type="email" placeholder="you@example.com" autocomplete="email" /></label>
-              <label><span>Preferred day/time <em>optional</em></span><input name="preferredDayTime" placeholder="Tuesday morning, after 3 PM, flexible" /></label>
-              <label><span>Notes <em>optional</em></span><textarea name="notes" rows="4" placeholder="Anything we should check in person?"></textarea></label>
+              <label><span>Preferred contact method</span>
+                <select name="preferredContactMethod" required>
+                  <option value="">Select one</option>
+                  <option value="phone">Phone call</option>
+                  <option value="sms">Text message</option>
+                  <option value="email">Email</option>
+                </select>
+              </label>
+              <section class="intake-section">
+                <div class="section-label">What needs looked at</div>
+                <div class="checks compact-checks">
+                  <label><input type="checkbox" name="manual_quote_extras" value="overgrown_grass" /> Overgrown grass</label>
+                  <label><input type="checkbox" name="manual_quote_extras" value="leaf_cleanup" /> Leaf cleanup</label>
+                  <label><input type="checkbox" name="manual_quote_extras" value="hauling_debris" /> Hauling/debris</label>
+                  <label><input type="checkbox" name="manual_quote_extras" value="trimming_landscaping" /> Trimming/landscaping</label>
+                  <label><input type="checkbox" name="manual_quote_extras" value="pet_waste" /> Pet waste</label>
+                  <label><input type="checkbox" name="manual_quote_extras" value="locked_gate_access_issue" /> Locked gate/access issue</label>
+                  <label><input type="checkbox" name="manual_quote_extras" value="other" /> Other</label>
+                </div>
+              </section>
+              <section class="intake-section">
+                <div class="section-label">Preferred days</div>
+                <div class="preferred-days-grid" aria-label="Preferred days of the week">
+                  <label class="preferred-day-card"><input type="checkbox" name="available_days_json" value="monday" /><span class="preferred-day-check" aria-hidden="true">✓</span><span class="preferred-day-icon" aria-hidden="true"><img src="/assets/icons/lucide/calendar-days.svg" alt="" class="ui-icon"></span><span class="preferred-day-name">Monday</span><span class="preferred-day-helper">Start of week</span></label>
+                  <label class="preferred-day-card"><input type="checkbox" name="available_days_json" value="tuesday" /><span class="preferred-day-check" aria-hidden="true">✓</span><span class="preferred-day-icon" aria-hidden="true"><img src="/assets/icons/lucide/calendar-days.svg" alt="" class="ui-icon"></span><span class="preferred-day-name">Tuesday</span><span class="preferred-day-helper">Early week</span></label>
+                  <label class="preferred-day-card"><input type="checkbox" name="available_days_json" value="wednesday" /><span class="preferred-day-check" aria-hidden="true">✓</span><span class="preferred-day-icon" aria-hidden="true"><img src="/assets/icons/lucide/calendar-days.svg" alt="" class="ui-icon"></span><span class="preferred-day-name">Wednesday</span><span class="preferred-day-helper">Midweek</span></label>
+                  <label class="preferred-day-card"><input type="checkbox" name="available_days_json" value="thursday" /><span class="preferred-day-check" aria-hidden="true">✓</span><span class="preferred-day-icon" aria-hidden="true"><img src="/assets/icons/lucide/calendar-days.svg" alt="" class="ui-icon"></span><span class="preferred-day-name">Thursday</span><span class="preferred-day-helper">Before Friday</span></label>
+                  <label class="preferred-day-card"><input type="checkbox" name="available_days_json" value="friday" /><span class="preferred-day-check" aria-hidden="true">✓</span><span class="preferred-day-icon" aria-hidden="true"><img src="/assets/icons/lucide/calendar-days.svg" alt="" class="ui-icon"></span><span class="preferred-day-name">Friday</span><span class="preferred-day-helper">End of week</span></label>
+                  <label class="preferred-day-card"><input type="checkbox" name="available_days_json" value="saturday" /><span class="preferred-day-check" aria-hidden="true">✓</span><span class="preferred-day-icon" aria-hidden="true"><img src="/assets/icons/lucide/calendar-days.svg" alt="" class="ui-icon"></span><span class="preferred-day-name">Saturday</span><span class="preferred-day-helper">Weekend</span></label>
+                  <label class="preferred-day-card"><input type="checkbox" name="available_days_json" value="sunday" /><span class="preferred-day-check" aria-hidden="true">✓</span><span class="preferred-day-icon" aria-hidden="true"><img src="/assets/icons/lucide/calendar-days.svg" alt="" class="ui-icon"></span><span class="preferred-day-name">Sunday</span><span class="preferred-day-helper">Weekend</span></label>
+                </div>
+                <label><span>Time window</span>
+                  <select name="preferredTimeWindow">
+                    <option value="">Flexible</option>
+                    <option value="morning">Morning</option>
+                    <option value="midday">Midday</option>
+                    <option value="afternoon">Afternoon</option>
+                    <option value="evening">Evening</option>
+                  </select>
+                </label>
+              </section>
+              <label><span>Notes / what needs looked at</span><textarea name="notes" rows="4" placeholder="Anything we should check in person?" required></textarea></label>
               <button class="btn primary ui-icon-btn" type="submit" id="manualQuoteSubmitBtn"><img src="/assets/icons/lucide/clipboard-check.svg" alt="" class="ui-icon"><span class="ui-label">Submit Request</span></button>
               <button class="btn ghost ui-icon-btn" type="button" id="cancelManualQuotePanel"><img src="/assets/icons/lucide/x.svg" alt="" class="ui-icon"><span class="ui-label">Cancel</span></button>
             </form>
             <div id="manualQuoteResult" class="result hidden" style="margin-top:12px"></div>
+            <details class="manual-quote-summary-details" style="margin-top:16px">
+              <summary class="manual-quote-summary-toggle">Quote &amp; property summary</summary>
+              <div class="manual-quote-summary-body">
+                <div class="price-hero compact">
+                  <span>Estimate</span>
+                  <strong id="manualQuoteEstimateDisplay">-</strong>
+                </div>
+                <div id="manualQuoteContext" class="manual-quote-context" aria-live="polite"></div>
+              </div>
+            </details>
           </section>
 
           <section id="leadRequestPanel" class="quote-flow-screen lead-request-panel hidden" data-quote-step-panel="request" hidden>

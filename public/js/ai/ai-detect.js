@@ -260,11 +260,17 @@ function mowableFeaturesFromAiResponse(data = {}) {
   return [];
 }
 
-function sanitizeAiMowableFeatures(data = {}, parcelGeoJson = null) {
+function sanitizeAiMowableFeatures(data = {}, parcelGeoJson = null, selectedAreaGeoJson = null) {
   const source = String(data.source || '').toLowerCase();
   const parcelFeatures = geoJsonFeaturesFromValue(parcelGeoJson);
   const parcelFeature = parcelFeatures.find((feature) => isPolygonalGeometry(feature.geometry)) || null;
   const parcelAreaSqFt = parcelFeature ? layerAreaSqFt(parcelFeature) : 0;
+  // When a selected/drawn area exists, use it as the primary clip boundary and for rejection threshold
+  const selectedFeatures = selectedAreaGeoJson ? geoJsonFeaturesFromValue(selectedAreaGeoJson) : [];
+  const selectedFeature = selectedFeatures.find((feature) => isPolygonalGeometry(feature.geometry)) || null;
+  const selectedAreaSqFt = selectedFeature ? layerAreaSqFt(selectedFeature) : 0;
+  const clipFeature = selectedFeature || parcelFeature;
+  const thresholdAreaSqFt = selectedAreaSqFt > 0 ? selectedAreaSqFt : parcelAreaSqFt;
   const cleaned = [];
   const isFallbackSource = source.includes('fallback') || source.includes('parcel') || source.includes('copy') || source.includes('placeholder');
   const confidenceLabelRaw = String(data.confidence || data.diagnostics?.confidence || data.diagnostics?.confidenceLabel || '');
@@ -289,21 +295,21 @@ function sanitizeAiMowableFeatures(data = {}, parcelGeoJson = null) {
     if (!normalized || !isPolygonalGeometry(normalized.geometry)) return;
 
     let candidate = normalized;
-    if (parcelFeature && source !== 'fallback' && typeof turf !== 'undefined' && typeof turf.intersect === 'function') {
+    if (clipFeature && source !== 'fallback' && typeof turf !== 'undefined' && typeof turf.intersect === 'function') {
       try {
-        const clipped = turf.intersect(normalized, parcelFeature);
+        const clipped = turf.intersect(normalized, clipFeature);
         if (clipped?.geometry && isPolygonalGeometry(clipped.geometry)) {
           candidate = asFeature(clipped, normalized.properties);
         }
       } catch (error) {
-        console.warn('[AI Detect] could not clip detected feature to parcel', error);
+        console.warn('[AI Detect] could not clip detected feature to boundary', error);
       }
     }
 
     const areaSqFt = layerAreaSqFt(candidate);
     if (areaSqFt <= 0) return;
-    if (parcelAreaSqFt > 0 && areaSqFt > parcelAreaSqFt * 0.97) {
-      console.warn('[AI Detect] rejected parcel-sized mowable feature', { areaSqFt, parcelAreaSqFt });
+    if (thresholdAreaSqFt > 0 && areaSqFt > thresholdAreaSqFt * 0.97) {
+      console.warn('[AI Detect] rejected boundary-sized mowable feature', { areaSqFt, thresholdAreaSqFt });
       return;
     }
 
@@ -311,8 +317,8 @@ function sanitizeAiMowableFeatures(data = {}, parcelGeoJson = null) {
   });
 
   const totalAreaSqFt = cleaned.reduce((sum, feature) => sum + layerAreaSqFt(feature), 0);
-  if (parcelAreaSqFt > 0 && totalAreaSqFt > parcelAreaSqFt * 0.97) {
-    console.warn('[AI Detect] rejected parcel-sized mowable response', { totalAreaSqFt, parcelAreaSqFt });
+  if (thresholdAreaSqFt > 0 && totalAreaSqFt > thresholdAreaSqFt * 0.97) {
+    console.warn('[AI Detect] rejected boundary-sized mowable response', { totalAreaSqFt, thresholdAreaSqFt });
     return [];
   }
 
@@ -353,10 +359,13 @@ async function aiDetectMowableArea() {
   }
 
   const constraintGeoJson = getAiConstraintGeoJson();
+  const detectionBoundarySource = constraintGeoJson ? 'mowable' : 'parcel';
   if (constraintGeoJson) {
     console.debug('[AI Detect] mode:', 'constrained-selection', constraintGeoJson.features.length);
+    console.debug('[AI Detect] boundary source: mowable');
   } else {
     console.debug('[AI Detect] mode:', 'full-parcel');
+    console.debug('[AI Detect] boundary source: parcel');
   }
 
   const form = byId('quoteForm');
@@ -398,7 +407,8 @@ async function aiDetectMowableArea() {
       tileUrl: window.SATELLITE_TILE_URL,
       attribution: window.SATELLITE_TILE_ATTRIBUTION,
     },
-    ...(constraintGeoJson ? { constraintGeoJson } : {}),
+    detectionBoundarySource,
+    ...(constraintGeoJson ? { constraintGeoJson, mowableGeoJson: constraintGeoJson } : {}),
   };
 
   console.log('[AI Detect] request body', payload);
@@ -464,7 +474,7 @@ async function aiDetectMowableArea() {
       debugRunDir: diag.debugRunDir,
     }));
 
-    let features = sanitizeAiMowableFeatures(data, parcelGeoJson);
+    let features = sanitizeAiMowableFeatures(data, parcelGeoJson, constraintGeoJson);
     const serverFeaturesCount = Array.isArray(data.features) ? data.features.length : (Array.isArray(data.featureCollection?.features) ? data.featureCollection.features.length : 0);
     console.log('[AI Detect] server features count', serverFeaturesCount, '| sanitized features count', features.length);
 if (serverFeaturesCount > 0 && features.length === 0) {

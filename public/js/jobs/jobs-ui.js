@@ -103,6 +103,22 @@ function renderJobScopeSnapshot(job = {}, safe = sanitizeJobForPublic(job)) {
     options.obstacles?.length ? `Obstacles: ${options.obstacles.join(', ')}` : '',
   ].filter(Boolean).join(' · ');
 
+  const terrain = scope.terrain || null;
+  const terrainHtml = terrain ? (() => {
+    const cat      = terrain.difficultyCategory || 'unknown';
+    const score    = terrain.difficultyScore != null ? Number(terrain.difficultyScore).toFixed(1) : '—';
+    const elevChg  = terrain.elevationChangeFt != null ? `${Math.round(terrain.elevationChangeFt)} ft` : '—';
+    const avgGrade = terrain.averageGradePercent != null ? `${Math.round(terrain.averageGradePercent)}%` : '—';
+    const guardrail = terrain.terrainGuardrail;
+    const guardBadge = guardrail?.manualReviewRequired
+      ? `<span class="status-badge extreme" style="margin-left:4px">Manual Review</span>`
+      : '';
+    return `<div class="meta terrain-snapshot-meta">
+      Terrain: <strong>${escapeHtml(cat)}</strong> · Score: <strong>${escapeHtml(score)}</strong> · Elev change: <strong>${escapeHtml(elevChg)}</strong> · Avg grade: <strong>${escapeHtml(avgGrade)}</strong>${guardBadge}
+      ${guardrail?.reasonCode && guardrail.reasonCode !== 'terrain_ok' && guardrail.reasonCode !== 'terrain_unavailable' ? `<span class="admin-muted" style="margin-left:4px">(${escapeHtml(guardrail.reasonCode)})</span>` : ''}
+    </div>`;
+  })() : '';
+
   return `
     <div class="job-scope-snapshot" aria-label="Booking scope snapshot">
       <div class="meta"><strong>Booking scope:</strong> ${escapeHtml(serviceText || `${serviceLabel(scope.serviceType || safe.serviceType)} from MowNWA`)}</div>
@@ -110,6 +126,7 @@ function renderJobScopeSnapshot(job = {}, safe = sanitizeJobForPublic(job)) {
       <div class="meta">Price: <strong>${money(price)}</strong>${tip > 0 ? ` · Tip: <strong>${money(tip)}</strong>` : ''}</div>
       ${accessText ? `<div class="meta">Service/access: ${escapeHtml(accessText)}</div>` : ''}
       ${scope.customerNotes ? `<div class="meta">Customer notes: ${escapeHtml(scope.customerNotes)}</div>` : ''}
+      ${terrainHtml}
       ${mapHtml}
     </div>
   `;

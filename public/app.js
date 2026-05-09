@@ -132,6 +132,7 @@ function _refreshQuoteMapAfterVisible(reason) {
 function showSearch() {
   const s = document.getElementById('quoteStartScreen');
   if (s) { s.classList.add('is-searching'); s.classList.remove('is-confirming'); }
+  if (typeof window.updateQuoteStepHeader === 'function') window.updateQuoteStepHeader('property', 'search');
 }
 function _enableConfirmMapGestures() {
   const m = state.map;
@@ -149,6 +150,7 @@ function showConfirm() {
   if (s) { s.classList.remove('is-searching'); s.classList.add('is-confirming'); }
   _setQuoteMapPointerEnabled(true);
   _enableConfirmMapGestures();
+  if (typeof window.updateQuoteStepHeader === 'function') window.updateQuoteStepHeader('property', 'confirm');
 }
 function setParcelUiState(state) {
   const el = document.getElementById('quoteStartScreen');
@@ -598,16 +600,25 @@ function buildQuotePayload(form) {
   payload.scope_locked = Boolean(payload.standardMowScopeAck);
   payload.final_price = Number(payload.estimate || payload.final_price || 0);
   payload.status = payload.status || 'estimate_ready';
+  if (state.selectedServiceLocation) {
+    payload.selectedServiceLocation = state.selectedServiceLocation;
+    payload.parcelAddressLabel = state.selectedServiceLocation.displayAddress || payload.parcelAddressLabel || '';
+    payload.parcelCity = state.selectedServiceLocation.city || payload.parcelCity || '';
+    payload.parcelState = state.selectedServiceLocation.state || payload.parcelState || 'AR';
+    payload.parcelZip = state.selectedServiceLocation.zip || payload.parcelZip || '';
+    payload.parcelId = state.selectedServiceLocation.parcelId || payload.parcelId || '';
+    payload.parcelGeoJSON = state.selectedServiceLocation.parcelGeoJson || payload.parcelGeoJSON || null;
+  }
   const parcelProps = checkoutParcelProps();
   const parcelParts = addressPartsFromParcelProps(parcelProps);
   const parcelAddressLabel = parcelFullAddressFromProps(parcelProps);
   if (Object.keys(parcelProps).length) {
-    const serviceAddress = resolveServiceAddressFromParcel(parcelProps, getQuoteFormServiceAddress());
+    const serviceAddress = state.selectedServiceLocation || resolveServiceAddressFromParcel(parcelProps, getQuoteFormServiceAddress());
     if (hasServiceAddress(serviceAddress)) setCurrentServiceAddress(serviceAddress, 'build-quote-payload');
-    payload.parcelAddressLabel = parcelAddressLabel;
-    payload.parcelCity = parcelParts.city || '';
-    payload.parcelState = parcelParts.state || 'AR';
-    payload.parcelZip = parcelParts.zip || '';
+    payload.parcelAddressLabel = payload.parcelAddressLabel || parcelAddressLabel;
+    payload.parcelCity = payload.parcelCity || parcelParts.city || '';
+    payload.parcelState = payload.parcelState || parcelParts.state || 'AR';
+    payload.parcelZip = payload.parcelZip || parcelParts.zip || '';
     payload.parcelProperties = parcelProps;
     payload.selectedParcelProperties = parcelProps;
   }
@@ -1158,6 +1169,7 @@ function setEstimateState(status, details = {}) {
     breakdown: Array.isArray(details.breakdown) ? details.breakdown : [],
     signature: details.signature || '',
     payload: details.payload || null,
+    terrain: details.terrain || null,
     error: details.error || '',
     updatedAt: status === 'fresh' ? Date.now() : state.currentEstimate?.updatedAt || null,
   };
@@ -1253,7 +1265,7 @@ async function refreshEstimate(options = {}) {
       return state.currentEstimate;
     }
 
-    const freshPayload = { ...payload, ...currentJobScopeSnapshotFields(), estimate: data.estimate };
+    const freshPayload = { ...payload, ...currentJobScopeSnapshotFields(), estimate: data.estimate, terrain: data.terrain || null };
     state.pendingQuote = freshPayload;
     state.lastQuote = null;
     saveQuoteDraft();
@@ -1262,6 +1274,7 @@ async function refreshEstimate(options = {}) {
       payload: freshPayload,
       estimate: data.estimate,
       breakdown: Array.isArray(data.breakdown) ? data.breakdown : [],
+      terrain: data.terrain || null,
     });
     trackLeadForFreshEstimate(freshPayload, signature);
     if (options.navigate) showQuoteFlowStep('estimate');
@@ -1466,6 +1479,12 @@ function navigateFromElement(el) {
   }
   if (providerSection) state.providerAreaSection = providerSection;
   if (view) setActiveView(view);
+  if (view === 'quote') {
+    const src = el?.dataset?.drawerView ? 'drawer-Get Lawn Quote'
+      : el?.dataset?.view ? 'sidebar-Get Lawn Quote'
+      : 'nav-Get Lawn Quote';
+    restartQuoteFlow(src, { fresh: true });
+  }
   if (providerSection && view === 'providers') renderProviderArea(providerSection);
   if (requestedFlow === 'instant_mow') {
     setServiceFlow('instant_mow');
@@ -1528,7 +1547,9 @@ function setActiveView(view) {
   }
 
   if (view === 'admin') {
-    if (isAdmin()) loadAdminLeads().catch(() => {});
+    // Admin console lives at /admin/ — loadAdminLeads only exists when
+    // admin-ui.js is loaded, which is no longer the case on index.html.
+    if (isAdmin() && typeof loadAdminLeads === 'function') loadAdminLeads().catch(() => {});
     // Populate service filter dropdown if empty
     const sf = byId('leadsServiceFilter');
     if (sf && sf.options.length <= 1) {
@@ -1794,6 +1815,7 @@ function resetCommittedParcelAliases() {
     'confirmedParcel',
     'confirmedParcelProperties',
     'currentParcelProperties',
+    'selectedServiceLocation',
   ].forEach((key) => { state[key] = null; });
 
   [
@@ -1807,6 +1829,7 @@ function resetCommittedParcelAliases() {
     'parcelGeometry',
     'currentParcel',
     'confirmedParcel',
+    'selectedServiceLocation',
   ].forEach((key) => { window[key] = null; });
 }
 
@@ -1874,9 +1897,20 @@ function commitSelectedParcelForQuote(data = {}, options = {}) {
     || parcelLookupPointFromGeometry(geometry)
     || parcelLookupPointFromGeometry(parcelGeometryFromGeoJson(parcelGeoJson))
     || quoteFormLatLng();
-  const validationPoint = parcelLookupPointFromGeometry(parcelGeometryFromGeoJson(parcelGeoJson)) || lookupPoint;
-  const validationState = addressParts.state || addressPartsFromParcelProps(parcelProps).state || '';
-  if (!isLngLatInArkansas({ ...validationPoint, state: validationState })) {
+  const selectedServiceLocation = options.selectedServiceLocation || buildSelectedServiceLocation({
+    displayAddress: address,
+    googleAddress: state.currentServiceAddress?.source === 'google-places' ? state.currentServiceAddress : null,
+    serviceAddress: addressParts,
+    lookupContext: getQuoteFormServiceAddress(),
+    lookupPoint,
+    geometry,
+    parcelGeoJson,
+    parcelProps,
+    parcelId,
+    county: normalized.county || propText(attrs, 'countyid', 'county', 'COUNTY') || '',
+  });
+  const arkansasValidation = validateArkansasSelectedServiceLocation(selectedServiceLocation);
+  if (!arkansasValidation.accepted) {
     showArkansasOnlyPropertyBlock({ toast: { force: true } });
     return null;
   }
@@ -1905,6 +1939,7 @@ function commitSelectedParcelForQuote(data = {}, options = {}) {
   state.confirmedParcel = cloneGeoJsonSafe(parcelGeoJsonClone);
   state.currentParcelProperties = parcelProps;
   state.confirmedParcelProperties = parcelProps;
+  state.selectedServiceLocation = selectedServiceLocation;
 
   window.selectedParcelGeoJson = cloneGeoJsonSafe(parcelGeoJsonClone);
   window.selectedParcelGeoJSON = cloneGeoJsonSafe(parcelGeoJsonClone);
@@ -1917,6 +1952,7 @@ function commitSelectedParcelForQuote(data = {}, options = {}) {
   window.currentParcelGeometry = cloneGeoJsonSafe(parcelGeometryClone);
   window.parcelGeometry = cloneGeoJsonSafe(parcelGeometryClone);
   window.parcelLayer = parcelGeoJsonClone;
+  window.selectedServiceLocation = selectedServiceLocation;
 
   if (quoteForm) {
     if (quoteForm.elements.parcelId) quoteForm.elements.parcelId.value = parcelId || '';
@@ -1931,7 +1967,7 @@ function commitSelectedParcelForQuote(data = {}, options = {}) {
     placeMarker(lookupPoint.lat, lookupPoint.lng);
   }
 
-  setCurrentServiceAddress(addressParts, 'manual-parcel-selection', {
+  setCurrentServiceAddress(selectedServiceLocation, 'manual-parcel-selection', {
     syncQuoteForm: true,
     clearQuoteFormMissing: true,
     replace: true,
@@ -1969,6 +2005,24 @@ async function applyParcelFromClick(latlng) {
   const geometry = data.feature.geometry;
   const parcelProps = parcelPropertiesFromLookupData(data);
   data.lookupPoint = { lat, lng };
+  const selectedServiceLocation = buildSelectedServiceLocation({
+    displayAddress: parcelFullAddressFromProps(parcelProps),
+    googleAddress: state.currentServiceAddress?.source === 'google-places' ? state.currentServiceAddress : null,
+    lookupContext: getQuoteFormServiceAddress(),
+    lookupPoint: data.lookupPoint,
+    geometry,
+    parcelProps,
+    parcelId: data.normalized?.parcelId || propText(data.normalized?.attributes || {}, 'parcelid', 'parcel_id', 'PARCELID', 'PIN') || '',
+    county: data.normalized?.county || propText(data.normalized?.attributes || {}, 'countyid', 'county', 'COUNTY') || '',
+  });
+  data.selectedServiceLocation = selectedServiceLocation;
+  state.selectedServiceLocation = selectedServiceLocation;
+  window.selectedServiceLocation = selectedServiceLocation;
+  const arkansasValidation = validateArkansasSelectedServiceLocation(selectedServiceLocation);
+  if (!arkansasValidation.accepted) {
+    showArkansasOnlyPropertyBlock({ toast: { force: true } });
+    return;
+  }
   state.pendingParcelPreviewFeature = esriPolygonToGeoJSONFeature(geometry, { ...parcelProps, role: 'parcel-preview' });
   state.pendingParcelPreviewLayer = state.pendingParcelPreviewFeature;
   updatePreviewParcelSource();
@@ -2003,18 +2057,32 @@ async function confirmParcelSelection(options = {}) {
   const normalized = data.normalized || {};
   const attrs = normalized.attributes || {};
   const parcelProps = parcelPropertiesFromLookupData(data);
-  const validationPoint = parcelLookupPointFromGeometry(geometry) || data.lookupPoint || quoteFormLatLng();
-  const validationState = addressPartsFromParcelProps(parcelProps).state || '';
-  if (!isLngLatInArkansas({ ...validationPoint, state: validationState })) {
-    showArkansasOnlyPropertyBlock({ toast: { force: true } });
-    return;
-  }
 
   let parcelAddress = resolveServiceAddressFromParcel(parcelProps, getQuoteFormServiceAddress());
   parcelAddress = await fillMissingServiceAddressFromReverseGeocode(
     parcelAddress,
     data.lookupPoint || quoteFormLatLng() || parcelLookupPointFromGeometry(geometry) || {}
   );
+  const parcelGeoJson = geometry
+    ? esriPolygonToGeoJSONFeature(geometry, { ...parcelProps, role: 'parcel' })
+    : cloneGeoJsonSafe(data.parcelGeoJSON || data.parcelGeoJson || data.feature || null);
+  const selectedServiceLocation = buildSelectedServiceLocation({
+    displayAddress: firstTextValue(parcelAddress.street, parcelAddress.address, parcelFullAddressFromProps(parcelProps)),
+    googleAddress: state.currentServiceAddress?.source === 'google-places' ? state.currentServiceAddress : null,
+    serviceAddress: parcelAddress,
+    lookupContext: getQuoteFormServiceAddress(),
+    lookupPoint: data.lookupPoint || quoteFormLatLng(),
+    geometry,
+    parcelGeoJson,
+    parcelProps,
+    parcelId: normalized.parcelId || propText(attrs, 'parcelid', 'parcel_id', 'PARCELID', 'PIN') || '',
+    county: normalized.county || propText(attrs, 'countyid', 'county', 'COUNTY') || '',
+  });
+  const arkansasValidation = validateArkansasSelectedServiceLocation(selectedServiceLocation);
+  if (!arkansasValidation.accepted) {
+    showArkansasOnlyPropertyBlock({ toast: { force: true } });
+    return;
+  }
   clearMowableFeatures();
   if (estimateRefreshTimer) clearTimeout(estimateRefreshTimer);
   estimateRefreshTimer = null;
@@ -2029,6 +2097,7 @@ async function confirmParcelSelection(options = {}) {
     parcelProps,
     serviceAddress: parcelAddress,
     lookupPoint: data.lookupPoint,
+    selectedServiceLocation,
   });
   if (!commit?.parcelGeoJson || !hasValidParcelGeoJson(commit.parcelGeoJson)) {
     showWarning('We could not load a valid parcel boundary. Please select the parcel again.');
@@ -2094,7 +2163,14 @@ async function generateGuestEstimate(form) {
     lat: Number(payload.lat || form?.elements?.lat?.value || 0),
     lng: Number(payload.lng || form?.elements?.lng?.value || 0),
   };
-  if (!isLngLatInArkansas({ ...validationPoint, state: payload.state || state.currentServiceAddress?.state || '' })) {
+  const selectedLocationValidation = state.selectedServiceLocation
+    ? validateArkansasSelectedServiceLocation(state.selectedServiceLocation)
+    : null;
+  if (
+    selectedLocationValidation
+      ? !selectedLocationValidation.accepted
+      : !isLngLatInArkansas({ ...validationPoint, state: payload.state || state.currentServiceAddress?.state || '' })
+  ) {
     showArkansasOnlyPropertyBlock({ resultId: 'quoteResult', toast: { force: true } });
     return;
   }
@@ -2140,7 +2216,14 @@ async function acceptPendingQuote() {
     lat: Number(payload.lat || form?.elements?.lat?.value || 0),
     lng: Number(payload.lng || form?.elements?.lng?.value || 0),
   };
-  if (!isLngLatInArkansas({ ...validationPoint, state: payload.state || state.currentServiceAddress?.state || '' })) {
+  const selectedLocationValidation = state.selectedServiceLocation
+    ? validateArkansasSelectedServiceLocation(state.selectedServiceLocation)
+    : null;
+  if (
+    selectedLocationValidation
+      ? !selectedLocationValidation.accepted
+      : !isLngLatInArkansas({ ...validationPoint, state: payload.state || state.currentServiceAddress?.state || '' })
+  ) {
     showArkansasOnlyPropertyBlock({ resultId: 'quoteResult', toast: { force: true } });
     return;
   }
@@ -2256,9 +2339,21 @@ bindTurfLynkOnce(byId('drawManuallyBtn'), 'click', 'draw-manually-open-tools', (
 // locateAddressBtn, lookupParcelBtn, requestCurrentLocation → public/js/quote/property-lookup.js
 
 bindTurfLynkOnce(byId('propertyManualQuoteBtn'), 'click', 'property-manual-quote', () => {
-  hydrateLiveBidForm('other');
-  setServiceFlow('live_bid');
-  byId('liveBidPanel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  try {
+    const form = byId('quoteForm');
+    const payload = form ? buildQuotePayload(form) : {};
+    showManualQuotePanel({
+      ...payload,
+      selectedServiceLocation: state.selectedServiceLocation || payload.selectedServiceLocation || null,
+      requestMode: 'manual_quote',
+      quote_type: 'manual_quote',
+      quoteType: 'manual_quote',
+    });
+  } catch (error) {
+    console.error('[propertyManualQuoteBtn] manual quote render failed', error);
+    showQuoteFlowStep('property', { scroll: false });
+    showError('Could not open the in-person quote form. Your property selection is still available.');
+  }
 });
 
 // [data-use-current-location], gpsConfirmYesBtn, gpsConfirmNoBtn → public/js/quote/property-lookup.js

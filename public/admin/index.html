@@ -1,0 +1,1630 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Admin Console | MowNWA</title>
+  <link rel="icon" href="/assets/brand/mownwa_logo.png">
+  <link rel="stylesheet" href="/styles.css?v=20260507-quote-draw-layout-fix" />
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" crossorigin="" />
+  <style>
+    .admin-page-topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 20px;
+      background: var(--surface, #fff);
+      border-bottom: 1px solid var(--border, #e5e7eb);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    .admin-page-topbar .admin-brand { font-weight: 700; font-size: .95rem; color: var(--text, #111); }
+    .admin-page-topbar .admin-topbar-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .admin-page-body { max-width: 1400px; margin: 0 auto; padding: 20px 16px 60px; }
+    .admin-auth-wall-page {
+      max-width: 480px;
+      margin: 80px auto;
+      padding: 40px 32px;
+      text-align: center;
+      background: var(--surface, #fff);
+      border-radius: 12px;
+      border: 1px solid var(--border, #e5e7eb);
+      box-shadow: 0 2px 16px rgba(0,0,0,.06);
+    }
+    .admin-auth-wall-page h2 { margin: 0 0 8px; font-size: 1.3rem; }
+    .admin-auth-wall-page p { margin: 0 0 20px; color: var(--text-muted, #666); }
+    .admin-auth-wall-page .auth-wall-actions { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+    #adminPageLoadingMsg { padding: 60px 20px; text-align: center; color: var(--text-muted, #666); }
+
+    /* ── AI Tuning Workstation ─────────────────────────────────────────── */
+    .ait-workstation {
+      display: grid;
+      grid-template-columns: 1fr 400px;
+      grid-template-rows: 580px auto;
+      gap: 0;
+      height: auto;
+      min-height: 580px;
+    }
+    .ait-map-pane {
+      grid-column: 1;
+      grid-row: 1;
+      position: relative;
+      border-radius: 8px 0 0 0;
+      overflow: hidden;
+      background: #0f1724;
+      border: 1px solid var(--border, #e5e7eb);
+      border-right: none;
+    }
+    #ait-map { width: 100%; height: 100%; }
+    .ait-map-toolbar {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      z-index: 10;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      background: rgba(15,23,36,.85);
+      padding: 8px;
+      border-radius: 8px;
+      backdrop-filter: blur(4px);
+    }
+    .ait-overlay-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: .78rem;
+      color: #c4cdd8;
+      white-space: nowrap;
+    }
+    .ait-overlay-swatch {
+      width: 12px; height: 12px;
+      border-radius: 2px;
+      flex-shrink: 0;
+    }
+    .ait-controls-pane {
+      grid-column: 2;
+      grid-row: 1;
+      overflow-y: auto;
+      background: var(--surface, #fff);
+      border: 1px solid var(--border, #e5e7eb);
+      border-left: none;
+      border-radius: 0 8px 0 0;
+      display: flex;
+      flex-direction: column;
+    }
+    .ait-controls-header {
+      padding: 12px 16px 8px;
+      border-bottom: 1px solid var(--border, #e5e7eb);
+      background: var(--surface-alt, #f8f9fa);
+      flex-shrink: 0;
+    }
+    .ait-controls-header h4 { margin: 0 0 8px; font-size: .88rem; color: var(--text-muted, #666); text-transform: uppercase; letter-spacing: .05em; }
+    .ait-preset-bar {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .ait-preset-bar select { flex: 1; min-width: 120px; font-size: .82rem; }
+    .ait-controls-scroll { flex: 1; overflow-y: auto; padding: 4px 0 8px; }
+    .ait-group {
+      border-bottom: 1px solid var(--border, #e5e7eb);
+    }
+    .ait-group-summary {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 14px;
+      cursor: pointer;
+      font-size: .82rem;
+      font-weight: 600;
+      color: var(--text, #111);
+      list-style: none;
+      user-select: none;
+      background: var(--surface-alt, #f9fafb);
+    }
+    .ait-group-summary::-webkit-details-marker { display: none; }
+    .ait-group-summary::after { content: '▸'; margin-left: auto; font-size: .75rem; color: var(--text-muted, #888); }
+    details.ait-group[open] .ait-group-summary::after { content: '▾'; }
+    .ait-group-icon { font-size: .95rem; }
+    .ait-group-body { padding: 6px 12px 10px; }
+    .ait-ctrl-row {
+      margin-bottom: 10px;
+    }
+    .ait-ctrl-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      margin-bottom: 4px;
+    }
+    .ait-ctrl-label { font-size: .78rem; color: var(--text, #333); }
+    .ait-ctrl-val { font-size: .78rem; font-weight: 600; color: var(--primary, #22c55e); font-variant-numeric: tabular-nums; }
+    .ait-ctrl-bottom { display: flex; gap: 6px; align-items: center; }
+    .ait-slider { flex: 1; height: 4px; accent-color: #22c55e; cursor: pointer; }
+    .ait-num-input { width: 58px; font-size: .78rem; padding: 2px 4px; border: 1px solid var(--border, #d1d5db); border-radius: 4px; text-align: right; }
+    .ait-ctrl-toggle-row { display: flex; align-items: center; justify-content: space-between; padding: 4px 0; }
+    .ait-toggle { display: none; }
+    .ait-toggle-label {
+      display: inline-block; width: 34px; height: 18px;
+      background: #d1d5db; border-radius: 9px; cursor: pointer;
+      position: relative; transition: background .2s;
+    }
+    .ait-toggle-label::after {
+      content: ''; position: absolute; top: 2px; left: 2px;
+      width: 14px; height: 14px; background: #fff; border-radius: 50%;
+      transition: transform .2s;
+    }
+    .ait-toggle:checked + .ait-toggle-label { background: #22c55e; }
+    .ait-toggle:checked + .ait-toggle-label::after { transform: translateX(16px); }
+    .ait-controls-footer {
+      padding: 10px 14px;
+      border-top: 1px solid var(--border, #e5e7eb);
+      flex-shrink: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .ait-action-row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+    .ait-diag-pane {
+      grid-column: 1 / -1;
+      grid-row: 2;
+      border: 1px solid var(--border, #e5e7eb);
+      border-top: none;
+      border-radius: 0 0 8px 8px;
+      background: var(--surface, #fff);
+      padding: 14px 16px;
+      min-height: 160px;
+    }
+    .ait-diag-pane h4 { margin: 0 0 10px; font-size: .83rem; color: var(--text-muted, #666); text-transform: uppercase; letter-spacing: .05em; }
+    .ait-stat-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+      gap: 8px 16px;
+    }
+    .ait-stat { display: flex; flex-direction: column; gap: 2px; }
+    .ait-stat-label { font-size: .72rem; color: var(--text-muted, #888); text-transform: uppercase; letter-spacing: .03em; }
+    .ait-stat-val { font-size: .82rem; font-weight: 600; color: var(--text, #111); font-variant-numeric: tabular-nums; }
+    .ait-val-danger { color: #ef4444; }
+    .ait-val-warning { color: #f59e0b; }
+    .ait-warn-row { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+    .ait-warn { font-size: .78rem; padding: 3px 8px; border-radius: 4px; }
+    .ait-warn-danger { background: #fef2f2; color: #b91c1c; border: 1px solid #fca5a5; }
+    .ait-warn-warning { background: #fffbeb; color: #92400e; border: 1px solid #fcd34d; }
+    .ait-warn-info { background: #eff6ff; color: #1e40af; border: 1px solid #93c5fd; }
+    .ait-muted { font-size: .82rem; color: var(--text-muted, #888); margin: 0; }
+    .ait-preset-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 7px 0;
+      border-bottom: 1px solid var(--border, #f3f4f6);
+      gap: 8px;
+      font-size: .82rem;
+      flex-wrap: wrap;
+    }
+    /* Status badges */
+    .ait-badge { font-size: .65rem; font-weight: 700; padding: 1px 6px; border-radius: 3px; text-transform: uppercase; letter-spacing: .04em; display: inline-block; vertical-align: middle; }
+    .ait-badge-draft     { background: rgba(156,163,175,.15); color: #6b7280; border: 1px solid rgba(156,163,175,.35); }
+    .ait-badge-validated { background: rgba(59,130,246,.12);  color: #3b82f6; border: 1px solid rgba(59,130,246,.35); }
+    .ait-badge-prod      { background: rgba(34,197,94,.13);   color: #16a34a; border: 1px solid rgba(34,197,94,.4); }
+    .ait-badge-archived  { background: rgba(107,114,128,.1);  color: #9ca3af; border: 1px solid rgba(107,114,128,.25); }
+    .ait-badge-cat       { font-size: .65rem; background: #e0f2fe; color: #0369a1; padding: 1px 5px; border-radius: 3px; }
+
+    /* ── Rich preset cards ───────────────────────────────────────────────────── */
+    .ait-preset-card {
+      border: 1px solid var(--border,#e5e7eb);
+      border-radius: 5px;
+      padding: 7px 9px 6px;
+      margin-bottom: 5px;
+      background: var(--surface,#fff);
+      transition: border-color .12s;
+    }
+    .ait-preset-card:last-child { margin-bottom: 0; }
+    .ait-preset-card.ait-preset-item-prod  { background: rgba(34,197,94,.04); border-color: rgba(34,197,94,.22); }
+    .ait-preset-card.ait-preset-item-loaded { background: rgba(59,130,246,.05); border-color: rgba(59,130,246,.28); }
+    .ait-preset-card.ait-preset-card-archived { opacity: .7; }
+    .ait-preset-card-head {
+      display: flex; align-items: flex-start; justify-content: space-between; gap: 6px; flex-wrap: wrap;
+    }
+    .ait-preset-card-title {
+      display: flex; align-items: center; gap: 5px; flex-wrap: wrap; min-width: 0; flex: 1;
+    }
+    .ait-preset-item-name    { font-weight: 600; font-size: .82rem; word-break: break-word; }
+    .ait-preset-base-tag {
+      font-size: .62rem; padding: 1px 5px; border-radius: 3px;
+      background: var(--surface-alt,#f3f4f6); color: var(--text-muted,#666);
+      border: 1px solid var(--border,#e5e7eb); white-space: nowrap; flex-shrink: 0;
+    }
+    .ait-preset-item-actions { display: flex; gap: 3px; flex-shrink: 0; flex-wrap: wrap; }
+    /* Meta row: time, fingerprint, parcel, confidence */
+    .ait-preset-meta-row {
+      display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; align-items: center;
+    }
+    .ait-preset-time  { font-size: .68rem; color: var(--text-muted,#888); }
+    .ait-preset-fp    { font-size: .65rem; font-family: monospace; color: #6366f1;
+                        background: rgba(99,102,241,.08); border: 1px solid rgba(99,102,241,.2);
+                        border-radius: 3px; padding: 1px 4px; }
+    .ait-preset-parcel { font-size: .68rem; color: #0369a1; }
+    .ait-preset-conf   { font-size: .68rem; color: #15803d; }
+    .ait-preset-legacy {
+      font-size: .60rem; padding: 1px 4px; border-radius: 3px;
+      background: rgba(107,114,128,.1); color: #6b7280; border: 1px solid rgba(107,114,128,.25);
+    }
+    .ait-preset-notes  {
+      font-size: .70rem; color: var(--text-muted,#666); margin-top: 3px;
+      font-style: italic; line-height: 1.4;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
+    }
+    /* Keep old item class for backward compat with any external CSS */
+    .ait-preset-item-info    { display: flex; align-items: center; gap: 6px; min-width: 0; flex-wrap: wrap; }
+    .ait-preset-item-prod    { background: rgba(34,197,94,.04); border-bottom-color: rgba(34,197,94,.2); }
+    .ait-preset-item-loaded  { background: rgba(59,130,246,.04); }
+    .ait-archived-section summary.ait-archived-toggle { cursor: pointer; padding: 4px 0; user-select: none; }
+    .ait-archived-section summary.ait-archived-toggle::-webkit-details-marker { display: none; }
+
+    /* xsmall button size */
+    .btn.xsmall { font-size: .70rem; padding: 2px 7px; border-radius: 3px; }
+
+    /* Danger-tinted button */
+    .btn.danger { background: rgba(239,68,68,.10); color: #dc2626; border: 1px solid rgba(239,68,68,.3); }
+    .btn.danger:hover:not(:disabled) { background: rgba(239,68,68,.18); }
+    .btn.danger:disabled { opacity: .4; cursor: not-allowed; }
+
+    /* Modified control highlight (yellow when slider differs from baseline) */
+    .ait-ctrl-row.ait-ctrl-modified .ait-ctrl-label { color: #b45309; }
+    .ait-ctrl-row.ait-ctrl-modified .ait-ctrl-val   { color: #d97706; }
+    .ait-ctrl-row.ait-ctrl-modified .ait-slider      { accent-color: #f59e0b; }
+    .ait-ctrl-row.ait-ctrl-modified .ait-num-input   { border-color: #f59e0b; }
+
+    /* Session status banner */
+    .ait-session-banner {
+      display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap;
+      gap: 8px; padding: 8px 14px; border-radius: 7px; margin-bottom: 10px;
+      border: 1px solid transparent; transition: background .2s, border-color .2s;
+    }
+    .ait-session-clean { background: rgba(34,197,94,.06); border-color: rgba(34,197,94,.18); }
+    .ait-session-dirty { background: rgba(245,158,11,.08); border-color: rgba(245,158,11,.35); }
+    .ait-session-info  { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .ait-session-label { font-size: .72rem; text-transform: uppercase; letter-spacing: .05em; color: var(--text-muted,#888); }
+    #ait-session-preset-label { font-size: .82rem; color: var(--text,#111); }
+    .ait-dirty-badge {
+      display: inline-flex; align-items: center; gap: 5px;
+      font-size: .72rem; font-weight: 700; color: #b45309;
+      background: rgba(245,158,11,.12); border: 1px solid rgba(245,158,11,.4);
+      padding: 2px 8px; border-radius: 4px;
+    }
+    .ait-dirty-badge::before { content: '●'; font-size: .6rem; color: #f59e0b; }
+    .ait-session-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .ait-workflow-sep { width: 1px; height: 20px; background: rgba(0,0,0,.12); margin: 0 2px; }
+
+    /* Modals */
+    .ait-modal-overlay {
+      position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 9200;
+      display: flex; align-items: center; justify-content: center; padding: 20px;
+    }
+    .ait-modal-overlay[hidden] { display: none; }
+    .ait-modal-box {
+      background: var(--surface,#fff); border: 1px solid var(--border,#e5e7eb);
+      border-radius: 10px; padding: 24px; max-width: 500px; width: 100%;
+      box-shadow: 0 20px 60px rgba(0,0,0,.25);
+    }
+    .ait-modal-title { font-size: 1rem; font-weight: 700; margin: 0 0 6px; color: var(--text,#111); }
+    .ait-modal-sub   { font-size: .84rem; color: var(--text-muted,#666); margin: 0 0 16px; }
+    .ait-modal-warning {
+      background: rgba(239,68,68,.07); border: 1px solid rgba(239,68,68,.3);
+      border-radius: 6px; padding: 10px 14px; margin-bottom: 14px;
+      font-size: .82rem; color: #b91c1c; line-height: 1.5;
+    }
+    .ait-modal-warning strong { display: block; margin-bottom: 4px; }
+    .ait-modal-info {
+      background: rgba(59,130,246,.07); border: 1px solid rgba(59,130,246,.2);
+      border-radius: 6px; padding: 8px 12px; margin-bottom: 14px;
+      font-size: .80rem; color: #1d4ed8;
+    }
+    .ait-modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; flex-wrap: wrap; }
+    .ait-modal-error  { font-size: .78rem; color: #dc2626; margin-top: 6px; min-height: 1em; }
+    .ait-modal-field  { margin-bottom: 12px; }
+    .ait-modal-field label { display: block; font-size: .78rem; font-weight: 600; margin-bottom: 4px; color: var(--text,#333); }
+    /* Two-stage promote button */
+    .btn-stage2 { background: #dc2626 !important; color: #fff !important; border-color: #b91c1c !important; }
+
+    .ait-address-row { display: flex; gap: 6px; align-items: center; }
+    .ait-address-row input { flex: 1; font-size: .82rem; }
+    .ait-section-title { font-size: .78rem; font-weight: 600; color: var(--text-muted, #666); text-transform: uppercase; letter-spacing: .05em; margin: 10px 0 6px; }
+
+    /* ── Enhanced control cards ─────────────────────────────────────────────── */
+    .ait-ctrl-card {
+      background: var(--surface,#fff);
+      border: 1px solid var(--border,#e5e7eb);
+      border-radius: 6px;
+      padding: 7px 9px 8px;
+      margin-bottom: 5px;
+      transition: border-color .15s;
+    }
+    .ait-ctrl-card:last-child { margin-bottom: 0; }
+    .ait-ctrl-card.ait-ctrl-modified { border-color: #f59e0b; background: rgba(245,158,11,.03); }
+    .ait-ctrl-header-row {
+      display: flex; align-items: center; justify-content: space-between; gap: 5px; margin-bottom: 2px;
+    }
+    .ait-ctrl-header-left { display: flex; align-items: center; gap: 5px; flex: 1; min-width: 0; }
+    .ait-ctrl-header-right { display: flex; align-items: center; gap: 3px; flex-shrink: 0; }
+    .ait-ctrl-desc { font-size: .70rem; color: var(--text-muted,#888); margin: 0 0 5px; line-height: 1.4; }
+
+    /* Impact badges */
+    .ait-impact-badge {
+      font-size: .59rem; font-weight: 700; padding: 1px 4px; border-radius: 3px;
+      text-transform: uppercase; letter-spacing: .04em; flex-shrink: 0;
+    }
+    .ait-impact-low    { background: #f0fdf4; color: #15803d; border: 1px solid #86efac; }
+    .ait-impact-medium { background: #fffbeb; color: #92400e; border: 1px solid #fcd34d; }
+    .ait-impact-high   { background: #fef2f2; color: #b91c1c; border: 1px solid #fca5a5; }
+
+    /* Help (?) and reset (↺) buttons */
+    .ait-help-btn {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 17px; height: 17px; border-radius: 50%;
+      border: 1px solid var(--border,#d1d5db);
+      background: var(--surface-alt,#f3f4f6);
+      color: var(--text-muted,#6b7280);
+      font-size: .64rem; font-weight: 700; cursor: pointer; flex-shrink: 0; line-height: 1; padding: 0;
+      transition: background .15s, border-color .15s;
+    }
+    .ait-help-btn:hover { background: #e0f2fe; border-color: #7dd3fc; color: #0369a1; }
+    .ait-reset-ctrl-btn {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 17px; height: 17px; border-radius: 3px;
+      border: 1px solid transparent; background: transparent;
+      color: var(--text-muted,#9ca3af);
+      font-size: .80rem; cursor: pointer; flex-shrink: 0; padding: 0;
+      opacity: 0; transition: opacity .12s, background .12s, color .12s;
+    }
+    .ait-ctrl-card:hover .ait-reset-ctrl-btn,
+    .ait-ctrl-card.ait-ctrl-modified .ait-reset-ctrl-btn { opacity: 1; }
+    .ait-reset-ctrl-btn:hover { background: #fef2f2; color: #dc2626; border-color: #fca5a5; opacity: 1; }
+
+    /* Tooltip popover */
+    .ait-tooltip-pop {
+      position: fixed; z-index: 9500;
+      max-width: 260px; width: max-content;
+      background: #1e293b; color: #e2e8f0;
+      border-radius: 8px; padding: 11px 13px;
+      box-shadow: 0 8px 24px rgba(0,0,0,.4);
+      font-size: .75rem; line-height: 1.5; pointer-events: none;
+    }
+    .ait-tooltip-pop[hidden] { display: none; }
+    .ait-tt-title { font-weight: 700; color: #f1f5f9; margin: 0 0 7px; font-size: .80rem; }
+    .ait-tt-row { display: flex; gap: 5px; align-items: baseline; margin-bottom: 4px; }
+    .ait-tt-tag {
+      font-size: .62rem; font-weight: 700; padding: 1px 5px; border-radius: 3px;
+      text-transform: uppercase; letter-spacing: .03em; flex-shrink: 0;
+    }
+    .ait-tt-lo  { background: #1a3c29; color: #86efac; }
+    .ait-tt-hi  { background: #3b1c1c; color: #fca5a5; }
+    .ait-tt-rng { background: #1c2e4a; color: #93c5fd; }
+    .ait-tt-cue { background: #2d2a1a; color: #fcd34d; }
+    .ait-tt-text { color: #cbd5e1; font-size: .73rem; line-height: 1.4; }
+
+    /* Live detection bias summary */
+    .ait-effect-summary {
+      padding: 7px 10px; margin: 6px 8px 2px;
+      border-radius: 5px;
+      background: var(--surface-alt,#f9fafb);
+      border: 1px solid var(--border,#e5e7eb);
+    }
+    .ait-effect-title {
+      font-size: .66rem; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .05em; color: var(--text-muted,#888); margin: 0 0 5px;
+    }
+    .ait-effect-tags { display: flex; flex-wrap: wrap; gap: 3px; }
+    .ait-effect-tag {
+      font-size: .68rem; padding: 2px 6px; border-radius: 99px; border: 1px solid transparent;
+    }
+    .ait-etag-veg     { background: #f0fdf4; color: #15803d; border-color: #86efac; }
+    .ait-etag-hard    { background: #eff6ff; color: #1e40af; border-color: #93c5fd; }
+    .ait-etag-morph   { background: #fdf4ff; color: #7e22ce; border-color: #d8b4fe; }
+    .ait-etag-safety  { background: #fff7ed; color: #c2410c; border-color: #fdba74; }
+    .ait-etag-neutral { background: #f9fafb; color: #4b5563; border-color: #d1d5db; }
+
+    /* Group description text */
+    .ait-group-desc {
+      font-size: .70rem; color: var(--text-muted,#888);
+      padding: 0 12px 6px; margin: -2px 0 0; line-height: 1.4;
+    }
+
+    /* Workflow guide */
+    .ait-workflow-guide {
+      background: rgba(59,130,246,.05);
+      border: 1px solid rgba(59,130,246,.15);
+      border-radius: 6px; padding: 9px 12px; margin-bottom: 12px;
+    }
+    .ait-wf-title {
+      font-size: .70rem; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .05em; color: #3b82f6; margin: 0 0 6px;
+    }
+    .ait-wf-steps {
+      display: flex; flex-direction: column; gap: 4px;
+      counter-reset: wfstep; margin: 0; padding: 0; list-style: none;
+    }
+    .ait-wf-step {
+      display: flex; align-items: baseline; gap: 7px;
+      font-size: .74rem; color: var(--text-muted,#555);
+      counter-increment: wfstep;
+    }
+    .ait-wf-step::before {
+      content: counter(wfstep);
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 15px; height: 15px; border-radius: 50%;
+      background: rgba(59,130,246,.15); color: #3b82f6;
+      font-size: .62rem; font-weight: 700; flex-shrink: 0;
+    }
+
+    /* Test status indicator */
+    .ait-test-status { font-size: .74rem; color: var(--text-muted,#888); padding: 0 2px; }
+    .ait-test-status.is-testing { color: #d97706; }
+    .ait-test-status.is-done    { color: #16a34a; }
+    .ait-test-status.is-failed  { color: #dc2626; }
+
+    /* Diagnostics summary row */
+    .ait-diag-summary-row {
+      display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 4px;
+    }
+    .ait-diag-pill {
+      display: flex; align-items: baseline; gap: 5px;
+      background: var(--surface-alt,#f3f4f6); border: 1px solid var(--border,#e5e7eb);
+      border-radius: 5px; padding: 3px 8px; font-size: .78rem;
+    }
+    .ait-diag-pill .ait-stat-label { font-size: .68rem; }
+    .ait-val-ok { color: #16a34a; }
+
+    @media (max-width: 1000px) {
+      .ait-workstation { grid-template-columns: 1fr; grid-template-rows: 420px auto auto; }
+      .ait-map-pane { border-radius: 8px 8px 0 0; border-right: 1px solid var(--border, #e5e7eb); border-bottom: none; }
+      .ait-controls-pane { grid-column: 1; grid-row: 2; border-radius: 0; border-left: 1px solid var(--border, #e5e7eb); max-height: 480px; }
+      .ait-diag-pane { grid-row: 3; }
+      .ait-session-banner { flex-direction: column; align-items: flex-start; }
+    }
+
+    /* ── Draw / Edit map toolbar ──────────────────────────────────────────── */
+    .ait-draw-toolbar {
+      position: absolute;
+      bottom: 36px;
+      left: 10px;
+      z-index: 10;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      background: rgba(15,23,36,.88);
+      padding: 6px;
+      border-radius: 8px;
+      backdrop-filter: blur(4px);
+      max-height: calc(100% - 50px);
+      overflow-y: auto;
+    }
+    .ait-draw-tool-btn {
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      gap: 5px;
+      padding: 5px 8px 5px 5px;
+      background: transparent;
+      border: 1px solid transparent;
+      border-radius: 5px;
+      cursor: pointer;
+      color: #c4cdd8;
+      font-size: .72rem;
+      font-weight: 500;
+      white-space: nowrap;
+      text-align: left;
+      transition: background .15s, border-color .15s, color .15s;
+    }
+    .ait-draw-tool-btn:hover {
+      background: rgba(255,255,255,.1);
+      border-color: rgba(255,255,255,.15);
+      color: #fff;
+    }
+    .ait-draw-tool-btn.ait-tool-active {
+      background: rgba(34,197,94,.2);
+      border-color: rgba(34,197,94,.5);
+      color: #86efac;
+    }
+    .ait-tool-icon {
+      width: 13px; height: 13px;
+      opacity: .7;
+      filter: invert(1);
+      flex-shrink: 0;
+    }
+    .ait-draw-tool-btn:hover .ait-tool-icon,
+    .ait-draw-tool-btn.ait-tool-active .ait-tool-icon { opacity: 1; }
+    .ait-tool-label { font-size: .71rem; }
+    .ait-tool-sep { height: 1px; background: rgba(255,255,255,.12); margin: 2px 0; }
+
+    /* Map mode / area status labels */
+    .ait-map-mode-label {
+      position: absolute;
+      bottom: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(15,23,36,.85);
+      color: #86efac;
+      font-size: .72rem;
+      font-weight: 600;
+      padding: 3px 10px;
+      border-radius: 4px;
+      pointer-events: none;
+      z-index: 10;
+      white-space: nowrap;
+      opacity: 0;
+      transition: opacity .2s;
+    }
+    .ait-map-mode-label:not(:empty) { opacity: 1; }
+    .ait-manual-area-display {
+      position: absolute;
+      top: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(15,23,36,.85);
+      color: #86efac;
+      font-size: .72rem;
+      font-weight: 600;
+      padding: 3px 10px;
+      border-radius: 4px;
+      pointer-events: none;
+      z-index: 10;
+      white-space: nowrap;
+    }
+    .ait-manual-area-display:empty { display: none; }
+    .ait-test-area-status {
+      position: absolute;
+      top: 40px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(15,23,36,.85);
+      color: #888;
+      font-size: .72rem;
+      padding: 3px 10px;
+      border-radius: 4px;
+      pointer-events: none;
+      z-index: 10;
+      white-space: nowrap;
+      max-width: 90%;
+      text-align: center;
+    }
+    .ait-test-area-status.ait-test-area-active {
+      color: #fbbf24;
+      background: rgba(15,23,36,.90);
+      outline: 1px solid rgba(245,158,11,.35);
+    }
+    .ait-test-area-status:empty { display: none; }
+
+    /* Edit vertex handles */
+    .maplibre-edit-handle {
+      width: 12px; height: 12px;
+      background: #fff;
+      border: 2px solid #22c55e;
+      border-radius: 50%;
+      cursor: grab;
+      padding: 0;
+      box-shadow: 0 1px 4px rgba(0,0,0,.4);
+    }
+    .maplibre-edit-handle:active { cursor: grabbing; }
+
+    @media (max-width: 640px) {
+      .ait-draw-toolbar {
+        flex-direction: row;
+        flex-wrap: wrap;
+        bottom: auto;
+        top: 0;
+        left: 0;
+        right: 0;
+        border-radius: 0;
+        max-height: 80px;
+        overflow-x: auto;
+      }
+      .ait-tool-label { display: none; }
+      .ait-draw-tool-btn { padding: 6px; min-width: 34px; justify-content: center; }
+      .ait-tool-sep { width: 1px; height: auto; margin: 0 2px; }
+    }
+
+    /* ── ai-tuning-pro: Overlay Manager ──────────────────────────────────────── */
+    .atp-overlay-manager-toggle {
+      position: absolute; top: 10px; right: 10px; z-index: 15;
+      display: none; /* shown once pro module initializes */
+    }
+    .atp-overlay-panel {
+      position: absolute; top: 10px; right: 10px; z-index: 14;
+      background: rgba(15,23,36,.92); border-radius: 8px; padding: 8px;
+      backdrop-filter: blur(4px); min-width: 200px; max-width: 220px;
+      box-shadow: 0 4px 16px rgba(0,0,0,.4);
+    }
+    .atp-om-section-label {
+      font-size: .64rem; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .06em; color: #8fa3b8; margin: 4px 0 4px;
+    }
+    .atp-om-row {
+      display: flex; align-items: center; gap: 6px;
+      font-size: .72rem; color: #c4cdd8; margin-bottom: 5px;
+    }
+    .atp-om-label { flex: 1; white-space: nowrap; font-size: .70rem; }
+    .atp-om-slider-wrap { display: flex; align-items: center; gap: 4px; flex: 1.2; }
+    .atp-om-slider-wrap input[type="range"] { flex: 1; height: 3px; accent-color: #4ade80; }
+    .atp-om-pct { font-size: .65rem; color: #8fa3b8; width: 26px; text-align: right; font-variant-numeric: tabular-nums; }
+    .atp-om-swatch { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; display: inline-block; vertical-align: middle; }
+    .atp-om-check-label { display: flex; align-items: center; gap: 5px; cursor: pointer; }
+    .atp-om-sep { height: 1px; background: rgba(255,255,255,.1); margin: 6px 0; }
+
+    /* ── ai-tuning-pro: GIS / Map toolbar additions ───────────────────────────── */
+    .atp-measure-dot {
+      width: 10px; height: 10px; background: #f59e0b; border: 2px solid #fff;
+      border-radius: 50%; box-shadow: 0 1px 4px rgba(0,0,0,.5);
+    }
+    .atp-coord-readout {
+      position: absolute; bottom: 36px; left: 50%; transform: translateX(-50%);
+      background: rgba(15,23,36,.82); color: #fbbf24; font-size: .68rem;
+      padding: 2px 8px; border-radius: 3px; pointer-events: none; z-index: 11;
+      white-space: nowrap; display: none; font-variant-numeric: tabular-nums;
+    }
+    .atp-measure-status {
+      position: absolute; bottom: 58px; left: 50%; transform: translateX(-50%);
+      background: rgba(15,23,36,.88); color: #fbbf24; font-size: .72rem; font-weight: 600;
+      padding: 3px 10px; border-radius: 4px; pointer-events: none; z-index: 11;
+      white-space: nowrap; max-width: 90%; text-align: center;
+    }
+    .atp-measure-status:empty { display: none; }
+
+    /* ── ai-tuning-pro: Pane resizer ─────────────────────────────────────────── */
+    .atp-pane-resizer {
+      width: 4px; cursor: col-resize; background: transparent;
+      transition: background .15s; z-index: 5; grid-row: 1;
+    }
+    .atp-pane-resizer:hover { background: rgba(59,130,246,.4); }
+
+    /* ── ai-tuning-pro: Stage Viewer ─────────────────────────────────────────── */
+    .atp-stage-viewer {
+      grid-column: 1 / -1;
+      border: 1px solid var(--border,#e5e7eb); border-top: none;
+      background: var(--surface,#fff); padding: 12px 16px;
+    }
+    details.atp-collapsible > summary.atp-collapsible-summary {
+      cursor: pointer; list-style: none; display: flex; align-items: center;
+      gap: 8px; font-size: .80rem; font-weight: 600; color: var(--text-muted,#666);
+      text-transform: uppercase; letter-spacing: .05em; user-select: none;
+      padding: 10px 16px; margin: 0 -16px; border-top: 1px solid var(--border,#e5e7eb);
+    }
+    details.atp-collapsible > summary.atp-collapsible-summary::-webkit-details-marker { display: none; }
+    details.atp-collapsible > summary.atp-collapsible-summary::after {
+      content: '▸'; margin-left: auto; font-size: .75rem;
+    }
+    details.atp-collapsible[open] > summary.atp-collapsible-summary::after { content: '▾'; }
+    .atp-stage-header {
+      display: flex; align-items: center; gap: 10px; margin-bottom: 8px;
+    }
+    .atp-stage-title { font-size: .78rem; font-weight: 700; color: var(--text,#111); }
+    .atp-stage-hint  { font-size: .70rem; color: var(--text-muted,#888); }
+    .atp-stage-track {
+      display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 8px;
+    }
+    .atp-stage-step {
+      display: flex; flex-direction: column; align-items: center; gap: 3px;
+      padding: 6px 8px; border: 1px solid var(--border,#e5e7eb); border-radius: 6px;
+      background: var(--surface-alt,#f9fafb); cursor: pointer; min-width: 70px;
+      transition: background .12s, border-color .12s;
+    }
+    .atp-stage-step:hover { background: #eff6ff; border-color: #93c5fd; }
+    .atp-stage-step.atp-stage-active { background: rgba(59,130,246,.1); border-color: #3b82f6; }
+    .atp-stage-icon  { font-size: .95rem; }
+    .atp-stage-label { font-size: .62rem; text-align: center; color: var(--text,#333); line-height: 1.2; }
+    .atp-stage-dot   { width: 6px; height: 6px; border-radius: 50%; background: #d1d5db; }
+    .atp-stage-dot.atp-stage-dot-ok { background: #22c55e; }
+    .atp-stage-desc-box {
+      background: var(--surface-alt,#f3f4f6); border: 1px solid var(--border,#e5e7eb);
+      border-radius: 5px; padding: 8px 12px; font-size: .78rem; color: var(--text,#333);
+      margin-bottom: 8px; line-height: 1.5; min-height: 52px;
+    }
+    .atp-stage-desc-text { margin: 4px 0 0; color: var(--text-muted,#666); font-size: .74rem; }
+    .atp-stage-summary { margin-top: 4px; font-size: .72rem; color: #3b82f6; font-weight: 600; }
+    .atp-stage-data-badge {
+      font-size: .62rem; padding: 1px 5px; border-radius: 3px; font-weight: 700;
+      display: inline-block; margin-left: 6px;
+    }
+    .atp-stage-data-ok   { background: #f0fdf4; color: #15803d; border: 1px solid #86efac; }
+    .atp-stage-data-none { background: #f9fafb; color: #9ca3af; border: 1px solid #d1d5db; }
+    .atp-stage-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+    .atp-stage-counter { font-size: .72rem; color: var(--text-muted,#888); min-width: 80px; text-align: center; font-variant-numeric: tabular-nums; }
+
+    /* ── ai-tuning-pro: Rejection Inspector ─────────────────────────────────── */
+    .atp-inspector-panel {
+      position: fixed; z-index: 9600;
+      background: #1e293b; color: #e2e8f0;
+      border: 1px solid rgba(255,255,255,.1); border-radius: 8px;
+      padding: 12px 14px; min-width: 260px; max-width: 300px;
+      box-shadow: 0 8px 32px rgba(0,0,0,.45);
+      display: none;
+    }
+    .atp-inspector-panel.atp-inspector-visible { display: block; }
+    .atp-inspector-top {
+      display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; gap: 6px;
+    }
+    .atp-inspector-title { font-size: .75rem; font-weight: 700; color: #94a3b8; text-transform: uppercase; letter-spacing: .05em; }
+    .atp-inspector-close {
+      background: transparent; border: none; color: #94a3b8; cursor: pointer;
+      font-size: 1rem; line-height: 1; padding: 0; flex-shrink: 0;
+    }
+    .atp-inspector-close:hover { color: #f1f5f9; }
+    .atp-inspector-verdict {
+      font-size: .78rem; font-weight: 700; padding: 3px 8px; border-radius: 4px;
+      margin-bottom: 8px; display: inline-block;
+    }
+    .atp-inspector-accepted { background: rgba(34,197,94,.18); color: #4ade80; }
+    .atp-inspector-rejected { background: rgba(239,68,68,.18); color: #f87171; }
+    .atp-inspector-grid { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; }
+    .atp-inspector-row { display: contents; }
+    .atp-inspector-key { font-size: .68rem; color: #94a3b8; text-transform: uppercase; letter-spacing: .03em; align-self: start; padding-top: 2px; }
+    .atp-inspector-val { font-size: .74rem; color: #f1f5f9; font-variant-numeric: tabular-nums; word-break: break-word; }
+    .atp-inspector-reason-list { margin-bottom: 6px; }
+    .atp-inspector-reason-item { font-size: .74rem; color: #fca5a5; margin-bottom: 2px; }
+    .atp-inspector-hint { font-size: .68rem; color: #64748b; margin-top: 6px; }
+    .atp-inspector-footer { margin-top: 8px; display: flex; gap: 6px; align-items: center; }
+    .atp-inspector-lock-btn {
+      font-size: .68rem; padding: 2px 7px; border-radius: 3px; cursor: pointer;
+      background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.15); color: #94a3b8;
+      transition: background .12s;
+    }
+    .atp-inspector-lock-btn:hover { background: rgba(255,255,255,.14); }
+    .atp-inspector-lock-btn.atp-inspector-locked-btn { background: rgba(250,204,21,.15); border-color: rgba(250,204,21,.4); color: #fbbf24; }
+
+    /* ── ai-tuning-pro: Quality Controls ─────────────────────────────────────── */
+    .atp-quality-grid { display: flex; flex-direction: column; gap: 8px; }
+    .atp-quality-row { background: var(--surface-alt,#f9fafb); border: 1px solid var(--border,#e5e7eb); border-radius: 5px; padding: 7px 10px; }
+    .atp-quality-top { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 2px; }
+    .atp-quality-label { font-size: .76rem; color: var(--text,#333); font-weight: 500; }
+    .atp-quality-val { font-size: .72rem; font-weight: 700; color: #3b82f6; font-variant-numeric: tabular-nums; }
+    .atp-quality-desc { font-size: .68rem; color: var(--text-muted,#888); margin-bottom: 4px; }
+    .atp-quality-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+    .atp-quality-status { font-size: .72rem; color: #3b82f6; font-variant-numeric: tabular-nums; }
+    .atp-quality-hint { font-size: .68rem; color: var(--text-muted,#888); font-style: italic; margin-top: 4px; }
+
+    /* ── ai-tuning-pro: Ground Truth ─────────────────────────────────────────── */
+    .atp-gt-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 6px; }
+    .atp-gt-tag-row { display: flex; align-items: center; gap: 4px; cursor: pointer; }
+    .atp-gt-tag {
+      font-size: .70rem; padding: 2px 8px; border-radius: 99px;
+      border: 1px solid var(--tag-color,#3b82f6);
+      background: transparent; color: var(--tag-color,#3b82f6);
+      cursor: pointer; transition: background .12s;
+    }
+    .atp-gt-tag-row input:checked + .atp-gt-tag { background: var(--tag-color,#3b82f6); color: #fff; }
+    .atp-gt-notes { flex: 1; font-size: .76rem; }
+    .atp-gt-tagging { margin-bottom: 8px; }
+    .atp-gt-metric-grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(130px,1fr));
+      gap: 6px 12px; margin-top: 6px;
+    }
+    .atp-gt-metric { display: flex; flex-direction: column; gap: 1px; }
+    .atp-gt-m-label { font-size: .68rem; color: var(--text-muted,#888); text-transform: uppercase; letter-spacing: .03em; }
+    .atp-gt-m-val { font-size: .80rem; font-weight: 600; color: var(--text,#111); font-variant-numeric: tabular-nums; }
+    .atp-gt-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+    .atp-section-label { font-size: .72rem; font-weight: 600; color: var(--text-muted,#666); text-transform: uppercase; letter-spacing: .05em; margin: 6px 0 4px; }
+
+    /* ── ai-tuning-pro: Experiment Snapshots ─────────────────────────────────── */
+    .atp-snapshot-item {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 6px 0; border-bottom: 1px solid var(--border,#f3f4f6);
+      gap: 8px; flex-wrap: wrap;
+    }
+    .atp-snapshot-info { display: flex; flex-direction: column; gap: 1px; }
+    .atp-snapshot-name { font-size: .78rem; font-weight: 600; color: var(--text,#111); }
+    .atp-snapshot-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 2px; align-items: center; }
+    .atp-snapshot-meta { font-size: .68rem; color: var(--text-muted,#888); }
+    .atp-snapshot-result { font-size: .66rem; color: #3b82f6; font-variant-numeric: tabular-nums; }
+    .atp-snapshot-parcel { font-size: .66rem; color: #0369a1; }
+    .atp-snapshot-mode   { font-size: .62rem; color: var(--text-muted,#888); font-style: italic; }
+    .atp-snapshot-actions { display: flex; gap: 4px; flex-shrink: 0; flex-wrap: wrap; }
+    .atp-exp-banner {
+      display: none; align-items: center; gap: 8px; padding: 6px 12px;
+      background: rgba(245,158,11,.08); border: 1px solid rgba(245,158,11,.3);
+      border-radius: 6px; margin-bottom: 8px; font-size: .76rem; color: #92400e;
+      flex-wrap: wrap;
+    }
+    .atp-exp-banner strong { font-weight: 700; }
+
+    /* ── ai-tuning-pro: Keyboard Shortcut Modal ──────────────────────────────── */
+    .atp-shortcuts-modal {
+      position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 9800;
+      display: flex; align-items: center; justify-content: center; padding: 20px;
+    }
+    .atp-shortcuts-modal[hidden] { display: none; }
+    .atp-modal-box {
+      background: var(--surface,#fff); border: 1px solid var(--border,#e5e7eb);
+      border-radius: 10px; padding: 20px 24px; max-width: 440px; width: 100%;
+      box-shadow: 0 20px 60px rgba(0,0,0,.2);
+    }
+    .atp-modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+    .atp-modal-title { font-size: 1rem; font-weight: 700; margin: 0; }
+    .atp-modal-close { background: none; border: none; font-size: 1.1rem; cursor: pointer; color: var(--text-muted,#666); }
+    .atp-shortcut-table { width: 100%; border-collapse: collapse; font-size: .80rem; }
+    .atp-shortcut-table td { padding: 4px 8px; border-bottom: 1px solid var(--border,#f3f4f6); }
+    .atp-shortcut-table td:first-child { white-space: nowrap; }
+    kbd {
+      display: inline-block; padding: 1px 6px; background: #f3f4f6;
+      border: 1px solid #d1d5db; border-radius: 4px;
+      font-family: monospace; font-size: .78rem; color: #374151;
+    }
+    .atp-shortcut-note { font-size: .72rem; color: var(--text-muted,#888); margin: 10px 0 0; }
+
+    /* ── ai-tuning-pro: Compact mode ─────────────────────────────────────────── */
+    .ait-workstation.atp-compact-mode .ait-group-body { padding: 4px 8px 6px; }
+    .ait-workstation.atp-compact-mode .ait-ctrl-desc { display: none; }
+    .ait-workstation.atp-compact-mode .ait-ctrl-card { padding: 4px 7px 5px; margin-bottom: 3px; }
+    .ait-workstation.atp-compact-mode .ait-group-summary { padding: 6px 10px; }
+
+    /* ── ai-tuning-pro: Diagnostics collapsible ──────────────────────────────── */
+    .ait-diag-pane.atp-diag-collapsed > *:not(:first-child) { display: none; }
+
+    /* ── ai-tuning-pro: Experiment safety banner ─────────────────────────────── */
+    #atp-experiment-banner {
+      display: none; flex-wrap: wrap;
+    }
+    #atp-experiment-banner.atp-exp-visible { display: flex; }
+  </style>
+</head>
+
+<body>
+<div id="toastLayer" class="toast-layer" aria-live="polite" aria-atomic="true"></div>
+
+<!-- TOP NAV BAR -->
+<header class="admin-page-topbar">
+  <span class="admin-brand">MowNWA &mdash; Admin Console</span>
+  <nav class="admin-topbar-actions">
+    <a href="/" class="btn ghost small ui-icon-btn">
+      <img src="/assets/icons/lucide/home.svg" alt="" class="ui-icon">
+      <span class="ui-label">Customer Site</span>
+    </a>
+    <button class="btn ghost small ui-icon-btn" type="button" id="adminPageLogoutBtn">
+      <img src="/assets/icons/lucide/log-out.svg" alt="" class="ui-icon">
+      <span class="ui-label">Sign Out</span>
+    </button>
+  </nav>
+</header>
+
+<!-- Loading indicator shown while auth check runs -->
+<div id="adminPageLoadingMsg">Loading&hellip;</div>
+
+<!-- Access wall — shown for logged-out or non-admin users -->
+<div id="adminPageAuthWall" class="admin-auth-wall-page" style="display:none">
+  <img src="/assets/icons/lucide/shield.svg" alt="" style="width:40px;height:40px;opacity:.4;margin-bottom:12px">
+  <h2 id="adminPageAuthWallTitle">Admin access required</h2>
+  <p id="adminPageAuthWallMsg">You must be signed in as an admin to use this page.</p>
+  <div class="auth-wall-actions">
+    <a href="/" class="btn primary ui-icon-btn">
+      <img src="/assets/icons/lucide/home.svg" alt="" class="ui-icon">
+      <span class="ui-label">Go to Main Site</span>
+    </a>
+  </div>
+</div>
+
+<!-- ADMIN DASHBOARD — shown only after admin auth confirmed -->
+<div id="adminPageBody" class="admin-page-body" style="display:none">
+
+  <section class="panel admin-console" id="adminConsole">
+    <div class="panel-head admin-console-head">
+      <div>
+        <h2>Admin Console</h2>
+        <p class="section-copy" style="margin:0">Operational controls for jobs, users, providers, pricing, and system tools.</p>
+      </div>
+      <button class="btn secondary small ui-icon-btn" id="adminConsoleRefresh" type="button">
+        <img src="/assets/icons/lucide/refresh-cw.svg" alt="" class="ui-icon">
+        <span class="ui-label">Refresh</span>
+      </button>
+    </div>
+
+    <div class="admin-tabs" role="tablist" aria-label="Admin sections">
+      <button class="admin-tab active ui-icon-btn" type="button" data-admin-tab="overview" role="tab" aria-selected="true"><img src="/assets/icons/lucide/home.svg" alt="" class="ui-icon"><span class="ui-label">Overview</span></button>
+      <button class="admin-tab ui-icon-btn" type="button" data-admin-tab="jobs" role="tab" aria-selected="false"><img src="/assets/icons/lucide/clipboard-check.svg" alt="" class="ui-icon"><span class="ui-label">Jobs</span></button>
+      <button class="admin-tab ui-icon-btn" type="button" data-admin-tab="quotes" role="tab" aria-selected="false"><img src="/assets/icons/lucide/calculator.svg" alt="" class="ui-icon"><span class="ui-label">Quotes</span></button>
+      <button class="admin-tab ui-icon-btn" type="button" data-admin-tab="users" role="tab" aria-selected="false"><img src="/assets/icons/lucide/users.svg" alt="" class="ui-icon"><span class="ui-label">Users</span></button>
+      <button class="admin-tab ui-icon-btn" type="button" data-admin-tab="providers" role="tab" aria-selected="false"><img src="/assets/icons/lucide/truck.svg" alt="" class="ui-icon"><span class="ui-label">Providers</span></button>
+      <button class="admin-tab ui-icon-btn" type="button" data-admin-tab="pricing" role="tab" aria-selected="false"><img src="/assets/icons/lucide/settings.svg" alt="" class="ui-icon"><span class="ui-label">Pricing</span></button>
+      <button class="admin-tab ui-icon-btn" type="button" data-admin-tab="system" role="tab" aria-selected="false"><img src="/assets/icons/lucide/shield.svg" alt="" class="ui-icon"><span class="ui-label">System</span></button>
+      <button class="admin-tab ui-icon-btn" type="button" data-admin-tab="ai-detection" role="tab" aria-selected="false"><img src="/assets/icons/lucide/scan.svg" alt="" class="ui-icon"><span class="ui-label">AI Detection</span></button>
+    </div>
+
+    <!-- Overview tab -->
+    <div class="admin-tab-panel active" id="adminTabOverview" data-admin-tab-panel="overview" role="tabpanel">
+      <div id="adminMetrics" class="metrics"></div>
+      <div class="admin-subhead">
+        <h3>Operational Alerts</h3>
+        <button class="btn secondary small ui-icon-btn" id="refreshAdminAlertsBtn" type="button"><img src="/assets/icons/lucide/triangle-alert.svg" alt="" class="ui-icon"><span class="ui-label">Review Orphans</span></button>
+      </div>
+      <div id="adminAlerts" class="admin-alert-grid"></div>
+    </div>
+
+    <!-- Jobs tab -->
+    <div class="admin-tab-panel" id="adminTabJobs" data-admin-tab-panel="jobs" role="tabpanel">
+      <div class="admin-toolbar">
+        <input id="adminJobsSearch" type="search" placeholder="Search jobs, address, customer" />
+        <select id="adminJobsStatusFilter">
+          <option value="">All job statuses</option>
+          <option value="payment_pending">Payment pending</option>
+          <option value="paid">Paid</option>
+          <option value="open">Open</option>
+          <option value="assigned">Assigned</option>
+          <option value="scheduled">Scheduled</option>
+          <option value="in_progress">In progress</option>
+          <option value="completed">Completed</option>
+          <option value="canceled">Canceled</option>
+        </select>
+        <select id="adminJobsPaymentFilter">
+          <option value="">All payment</option>
+          <option value="unpaid">Unpaid</option>
+          <option value="deposit_paid">Deposit paid</option>
+          <option value="paid">Paid</option>
+          <option value="refunded">Refunded</option>
+        </select>
+        <button class="btn secondary small ui-icon-btn" id="refreshMgmtJobsBtn" type="button"><img src="/assets/icons/lucide/refresh-cw.svg" alt="" class="ui-icon"><span class="ui-label">Refresh</span></button>
+        <span id="adminJobsSelectedCount" class="admin-muted">0 selected</span>
+        <button class="btn secondary small ui-icon-btn" id="adminDeleteSelectedJobsBtn" type="button" disabled><img src="/assets/icons/lucide/trash.svg" alt="" class="ui-icon"><span class="ui-label">Delete selected jobs</span></button>
+      </div>
+      <div id="adminMgmtJobsTable" class="admin-table-wrap"></div>
+      <div id="adminJobDetailPanel" class="admin-detail-panel hidden"></div>
+    </div>
+
+    <!-- Quotes tab -->
+    <div class="admin-tab-panel" id="adminTabQuotes" data-admin-tab-panel="quotes" role="tabpanel">
+      <div class="admin-toolbar">
+        <input id="adminQuotesSearch" type="search" placeholder="Search quotes, address, customer" />
+        <select id="adminQuotesStatusFilter">
+          <option value="">All quote statuses</option>
+          <option value="new">New</option>
+          <option value="manual_requested">Manual requested</option>
+          <option value="converted">Converted</option>
+          <option value="paid">Paid</option>
+        </select>
+        <button class="btn secondary small ui-icon-btn" id="refreshMgmtQuotesBtn" type="button"><img src="/assets/icons/lucide/refresh-cw.svg" alt="" class="ui-icon"><span class="ui-label">Refresh</span></button>
+      </div>
+      <div id="adminMgmtQuotesTable" class="admin-table-wrap"></div>
+      <div id="adminQuoteDetailPanel" class="admin-detail-panel hidden"></div>
+    </div>
+
+    <!-- Users tab -->
+    <div class="admin-tab-panel" id="adminTabUsers" data-admin-tab-panel="users" role="tabpanel">
+      <div class="admin-toolbar">
+        <input id="adminUsersSearch" type="search" placeholder="Search name, email, phone" />
+        <select id="adminUsersRoleFilter">
+          <option value="">All roles</option>
+          <option value="customer">Customers</option>
+          <option value="provider">Providers</option>
+          <option value="admin">Admins</option>
+        </select>
+        <select id="adminUsersActiveFilter">
+          <option value="">Any status</option>
+          <option value="true">Active</option>
+          <option value="false">Inactive</option>
+        </select>
+        <button class="btn secondary small ui-icon-btn" id="refreshMgmtUsersBtn" type="button"><img src="/assets/icons/lucide/refresh-cw.svg" alt="" class="ui-icon"><span class="ui-label">Refresh</span></button>
+        <span id="adminUsersSelectedCount" class="admin-muted">0 selected</span>
+        <button class="btn secondary small ui-icon-btn" id="adminDeleteSelectedUsersBtn" type="button" disabled><img src="/assets/icons/lucide/trash.svg" alt="" class="ui-icon"><span class="ui-label">Delete selected users</span></button>
+      </div>
+      <div id="adminMgmtUsersTable" class="admin-table-wrap"></div>
+      <div id="adminUserDetailPanel" class="admin-detail-panel hidden"></div>
+    </div>
+
+    <!-- Providers tab -->
+    <div class="admin-tab-panel" id="adminTabProviders" data-admin-tab-panel="providers" role="tabpanel">
+      <div class="admin-toolbar">
+        <input id="adminProvidersSearch" type="search" placeholder="Search provider, email, phone" />
+        <select id="adminProvidersActiveFilter">
+          <option value="">Any status</option>
+          <option value="true">Active</option>
+          <option value="false">Inactive</option>
+        </select>
+        <button class="btn secondary small ui-icon-btn" id="refreshMgmtProvidersBtn" type="button"><img src="/assets/icons/lucide/refresh-cw.svg" alt="" class="ui-icon"><span class="ui-label">Refresh</span></button>
+      </div>
+      <div id="adminMgmtProvidersTable" class="admin-table-wrap"></div>
+      <div id="adminProviderJobsPanel" class="admin-detail-panel hidden"></div>
+    </div>
+
+    <!-- Pricing tab -->
+    <div class="admin-tab-panel" id="adminTabPricing" data-admin-tab-panel="pricing" role="tabpanel">
+      <div id="adminPricingSummary" class="admin-pricing-summary"></div>
+      <div id="adminControlsWrap" class="section-grid two-up">
+        <section class="mini-card">
+          <div class="panel-head">
+            <h3>Region Pricing</h3>
+            <button class="btn secondary small ui-icon-btn" id="refreshRegions" type="button"><img src="/assets/icons/lucide/refresh-cw.svg" alt="" class="ui-icon"><span class="ui-label">Refresh</span></button>
+          </div>
+          <form id="regionEditorForm" class="stack">
+            <label><span>Region</span><select id="regionEditorSelect"></select></label>
+            <div class="grid-3">
+              <label><span>Market Multiplier</span><input id="regionMarketMultiplier" type="number" step="0.01" /></label>
+              <label><span>Travel Fee</span><input id="regionTravelFee" type="number" step="1" /></label>
+              <label><span>Minimum Job</span><input id="regionMinimumJob" type="number" step="1" /></label>
+            </div>
+            <label><span>Featured Cities</span><input id="regionFeaturedCities" /></label>
+            <label><span>Enabled</span><select id="regionEnabled"><option value="true">Enabled</option><option value="false">Disabled</option></select></label>
+            <button class="btn primary ui-icon-btn" type="submit"><img src="/assets/icons/lucide/save.svg" alt="" class="ui-icon"><span class="ui-label">Save Region Pricing</span></button>
+          </form>
+          <div id="regionEditorResult" class="result hidden"></div>
+        </section>
+
+        <section class="mini-card">
+          <div class="panel-head">
+            <h3>Service Pricing</h3>
+            <button class="btn secondary small ui-icon-btn" id="refreshServices" type="button"><img src="/assets/icons/lucide/refresh-cw.svg" alt="" class="ui-icon"><span class="ui-label">Refresh</span></button>
+          </div>
+          <div id="adminServicePricingTable" class="admin-table-wrap"></div>
+          <div id="serviceEditorResult" class="result hidden"></div>
+        </section>
+      </div>
+
+      <section class="mini-card" style="margin-top:16px">
+        <div class="panel-head">
+          <h3>Bulk / Volume Pricing Tiers</h3>
+          <small class="admin-muted" style="flex:1;margin:0 8px">Applied incrementally — each tier covers only sqft in its range. Affects all mowing estimates.</small>
+          <button class="btn secondary small ui-icon-btn" id="refreshBulkTiers" type="button"><img src="/assets/icons/lucide/refresh-cw.svg" alt="" class="ui-icon"><span class="ui-label">Refresh</span></button>
+          <button class="btn primary small ui-icon-btn" id="addBulkTierBtn" type="button"><img src="/assets/icons/lucide/plus.svg" alt="" class="ui-icon"><span class="ui-label">Add Tier</span></button>
+        </div>
+        <div id="adminBulkTiersTable" class="admin-table-wrap"></div>
+        <div id="bulkTierResult" class="result hidden" style="margin-top:8px"></div>
+        <p class="section-copy" style="margin:8px 0 0;font-size:.8rem">
+          Tiers apply in order by start sq ft. The first tier covers 0 → end sq ft at the standard rate.
+          Subsequent tiers discount the area that falls within their band. Changes take effect on the next estimate.
+        </p>
+      </section>
+    </div>
+
+    <!-- System tab -->
+    <div class="admin-tab-panel" id="adminTabSystem" data-admin-tab-panel="system" role="tabpanel">
+      <div class="admin-subhead">
+        <h3>System Health</h3>
+        <button class="btn secondary small ui-icon-btn" id="refreshAdminSystemBtn" type="button"><img src="/assets/icons/lucide/refresh-cw.svg" alt="" class="ui-icon"><span class="ui-label">Refresh</span></button>
+      </div>
+      <div id="adminSystemInfo" class="admin-system-grid"></div>
+
+      <div class="admin-subhead" style="margin-top:24px">
+        <h3>Terrain / Elevation Settings</h3>
+        <button class="btn secondary small ui-icon-btn" id="refreshTerrainSettingsBtn" type="button"><img src="/assets/icons/lucide/refresh-cw.svg" alt="" class="ui-icon"><span class="ui-label">Refresh</span></button>
+      </div>
+      <section class="mini-card" id="terrainSettingsCard">
+        <form id="terrainSettingsForm" class="stack">
+          <div class="grid-3">
+            <label>
+              <span>Terrain Mode</span>
+              <select id="terrainModeSelect">
+                <option value="off">off — disabled</option>
+                <option value="display_only">display_only — show card, no pricing</option>
+                <option value="pricing_enabled">pricing_enabled — affects quote price</option>
+              </select>
+            </label>
+            <label>
+              <span>Elevation Provider</span>
+              <select id="terrainProviderSelect">
+                <option value="usgs_epqs">usgs_epqs — USGS EPQS / 3DEP (live)</option>
+                <option value="placeholder">placeholder — always off</option>
+                <option value="future_esri">future_esri — stub</option>
+                <option value="future_arkansas_gis">future_arkansas_gis — stub</option>
+                <option value="future_benton_county_gis">future_benton_county_gis — stub</option>
+              </select>
+            </label>
+            <label>
+              <span>Sample Points</span>
+              <select id="terrainSamplePointsSelect">
+                <option value="5">5</option>
+                <option value="9">9 (default)</option>
+                <option value="13">13</option>
+                <option value="17">17</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="admin-subhead" style="margin-top:12px;margin-bottom:4px">
+            <h4 style="font-size:.85rem;margin:0;color:var(--text-muted,#666)">Instant Booking / Payment Guardrails</h4>
+          </div>
+          <div class="grid-3">
+            <label>
+              <span>Max Category for Instant Booking</span>
+              <select id="terrainInstantBookingMaxCategory">
+                <option value="Flat">Flat — only flat yards</option>
+                <option value="Moderate">Moderate — flat + moderate</option>
+                <option value="High">High — flat, moderate, high (default)</option>
+                <option value="Extreme">Extreme — allow all categories</option>
+              </select>
+            </label>
+            <label>
+              <span>Max Terrain Score (0–10)</span>
+              <input type="number" id="terrainInstantBookingMaxScore" min="0" max="10" step="0.1" value="8.0" placeholder="8.0" />
+            </label>
+            <label style="display:flex;align-items:center;gap:8px;padding-top:20px">
+              <input type="checkbox" id="terrainBlockExtremeInstantPay" />
+              <span>Block Instant Pay on Extreme Terrain</span>
+            </label>
+          </div>
+          <label>
+            <span>Manual Review Message (shown to customer when blocked)</span>
+            <textarea id="terrainManualReviewMessage" rows="3" style="width:100%;resize:vertical" placeholder="Message shown when booking is paused for manual review…"></textarea>
+          </label>
+
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <button class="btn primary ui-icon-btn" type="submit" id="saveTerrainSettingsBtn"><img src="/assets/icons/lucide/save.svg" alt="" class="ui-icon"><span class="ui-label">Save Terrain Settings</span></button>
+            <button class="btn secondary ui-icon-btn" type="button" id="testTerrainSettingsBtn"><img src="/assets/icons/lucide/flask-conical.svg" alt="" class="ui-icon"><span class="ui-label">Test Provider</span></button>
+            <span id="terrainCacheSizeLabel" class="admin-muted" style="font-size:.8rem"></span>
+          </div>
+        </form>
+        <div id="terrainSettingsResult" class="result hidden" style="margin-top:10px"></div>
+        <div id="terrainTestResult" class="result hidden" style="margin-top:10px"></div>
+      </section>
+
+      <div class="admin-subhead">
+        <h3>Cleanup Tools</h3>
+      </div>
+      <div class="mini-card admin-danger-zone">
+        <div>
+          <strong>Clear test jobs</strong>
+          <p class="section-copy" style="margin:4px 0 0">Deletes test-looking jobs only after explicit confirmation.</p>
+        </div>
+        <button class="btn secondary small ui-icon-btn" id="cleanupTestJobsBtn" type="button"><img src="/assets/icons/lucide/trash.svg" alt="" class="ui-icon"><span class="ui-label">Clear Test Jobs</span></button>
+      </div>
+    </div>
+    <!-- AI Detection tab -->
+    <div class="admin-tab-panel" id="adminTabAiDetection" data-admin-tab-panel="ai-detection" role="tabpanel">
+
+      <!-- ── Session Status Banner ──────────────────────────────────────────
+           Shows the currently-loaded preset, dirty state, and workflow actions.
+           Slider changes NEVER auto-save. Only explicit buttons change presets. -->
+      <div id="ait-session-banner" class="ait-session-banner ait-session-clean">
+        <div class="ait-session-info">
+          <span class="ait-session-label">Session:</span>
+          <span id="ait-session-preset-label">Built-in defaults — no preset loaded</span>
+          <span id="ait-session-dirty-badge" class="ait-dirty-badge" hidden>Unsaved Runtime Overrides</span>
+        </div>
+        <div class="ait-session-actions">
+          <button class="btn secondary small" id="ait-reset-btn" type="button" title="Discard unsaved slider changes and restore the loaded preset">Reset Changes</button>
+          <span class="ait-workflow-sep"></span>
+          <button class="btn secondary small" id="ait-save-draft-btn" type="button" title="Save current slider state as a named draft experiment">Save as Draft</button>
+          <button class="btn secondary small" id="ait-mark-validated-btn" type="button" disabled title="Mark the loaded draft preset as validated">Mark Validated</button>
+          <button class="btn danger small" id="ait-promote-btn" type="button" disabled title="Promote the loaded preset to live production detection">Promote to Production</button>
+        </div>
+      </div>
+
+      <!-- Parcel + base preset + run controls -->
+      <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;padding:4px 0 12px">
+        <div style="flex:1;min-width:280px">
+          <div class="ait-section-title">Load Parcel</div>
+          <!-- TODO: Wire Google Places autocomplete here once admin page loads the Maps JS SDK. -->
+          <!-- Until then, uses Nominatim geocode → lat/lng → Arkansas GIS spatial lookup (same path as quote flow). -->
+          <div class="ait-address-row">
+            <input type="text" id="ait-address-input" autocomplete="off"
+              placeholder="e.g. 11511 Indian Hills Blvd, Bentonville, AR 72712" />
+            <button class="btn secondary small" id="ait-address-btn" type="button">Lookup</button>
+          </div>
+          <small id="ait-address-status" class="ait-muted"></small>
+          <small class="ait-muted" style="display:block;margin-top:2px;opacity:.7">
+            Street only, or full address with city &amp; ZIP for best results. AR assumed.
+          </small>
+        </div>
+        <div>
+          <div class="ait-section-title">Base Preset</div>
+          <select id="ait-base-preset-select" style="font-size:.82rem;width:auto">
+            <option value="small_residential">small_residential (&lt;12k sqft)</option>
+            <option value="medium_residential" selected>medium_residential (&lt;1 acre)</option>
+            <option value="large_rural">large_rural (1+ acre)</option>
+          </select>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+          <button class="btn primary" id="ait-run-btn" type="button" title="Run detection using current slider state as ephemeral overrides (does not save anything)">Run Detection</button>
+          <button class="btn secondary" id="ait-test-btn" type="button" title="Run detection with current unsaved slider values and show inline status. Does not save or affect any preset.">Test Current Settings</button>
+          <button class="btn secondary" id="ait-compare-btn" type="button" disabled title="Overlay the previous detection result for visual comparison">Compare Previous</button>
+          <span class="ait-workflow-sep"></span>
+          <button class="btn secondary" id="ait-randomize-all-btn" type="button" title="Randomize all slider controls for fast experimentation — does not save anything">Randomize All</button>
+          <button class="btn secondary" id="ait-undo-randomize-btn" type="button" disabled title="Restore slider values from before the last randomize">Undo Randomize</button>
+          <span id="ait-test-status" class="ait-test-status"></span>
+        </div>
+        <div style="margin-top:5px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+          <small class="ait-muted" style="font-style:italic">Randomize is for experimentation only. Save as Draft after testing if a combo works.</small>
+          <span id="ait-randomize-status" class="ait-test-status" style="font-size:.74rem"></span>
+          <span id="ait-random-seed" class="ait-muted" style="font-variant-numeric:tabular-nums;font-size:.74rem" hidden></span>
+        </div>
+      </div>
+
+      <!-- Main workstation layout -->
+      <div class="ait-workstation">
+
+        <!-- Map pane -->
+        <div class="ait-map-pane">
+
+          <!-- Floating draw / edit toolbar (left side of map) -->
+          <div id="ait-draw-toolbar" class="ait-draw-toolbar" role="toolbar" aria-label="Map drawing tools">
+            <button class="ait-draw-tool-btn" data-tool="gps" id="ait-tool-gps" title="GPS / Current Location">
+              <img src="/assets/icons/lucide/navigation.svg" alt="" class="ait-tool-icon"><span class="ait-tool-label">GPS</span>
+            </button>
+            <button class="ait-draw-tool-btn" data-tool="search" id="ait-tool-search" title="Focus parcel address search">
+              <img src="/assets/icons/lucide/search.svg" alt="" class="ait-tool-icon"><span class="ait-tool-label">Search</span>
+            </button>
+            <div class="ait-tool-sep"></div>
+            <button class="ait-draw-tool-btn" data-tool="draw" id="ait-tool-draw" title="Draw / Lasso mow area">
+              <img src="/assets/icons/lucide/lasso.svg" alt="" class="ait-tool-icon"><span class="ait-tool-label">Draw Area</span>
+            </button>
+            <button class="ait-draw-tool-btn" data-tool="edit" id="ait-tool-edit" title="Edit polygon vertices">
+              <img src="/assets/icons/lucide/move.svg" alt="" class="ait-tool-icon"><span class="ait-tool-label">Edit</span>
+            </button>
+            <button class="ait-draw-tool-btn" data-tool="cut" id="ait-tool-cut" title="Draw cutout / exclusion area">
+              <img src="/assets/icons/lucide/scissors.svg" alt="" class="ait-tool-icon"><span class="ait-tool-label">Cutout</span>
+            </button>
+            <div class="ait-tool-sep"></div>
+            <button class="ait-draw-tool-btn" data-tool="undo" id="ait-tool-undo" title="Undo last draw action">
+              <img src="/assets/icons/lucide/undo.svg" alt="" class="ait-tool-icon"><span class="ait-tool-label">Undo</span>
+            </button>
+            <button class="ait-draw-tool-btn" data-tool="clear" id="ait-tool-clear" title="Clear all manual areas">
+              <img src="/assets/icons/lucide/eraser.svg" alt="" class="ait-tool-icon"><span class="ait-tool-label">Clear Areas</span>
+            </button>
+            <button class="ait-draw-tool-btn" data-tool="reset" id="ait-tool-reset" title="Reset to full parcel: clear test area, clear detection overlays, restore parcel view">
+              <img src="/assets/icons/lucide/refresh-cw.svg" alt="" class="ait-tool-icon"><span class="ait-tool-label">Reset to Parcel</span>
+            </button>
+            <button class="ait-draw-tool-btn" data-tool="clear-test" id="ait-tool-clear-test" title="Clear selected test area — next detection runs on full parcel">
+              <img src="/assets/icons/lucide/circle-x.svg" alt="" class="ait-tool-icon"><span class="ait-tool-label">Clear Test Area</span>
+            </button>
+            <div class="ait-tool-sep"></div>
+            <button class="ait-draw-tool-btn" data-tool="detect" id="ait-tool-detect" title="Run AI Detection">
+              <img src="/assets/icons/lucide/scan.svg" alt="" class="ait-tool-icon"><span class="ait-tool-label">AI Detect</span>
+            </button>
+            <button class="ait-draw-tool-btn" data-tool="compare" id="ait-tool-compare" title="Compare previous detection result">
+              <img src="/assets/icons/lucide/layers.svg" alt="" class="ait-tool-icon"><span class="ait-tool-label">Compare Prev</span>
+            </button>
+            <div class="ait-tool-sep"></div>
+            <!-- Phase 5: GIS Tools -->
+            <button class="ait-draw-tool-btn" id="atp-tool-measure-dist" title="Measure distance (M)" onclick="aiTuningPro.startMeasureMode('distance')">
+              <img src="/assets/icons/lucide/ruler.svg" alt="" class="ait-tool-icon"><span class="ait-tool-label">Measure Dist</span>
+            </button>
+            <button class="ait-draw-tool-btn" id="atp-tool-measure-area" title="Measure area (A)" onclick="aiTuningPro.startMeasureMode('area')">
+              <img src="/assets/icons/lucide/square.svg" alt="" class="ait-tool-icon"><span class="ait-tool-label">Measure Area</span>
+            </button>
+            <button class="ait-draw-tool-btn" id="atp-tool-coords" title="Toggle coordinate readout (K)" onclick="aiTuningPro.toggleCoordinateReadout()">
+              <img src="/assets/icons/lucide/crosshair.svg" alt="" class="ait-tool-icon"><span class="ait-tool-label">Coordinates</span>
+            </button>
+            <button class="ait-draw-tool-btn" id="atp-tool-zoom-result" title="Zoom to detection result (G)" onclick="aiTuningPro.zoomToResult()">
+              <img src="/assets/icons/lucide/maximize-2.svg" alt="" class="ait-tool-icon"><span class="ait-tool-label">Zoom to Result</span>
+            </button>
+            <button class="ait-draw-tool-btn" id="atp-tool-fullscreen" title="Toggle fullscreen (F)" onclick="aiTuningPro.toggleFullscreen()">
+              <img src="/assets/icons/lucide/maximize.svg" alt="" class="ait-tool-icon"><span class="ait-tool-label">Fullscreen</span>
+            </button>
+            <button class="ait-draw-tool-btn" id="atp-tool-compact" title="Compact / power mode (P)" onclick="aiTuningPro.toggleCompactMode()">
+              <img src="/assets/icons/lucide/layout-dashboard.svg" alt="" class="ait-tool-icon"><span class="ait-tool-label">Compact Mode</span>
+            </button>
+            <button class="ait-draw-tool-btn" id="atp-tool-shortcuts" title="Keyboard shortcuts help (?)" onclick="aiTuningPro.toggleShortcutsModal()">
+              <img src="/assets/icons/lucide/keyboard.svg" alt="" class="ait-tool-icon"><span class="ait-tool-label">Shortcuts</span>
+            </button>
+          </div>
+
+          <!-- Active draw mode indicator -->
+          <div id="ait-map-mode-label" class="ait-map-mode-label"></div>
+          <!-- Manual area sqft display -->
+          <div id="ait-manual-area-display" class="ait-manual-area-display"></div>
+          <!-- Test area selection status -->
+          <div id="ait-test-area-status" class="ait-test-area-status"></div>
+
+          <!-- Coordinate readout (Phase 5) -->
+          <div id="atp-coord-readout" class="atp-coord-readout"></div>
+          <!-- Measurement status (Phase 5) -->
+          <div id="atp-measure-status" class="atp-measure-status"></div>
+
+          <div id="ait-map"></div>
+          <!-- Phase 1: Advanced Overlay Manager Panel -->
+          <div class="atp-overlay-panel" id="atp-overlay-panel">
+            <div class="atp-om-section-label">Overlays</div>
+            <label class="ait-overlay-row">
+              <input type="checkbox" class="ait-overlay-toggle" data-layer="mowable" checked />
+              <span class="ait-overlay-swatch" style="background:#22c55e"></span> Mowable Area
+            </label>
+            <label class="ait-overlay-row">
+              <input type="checkbox" class="ait-overlay-toggle" data-layer="parcel" checked />
+              <span class="ait-overlay-swatch" style="background:#3b82f6"></span> Parcel
+            </label>
+            <label class="ait-overlay-row">
+              <input type="checkbox" class="ait-overlay-toggle" data-layer="prev" checked />
+              <span class="ait-overlay-swatch" style="background:#f97316"></span> Previous Run
+            </label>
+            <label class="ait-overlay-row">
+              <input type="checkbox" id="ait-overlay-manual" class="ait-overlay-toggle" data-layer="manual" checked />
+              <span class="ait-overlay-swatch" style="background:#86efac"></span> Manual Areas
+            </label>
+            <label class="ait-overlay-row">
+              <input type="checkbox" id="ait-overlay-test-area" class="ait-overlay-toggle" data-layer="test-area" checked />
+              <span class="ait-overlay-swatch" style="background:#f59e0b"></span> Test Area
+            </label>
+            <!-- Opacity + analytical overlays populated by aiTuningPro -->
+            <div id="atp-overlay-manager"></div>
+          </div>
+          <!-- Legacy toolbar slot removed; overlay controls moved to atp-overlay-panel -->
+        </div>
+
+        <!-- Controls pane -->
+        <div class="ait-controls-pane">
+          <div class="ait-controls-header">
+            <h4>Tuning Controls</h4>
+            <div class="ait-section-title" style="margin-top:6px">Saved Presets</div>
+            <div id="ait-preset-list"></div>
+          </div>
+          <div class="ait-controls-scroll">
+            <div id="ait-controls-body"></div>
+          </div>
+        </div>
+
+        <!-- Diagnostics pane (full width below map+controls) -->
+        <div class="ait-diag-pane" id="ait-diag-pane">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px">
+            <h4 style="margin:0;font-size:.83rem;color:var(--text-muted,#666);text-transform:uppercase;letter-spacing:.05em"
+                title="Click to collapse/expand">Detection Diagnostics</h4>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <!-- Phase 7: Experiment actions -->
+              <button class="btn secondary small" id="atp-snapshot-btn" type="button"
+                title="Save current slider state as an experiment snapshot (local session only)"
+                onclick="aiTuningPro.saveExperimentSnapshot()">Save Snapshot</button>
+              <button class="btn secondary small" id="atp-restore-validated-btn" type="button"
+                title="Restore the most recently validated preset"
+                onclick="aiTuningPro.restoreLastValidatedPreset()">Restore Validated</button>
+              <!-- Existing ground truth button (kept for backward compat, also wired in Phase 6) -->
+              <button class="btn secondary small" id="ait-ground-truth-btn" type="button"
+                title="Store current manual areas as ground truth comparison baseline (admin only — no production effect)">
+                Use Manual as Ground Truth
+              </button>
+              <div class="ait-section-title" style="margin:0">Save Test Parcel</div>
+              <input type="text" id="ait-parcel-save-label" placeholder="Label…" style="width:140px;font-size:.78rem" />
+              <button class="btn secondary small" id="ait-save-parcel-btn" type="button">Save Parcel</button>
+            </div>
+          </div>
+
+          <!-- Phase 7: Experiment warning banner -->
+          <div id="atp-experiment-banner" class="atp-exp-banner">
+            <strong>⚠ Unsaved Runtime Overrides Active</strong>
+            These settings are ephemeral — they will reset when the page reloads.
+            Save as Draft or use Save Snapshot to preserve them.
+          </div>
+
+          <div id="ait-diagnostics"><p class="ait-muted">Run detection to see diagnostics.</p></div>
+
+          <!-- Phase 4: Polygon Quality Controls -->
+          <details class="atp-collapsible" style="margin-top:12px">
+            <summary class="atp-collapsible-summary">Polygon Quality Post-Processing</summary>
+            <div style="padding-top:8px">
+              <div id="atp-quality-controls"></div>
+            </div>
+          </details>
+
+          <!-- Phase 6: Ground Truth & Training Support -->
+          <details class="atp-collapsible" style="margin-top:0">
+            <summary class="atp-collapsible-summary">Ground Truth &amp; Training Annotations</summary>
+            <div style="padding-top:8px">
+              <div id="atp-gt-panel"></div>
+            </div>
+          </details>
+
+          <!-- Phase 7: Experiment Snapshots -->
+          <details class="atp-collapsible" style="margin-top:0">
+            <summary class="atp-collapsible-summary">Experiment Snapshots</summary>
+            <div style="padding-top:8px">
+              <div id="atp-snapshot-list"></div>
+            </div>
+          </details>
+
+          <div style="margin-top:12px">
+            <div class="ait-section-title">Saved Test Parcels</div>
+            <div id="ait-test-parcel-list"><p class="ait-muted">Loading…</p></div>
+          </div>
+        </div>
+
+      </div><!-- /ait-workstation -->
+
+      <!-- Phase 2: Detection Pipeline Stage Viewer -->
+      <details class="atp-collapsible" style="margin-top:0">
+        <summary class="atp-collapsible-summary" style="padding:10px 16px;border:1px solid var(--border,#e5e7eb);border-top:none;background:var(--surface-alt,#f9fafb);border-radius:0 0 8px 8px">
+          Detection Pipeline Viewer
+        </summary>
+        <div style="border:1px solid var(--border,#e5e7eb);border-top:none;padding:12px 16px;border-radius:0 0 8px 8px">
+          <div id="atp-stage-viewer"></div>
+        </div>
+      </details>
+
+    </div><!-- /adminTabAiDetection -->
+
+    <!-- Phase 3: Rejection / Acceptance Inspector Panel (fixed floating) -->
+    <div id="atp-inspector-panel" class="atp-inspector-panel">
+      <div class="atp-inspector-top">
+        <span class="atp-inspector-title">Feature Inspector</span>
+        <button class="atp-inspector-close" title="Close">✕</button>
+      </div>
+      <div class="atp-inspector-body"></div>
+      <div class="atp-inspector-footer">
+        <button id="atp-inspector-lock-btn" class="atp-inspector-lock-btn">🔓 Hover Mode</button>
+      </div>
+    </div>
+
+  </section>
+
+</div><!-- /adminPageBody -->
+
+<!-- ── AI Tuning: Save as Draft Modal ──────────────────────────────────────
+     Saves current slider state as a named draft experiment.
+     Does NOT affect production detection. -->
+<div id="ait-save-draft-modal" class="ait-modal-overlay" hidden>
+  <div class="ait-modal-box">
+    <h3 class="ait-modal-title">Save as Draft Experiment</h3>
+    <p class="ait-modal-sub">Saves current slider values as a named draft. Drafts do <strong>not</strong> affect live customer detection.</p>
+
+    <div class="ait-modal-field">
+      <label for="ait-draft-name-input">Display Name <span style="font-weight:400;color:var(--text-muted,#888)">(auto-suggested — edit freely)</span></label>
+      <input type="text" id="ait-draft-name-input" autocomplete="off" maxlength="120"
+        placeholder="e.g. Aggressive NDVI — Medium — May 09 11:42 AM"
+        style="width:100%;font-size:.88rem;padding:6px 10px;border:1px solid var(--border,#d1d5db);border-radius:5px;box-sizing:border-box" />
+    </div>
+
+    <div class="ait-modal-field">
+      <label for="ait-draft-notes-input">Notes <span style="font-weight:400;color:var(--text-muted,#888)">(optional)</span></label>
+      <textarea id="ait-draft-notes-input" rows="2" maxlength="500"
+        placeholder="What was different? What parcel or problem motivated this?"
+        style="width:100%;font-size:.82rem;padding:6px 10px;border:1px solid var(--border,#d1d5db);border-radius:5px;box-sizing:border-box;resize:vertical"></textarea>
+    </div>
+
+    <div class="ait-modal-field" style="margin-bottom:8px">
+      <div style="font-size:.72rem;font-weight:600;color:var(--text-muted,#666);margin-bottom:3px">Test Parcel</div>
+      <div id="ait-draft-parcel-display" style="font-size:.78rem;color:var(--text,#333);padding:4px 8px;background:var(--surface-alt,#f3f4f6);border-radius:4px;"></div>
+    </div>
+
+    <!-- Duplicate-name warning (shown inline when duplicate detected) -->
+    <div id="ait-draft-dup-warning" class="ait-modal-warning" hidden style="font-size:.80rem"></div>
+
+    <div class="ait-modal-info" style="margin-top:4px;font-size:.76rem">
+      Each save gets a unique internal ID even if the name is reused. Production presets cannot be overwritten.
+    </div>
+    <div class="ait-modal-error" id="ait-draft-error"></div>
+    <div class="ait-modal-actions">
+      <button class="btn secondary small" id="ait-draft-cancel-btn" type="button">Cancel</button>
+      <button class="btn primary small" id="ait-draft-save-btn" type="button">Save Draft</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── AI Tuning: Promote to Production Modal ──────────────────────────────
+     Two-click confirmation required. Auto-archives the current production preset. -->
+<div id="ait-promote-modal" class="ait-modal-overlay" hidden>
+  <div class="ait-modal-box">
+    <h3 class="ait-modal-title">Promote Preset to Production</h3>
+    <p class="ait-modal-sub">
+      Promoting: <strong id="ait-promote-preset-name">—</strong>&nbsp;<span id="ait-promote-preset-status"></span>
+    </p>
+    <div class="ait-modal-warning">
+      <strong>⚠ This will affect live customer detection immediately.</strong>
+      You are about to replace the active production preset used by all real quote requests.
+      The previous production preset will be automatically archived (it can still be reloaded and re-promoted).
+    </div>
+    <div class="ait-modal-info" id="ait-promote-prev-prod"></div>
+    <p style="font-size:.80rem;color:var(--text-muted,#888);margin:0 0 4px">Two clicks required to confirm. Click once to arm, then click again to promote.</p>
+    <div class="ait-modal-actions">
+      <button class="btn secondary small" id="ait-promote-cancel-btn" type="button">Cancel</button>
+      <button class="btn danger small btn-stage1" id="ait-promote-confirm-btn" type="button" data-stage="1">
+        I Understand the Risk — Confirm Promotion
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- Cleanup confirmation modal -->
+<div id="adminCleanupModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:9000;align-items:center;justify-content:center">
+  <div class="panel" style="max-width:400px;width:calc(100% - 40px);padding:24px">
+    <h3 style="margin:0 0 10px">Confirm Job Cleanup</h3>
+    <p class="section-copy" style="margin:0 0 14px">Permanently deletes test/orphan jobs. Type <strong>DELETE</strong> to confirm.</p>
+    <input id="cleanupConfirmInput" type="text" placeholder="Type DELETE" autocomplete="off" style="margin-bottom:12px" />
+    <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap">
+      <button class="btn secondary small ui-icon-btn" id="cleanupCancelBtn" type="button"><img src="/assets/icons/lucide/x.svg" alt="" class="ui-icon"><span class="ui-label">Cancel</span></button>
+      <button class="btn primary small ui-icon-btn" id="cleanupConfirmBtn" type="button"><img src="/assets/icons/lucide/trash.svg" alt="" class="ui-icon"><span class="ui-label">Delete Jobs</span></button>
+    </div>
+    <div id="cleanupModalResult" style="margin-top:10px;font-size:.85rem"></div>
+  </div>
+</div>
+
+<!-- Phase 9: Keyboard Shortcuts Modal -->
+<div id="atp-shortcuts-modal" class="atp-shortcuts-modal" hidden></div>
+
+<!-- SHARED UTILITIES (must load before admin-ui.js) -->
+<script src="/js/config.js"></script>
+<script src="/js/state.js"></script>
+<script src="/js/utils/dom.js"></script>
+<script src="/js/utils/phone.js"></script>
+<script src="/js/core/api.js"></script>
+<script src="/js/core/dom.js"></script>
+<script src="/js/jobs/scope-map.js"></script>
+<script src="/js/admin/admin-ui.js"></script>
+<script src="https://unpkg.com/@turf/turf@6/turf.min.js"></script>
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js" crossorigin=""></script>
+<script src="/js/admin/ai-tuning.js"></script>
+<script src="/js/lasso-yard.js"></script>
+<script src="/js/admin/ai-tuning-pro.js"></script>
+
+<script>
+// ── Admin page bootstrap ────────────────────────────────────────────────────
+// Provides stubs for app.js functions that admin-ui.js indirectly calls,
+// then runs the auth check and initialises the dashboard.
+
+// loadConfig — minimal version: populates state for admin pricing UI only
+async function loadConfig() {
+  const data = await api('/api/config');
+  state.config = data;
+  state.regions = (data.settings?.regions || []).map(normalizeRegion);
+  state.services = (data.settings?.services || []).map(normalizeService);
+  fillSelect(byId('regionEditorSelect'), state.regions);
+}
+
+// Stubs for provider/jobs functions that admin-visibility calls but aren't
+// needed on the standalone admin page.
+function loadJobs()              { return Promise.resolve(); }
+function loadProviders()         { return Promise.resolve(); }
+function loadProviderPaidJobs()  { return Promise.resolve(); }
+function renderProviderArea()    {}
+
+// Logout handler
+byId('adminPageLogoutBtn')?.addEventListener('click', async () => {
+  try {
+    await api('/api/auth/logout', { method: 'POST', body: JSON.stringify({}) });
+  } catch (_) {}
+  localStorage.removeItem('turflynk.authToken');
+  window.location.href = '/';
+});
+
+// Auth check + admin init
+document.addEventListener('DOMContentLoaded', async () => {
+  const loadingEl  = byId('adminPageLoadingMsg');
+  const wallEl     = byId('adminPageAuthWall');
+  const bodyEl     = byId('adminPageBody');
+  const titleEl    = byId('adminPageAuthWallTitle');
+  const msgEl      = byId('adminPageAuthWallMsg');
+
+  function showWall(title, msg) {
+    if (loadingEl) loadingEl.style.display = 'none';
+    if (titleEl)   titleEl.textContent  = title;
+    if (msgEl)     msgEl.textContent    = msg;
+    if (wallEl)    wallEl.style.display = '';
+    if (bodyEl)    bodyEl.style.display = 'none';
+  }
+
+  function showDashboard() {
+    if (loadingEl) loadingEl.style.display = 'none';
+    if (wallEl)    wallEl.style.display    = 'none';
+    if (bodyEl)    bodyEl.style.display    = '';
+  }
+
+  const token = localStorage.getItem('turflynk.authToken');
+  if (!token) {
+    showWall('Admin access required', 'You must be signed in as an admin to use this page.');
+    return;
+  }
+
+  try {
+    const data = await api('/api/auth/me');
+    state.currentUser = data.user;
+
+    if (!data.user) {
+      showWall('Session expired', 'Your session has expired. Please sign in again from the main site.');
+      return;
+    }
+
+    if (data.user.role !== 'admin') {
+      showWall(
+        'Admin access required',
+        `You are signed in as ${data.user.email || 'a user'} but this account does not have admin permissions.`
+      );
+      return;
+    }
+
+    // Admin confirmed — show dashboard and load initial data
+    showDashboard();
+    loadConfig().catch(() => {});
+    loadAdmin().catch(() => {});
+
+  } catch (err) {
+    showWall('Could not verify session', 'There was a problem checking your login. Please try again or return to the main site.');
+  }
+});
+</script>
+</body>
+</html>

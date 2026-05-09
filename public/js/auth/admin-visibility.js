@@ -48,10 +48,11 @@ function applyRoleVisibility() {
   // Admin-only panels (e.g., dashboard metrics, recent activity)
   $$('.admin-only').forEach((el) => { el.style.display = isAdmin ? 'block' : 'none'; });
 
-  // Leads panel is always shown in admin view but loads data only if admin
-  if (isAdmin) loadAdminLeads().catch(() => {});
-  if (isAdmin) loadAdmin().catch(() => {});
-  if (isAdmin) loadAdminPaidJobs().catch(() => {});
+  // Admin data loaders only exist when admin-ui.js is loaded (i.e. on /admin/index.html).
+  // On index.html the admin console lives at /admin/ so these are no-ops.
+  if (isAdmin && typeof loadAdminLeads   === 'function') loadAdminLeads().catch(() => {});
+  if (isAdmin && typeof loadAdmin        === 'function') loadAdmin().catch(() => {});
+  if (isAdmin && typeof loadAdminPaidJobs === 'function') loadAdminPaidJobs().catch(() => {});;
 
   // Provider paid jobs panel: show to providers and admins
   const providerWorkspacePanel = byId('providerWorkspacePanel');

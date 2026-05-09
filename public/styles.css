@@ -1900,6 +1900,96 @@ table{
   font-weight:650;
 }
 
+/* Manual quote – collapsible secondary summary */
+.manual-quote-summary-details{
+  border:1px solid rgba(0,0,0,0.09);
+  border-radius:10px;
+  overflow:hidden;
+}
+
+.manual-quote-summary-toggle{
+  display:block;
+  padding:10px 14px;
+  font-size:.84rem;
+  font-weight:700;
+  color:#3a5c2e;
+  cursor:pointer;
+  list-style:none;
+  user-select:none;
+  background:#f6fbf3;
+}
+
+.manual-quote-summary-toggle::-webkit-details-marker{ display:none }
+
+.manual-quote-summary-toggle::before{
+  content:'▸ ';
+  font-size:.72rem;
+  opacity:.65;
+}
+
+.manual-quote-summary-details[open] .manual-quote-summary-toggle::before{
+  content:'▾ ';
+}
+
+.manual-quote-summary-body{
+  padding:4px 14px 14px;
+}
+
+.manual-quote-summary-body .price-hero{
+  margin:8px 0 4px;
+}
+
+.manual-quote-context-card{
+  font-size:.82rem;
+  color:#445040;
+}
+
+.manual-quote-context-card .section-label{
+  font-size:.72rem;
+  margin-bottom:4px;
+}
+
+.manual-quote-context-card dl{
+  margin:0;
+  display:grid;
+  grid-template-columns:auto 1fr;
+  gap:2px 10px;
+}
+
+.manual-quote-context-card dl div{
+  display:contents;
+}
+
+.manual-quote-context-card dt{
+  font-weight:700;
+  color:#556055;
+  white-space:nowrap;
+}
+
+.manual-quote-context-card dd{
+  margin:0;
+  color:#334033;
+}
+
+.manual-quote-context-breakdown{
+  margin-top:8px;
+  font-size:.8rem;
+}
+
+.manual-quote-context-breakdown ul{
+  margin:2px 0 0 0;
+  padding:0;
+  list-style:none;
+}
+
+.manual-quote-context-breakdown li{
+  display:flex;
+  justify-content:space-between;
+  gap:8px;
+  padding:2px 0;
+  border-bottom:1px solid rgba(0,0,0,0.06);
+}
+
 /* Lead status badges */
 .status-badge.new{background:rgba(59,130,246,.16);color:#93c5fd}
 .status-badge.manual_requested{background:rgba(20,184,166,.14);color:#99f6e4}
@@ -2320,8 +2410,12 @@ body[data-quote-flow-step="draw"] #quoteStartScreen.is-map-host-visible{
   padding:0;
 }
 body[data-quote-flow-step="draw"] #quoteStartScreen.is-map-host-visible > :not(#parcel-confirm-panel),
-body[data-quote-flow-step="draw"] #quoteStartScreen.is-map-host-visible #parcel-confirm-panel > :not(.map-stage){
+body[data-quote-flow-step="draw"] #quoteStartScreen.is-map-host-visible #parcel-confirm-panel > :not(.map-stage):not(#drawStepHead){
   display:none!important;
+}
+body[data-quote-flow-step="draw"] #quoteStartScreen.is-map-host-visible #drawStepHead{
+  display:block;
+  margin-bottom:6px;
 }
 body[data-quote-flow-step="draw"] #quoteStartScreen.is-map-host-visible #parcel-confirm-panel{
   display:block;
@@ -2456,11 +2550,10 @@ body[data-quote-flow-step="draw"][data-lasso-drawing="true"] #quoteMap{
   grid-template-columns:1fr 1fr;
   gap:8px;
   margin:0;
-  padding:8px 0 0;
-  border:1px solid rgba(64,64,64,.78);
-  border-width:1px 0 0;
+  padding:0;
+  border:0;
   border-radius:0;
-  background:rgba(17,17,17,.95);
+  background:transparent;
   box-shadow:none;
   backdrop-filter:none;
 }
@@ -2468,6 +2561,66 @@ body[data-quote-flow-step="draw"][data-lasso-drawing="true"] #quoteMap{
   min-height:46px;
 }
 .bottom-sheet-continue{width:100%}
+
+/* Quote flow: standardized step headings */
+.qf-step-head{padding:4px 2px 0}
+.qf-step-head h2{font-size:1.8rem;line-height:1.15;margin:0 0 4px}
+.qf-step-head p{margin:0;color:#a3a3a3;font-size:.9rem;line-height:1.45}
+
+/* Hide customer-facing mode indicator; JS still writes to it */
+#mowEditorMode{display:none !important}
+
+/* ── Draw screen tool status bar: hidden from customers ── */
+.draw-screen .map-tools-status{display:none !important}
+
+/* ── Dynamic step header (qsf-header) ── */
+.qsf-header{
+  width:min(760px,100%);
+  margin:0 auto 10px;
+  padding:6px 2px 2px;
+}
+.qsf-header[hidden]{display:none}
+.qsf-region{
+  display:block;
+  font-size:.7rem;
+  font-weight:700;
+  letter-spacing:.09em;
+  text-transform:uppercase;
+  color:#4a7c2f;
+  margin-bottom:3px;
+}
+.qsf-title{
+  font-size:1.85rem;
+  font-weight:800;
+  line-height:1.12;
+  margin:0 0 4px;
+}
+.qsf-sub{
+  font-size:.9rem;
+  line-height:1.45;
+  color:#a3a3a3;
+  margin:0;
+}
+/* Above-map variant (drawStepHead) — tighter bottom margin */
+.qsf-header--above-map{margin-bottom:6px}
+
+/* ── Clean inline tool bar — remove admin-block look ── */
+.draw-screen .map-tools-panel{
+  background:transparent;
+  border:none;
+  box-shadow:none;
+  padding:4px 0 2px;
+  border-radius:0;
+}
+.draw-screen .map-tools-panel .tool-row.major-tools{
+  gap:6px;
+}
+.draw-screen .map-tools-panel .tool-row.major-tools .btn{
+  min-height:38px;
+  padding:7px 10px;
+  border-radius:10px;
+  font-size:.82rem;
+}
 
 @media (min-width:921px){
   .quote-app{width:min(430px,100%)}
@@ -2528,10 +2681,11 @@ body[data-quote-flow-step="draw"][data-lasso-drawing="true"] #quoteMap{
     max-height:none;
     overflow:visible;
     margin-top:0;
-    border-radius:20px;
-    border:1px solid #404040;
-    padding:12px;
-    box-shadow:0 14px 34px rgba(0,0,0,.28);
+    border-radius:0;
+    border:none;
+    padding:4px 0 2px;
+    box-shadow:none;
+    background:transparent;
   }
   .draw-screen .map-tools-panel .tool-row.major-tools{
     display:flex;
@@ -3588,6 +3742,10 @@ body[data-active-view="quote"] .start-hero p {
   color: #64705e;
 }
 
+body[data-active-view="quote"] .qsf-header .qsf-title{color:#171717}
+body[data-active-view="quote"] .qsf-header .qsf-sub{color:#64705e}
+body[data-active-view="quote"] .qsf-header--above-map .qsf-title{color:#171717}
+
 body[data-active-view="quote"] .flow-back-btn {
   background: #ffffff;
   border-color: #dfe8dc;
@@ -4001,9 +4159,9 @@ body[data-active-view="quote"] .draw-screen .map-credit {
 }
 
 body[data-active-view="quote"] .draw-screen .map-tools-panel {
-  background: #ffffff;
-  border-color: #dfe8dc;
-  box-shadow: 0 16px 34px rgba(31, 39, 28, .1);
+  background: transparent;
+  border: none;
+  box-shadow: none;
 }
 
 body[data-active-view="quote"] .draw-screen .major-tools .btn {
@@ -4011,9 +4169,9 @@ body[data-active-view="quote"] .draw-screen .major-tools .btn {
 }
 
 body[data-active-view="quote"] .draw-action-bar {
-  background: rgba(255, 255, 255, .94);
-  border-color: #dfe8dc;
-  box-shadow: 0 -12px 28px rgba(31, 39, 28, .1);
+  background: transparent;
+  border: 0;
+  box-shadow: none;
 }
 
 body[data-active-view="quote"] .use-parcel-bar {
@@ -4978,9 +5136,10 @@ body[data-active-view="quote"] .quote-help-inline a,
   color: var(--mw-text-muted) !important;
 }
 
-/* ── 10. Draw controls — light bottom-sheet handle ── */
-body[data-active-view="quote"] .draw-screen .map-tools-panel::before {
-  background: var(--mw-border) !important;
+/* ── 10. Draw controls — panel is now transparent; suppress drag handle ── */
+body[data-active-view="quote"] .draw-screen .map-tools-panel::before,
+.draw-screen .map-tools-panel::before {
+  display: none !important;
 }
 body[data-active-view="quote"] .draw-screen .map-tools-status .status-chip {
   background: var(--mw-bg-subtle) !important;
@@ -5480,9 +5639,12 @@ body[data-active-view="quote"][data-quote-flow-step="draw"] #quoteDrawScreen.is-
 }
 
 body[data-active-view="quote"][data-quote-flow-step="draw"] .draw-screen .map-tools-panel{
-  gap:8px;
-  padding:8px;
-  border-radius:16px;
+  background:transparent;
+  border:none;
+  box-shadow:none;
+  padding:4px 0 2px;
+  border-radius:0;
+  gap:0;
 }
 
 body[data-active-view="quote"][data-quote-flow-step="draw"] .draw-screen .map-tools-panel .tool-row.major-tools{
@@ -5491,10 +5653,10 @@ body[data-active-view="quote"][data-quote-flow-step="draw"] .draw-screen .map-to
 }
 
 body[data-active-view="quote"][data-quote-flow-step="draw"] .draw-screen .map-tools-panel .tool-row.major-tools .btn{
-  min-height:40px;
-  padding:8px 10px;
-  border-radius:12px;
-  font-size:.84rem;
+  min-height:38px;
+  padding:7px 10px;
+  border-radius:10px;
+  font-size:.82rem;
 }
 
 body[data-active-view="quote"][data-quote-flow-step="draw"] .draw-action-bar{
@@ -5711,3 +5873,186 @@ body[data-active-view="quote"] .cod-verification-panel .checkout-action-bar{
   filter:grayscale(1);
   opacity:.55;
 }
+
+/* ── Terrain Card ────────────────────────────────────────────────────────── */
+#terrainCard{ margin-top:.75rem; }
+.terrain-card{ padding:1rem 1.1rem; }
+.terrain-card .section-label{ margin-bottom:.6rem; }
+.terrain-horizon pre,
+.terrain-meter pre{
+  font-family:monospace;
+  font-size:.8rem;
+  line-height:1.3;
+  color:var(--primary,#4ade80);
+  margin:0 0 .4rem;
+  white-space:pre;
+}
+.terrain-stats{
+  list-style:none;
+  padding:0;
+  margin:.5rem 0;
+  font-size:.85rem;
+  color:rgba(255,255,255,.8);
+}
+.terrain-stats li{ margin:.15rem 0; }
+.terrain-stats strong{ color:#fff; }
+.terrain-pricing-note{
+  font-size:.8rem;
+  color:var(--primary,#4ade80);
+  margin:.4rem 0 0;
+}
+.terrain-advisory{
+  margin-top:.6rem;
+  font-size:.82rem;
+  color:rgba(255,255,255,.65);
+  border-top:1px solid var(--panel-border,rgba(255,255,255,.08));
+  padding-top:.5rem;
+}
+.terrain-advisory p{ margin:0 0 .3rem; }
+.terrain-advisory ul{
+  list-style:disc;
+  padding-left:1.2rem;
+  margin:0;
+}
+.terrain-advisory li{ margin:.1rem 0; }
+.terrain-mode-notice{
+  font-size:.8rem;
+  color:rgba(255,255,255,.55);
+  margin:.4rem 0 0;
+}
+
+/* ── Terrain Guardrail Card ──────────────────────────────────────────────── */
+#terrainGuardrailCard{ margin-top:.75rem; }
+.terrain-guardrail-card{
+  padding:1rem 1.1rem;
+  border:2px solid rgba(251,191,36,.45);
+  background:rgba(251,191,36,.07);
+}
+.terrain-guardrail-label{
+  color:#fbbf24 !important;
+  margin-bottom:.5rem;
+}
+.terrain-guardrail-headline{
+  font-size:.95rem;
+  margin:0 0 .4rem;
+  color:#fff;
+}
+.terrain-guardrail-subtext{
+  font-size:.85rem;
+  color:rgba(255,255,255,.8);
+  margin:0 0 .4rem;
+}
+.terrain-guardrail-admin-msg{
+  font-size:.82rem;
+  color:rgba(255,255,255,.65);
+  border-left:3px solid rgba(251,191,36,.5);
+  padding-left:.6rem;
+  margin:.5rem 0;
+}
+.terrain-guardrail-disclaimer{
+  font-size:.78rem;
+  color:rgba(255,255,255,.45);
+  margin:.5rem 0 .75rem;
+}
+.terrain-guardrail-actions{
+  display:flex;
+  gap:.5rem;
+  flex-wrap:wrap;
+  margin-top:.5rem;
+}
+/* ──────────────────────────────────────────────────────────────────────────
+   In-Person Quote Form — checkbox clip fix + preferred-days brand cleanup
+   Fixes: inset-shadow clipping on native checkboxes; dark intake-section
+   background; SMS consent dark-theme colors; Preferred Days off-brand style.
+   ────────────────────────────────────────────────────────────────────────── */
+
+/* Strip text-input props that clip native checkbox/radio elements.
+   The broad quote input rule applies inset box-shadow + border-radius to
+   every input, visually cutting off the top edge of checkbox widgets. */
+body[data-active-view="quote"] input[type="checkbox"],
+body[data-active-view="quote"] input[type="radio"],
+body[data-active-view="quote"] .quote-app input[type="checkbox"],
+body[data-active-view="quote"] .quote-app input[type="radio"] {
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+  border-color: rgba(0,0,0,.22);
+  padding: 0;
+  min-height: 0;
+}
+
+/* .checks row checkboxes: explicit square size + brand-green accent */
+body[data-active-view="quote"] .quote-app .checks input[type="checkbox"],
+body[data-active-view="quote"] .checks input[type="checkbox"] {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  accent-color: #4a7c2f;
+}
+
+/* SMS consent control: dark-theme colors → light form colors */
+body[data-active-view="quote"] .sms-consent-control {
+  background: rgba(74,124,47,.05);
+  border-color: rgba(74,124,47,.2);
+}
+body[data-active-view="quote"] .sms-consent-control span {
+  color: #3a4d32;
+}
+body[data-active-view="quote"] .sms-consent-control a {
+  color: #3d6826;
+}
+
+/* .intake-section was dark (#2d2d2d) — reset to light card in quote context */
+body[data-active-view="quote"] .intake-section {
+  background: #f8fbf5;
+  border-color: #dfe8dc;
+  color: #2d3a27;
+}
+
+/* Preferred Days — in-person quote panel only. Clean white chips with
+   brand-green selected state. Scoped to .manual-quote-panel so the
+   compact checkout-days-grid is unaffected. */
+body[data-active-view="quote"] .manual-quote-panel .preferred-days-grid {
+  gap: 10px;
+}
+body[data-active-view="quote"] .manual-quote-panel .preferred-day-card {
+  background: #ffffff;
+  border: 1px solid #dfe8dc;
+  color: #2d3a27;
+  border-radius: 10px;
+  min-height: 100px;
+}
+body[data-active-view="quote"] .manual-quote-panel .preferred-day-card:hover {
+  border-color: #b0d0a0;
+  box-shadow: 0 4px 12px rgba(74,124,47,.1);
+  transform: none;
+}
+body[data-active-view="quote"] .manual-quote-panel .preferred-day-card:has(input:checked),
+body[data-active-view="quote"] .manual-quote-panel .preferred-day-card.selected {
+  background: #e8f5e0;
+  border-color: #4a7c2f;
+  box-shadow: 0 0 0 2px rgba(74,124,47,.18);
+}
+body[data-active-view="quote"] .manual-quote-panel .preferred-day-card .preferred-day-name {
+  color: #2d3a27;
+}
+body[data-active-view="quote"] .manual-quote-panel .preferred-day-card .preferred-day-icon {
+  color: #4a7c2f !important;
+}
+body[data-active-view="quote"] .manual-quote-panel .preferred-day-card:has(input:focus-visible) {
+  outline: 3px solid rgba(74,124,47,.3);
+  outline-offset: 2px;
+}
+
+@media (max-width:640px) {
+  body[data-active-view="quote"] .manual-quote-panel .preferred-days-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+  body[data-active-view="quote"] .manual-quote-panel .preferred-day-card {
+    min-height: 88px;
+    padding: 9px 8px;
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────── */

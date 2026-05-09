@@ -15,6 +15,10 @@ import {
   logPhoneVerificationEvent,
   normalizePhoneForVerification
 } from "./services/phoneVerifyProvider.js";
+import { calculateTerrain } from "./services/terrain/terrainCalculator.js";
+import { cacheSize as terrainCacheSize, cacheClear as terrainCacheClear } from "./services/terrain/terrainCache.js";
+import { listProviders as listTerrainProviders } from "./services/terrain/terrainProviders/index.js";
+import { computeTerrainGuardrail, DEFAULT_TERRAIN_MANUAL_REVIEW_MESSAGE } from "./services/terrain/terrainGuardrail.js";
 import { fileURLToPath } from "url";
 import { createRequire } from "module";
 import { mkdirSync, readFileSync, writeFileSync, renameSync, existsSync } from "fs";
@@ -109,6 +113,7 @@ const PROVIDER_SERVICE_AREAS_FILE = path.join(DATA_DIR, "provider_service_areas.
 const PAYMENTS_FILE = path.join(DATA_DIR, "payments.json");
 const ACCOUNT_SETUP_TOKENS_FILE = path.join(DATA_DIR, "account_setup_tokens.json");
 const FACEBOOK_DATA_DELETION_FILE = path.join(DATA_DIR, "facebook_data_deletion_requests.json");
+const TERRAIN_MANUAL_REVIEWS_FILE = path.join(DATA_DIR, "terrain_manual_reviews.json");
 
 function readSettingsFile() {
   try {
@@ -842,7 +847,18 @@ function compactAiDetectDiagnostics(value = {}) {
     maskPixelCountAfterFiltering: value.maskPixelCountAfterFiltering ?? null,
     polygonCountBeforeFiltering: value.polygonCountBeforeFiltering ?? null,
     polygonCountAfterFiltering: value.polygonCountAfterFiltering ?? null,
-    naipNirWarning: value.naipNirWarning || ""
+    naipNirWarning: value.naipNirWarning || "",
+    gravelExcludedPixels: Number.isFinite(Number(value.gravelExcludedPixels)) ? Number(value.gravelExcludedPixels) : 0,
+    gravelExcludedAreaSqft: Number.isFinite(Number(value.gravelExcludedAreaSqft)) ? Number(value.gravelExcludedAreaSqft) : 0,
+    largeObjectExcludedPixels: Number.isFinite(Number(value.largeObjectExcludedPixels)) ? Number(value.largeObjectExcludedPixels) : 0,
+    largeObjectExcludedAreaSqft: Number.isFinite(Number(value.largeObjectExcludedAreaSqft)) ? Number(value.largeObjectExcludedAreaSqft) : 0,
+    frozenExclusionPixels: Number.isFinite(Number(value.frozenExclusionPixels)) ? Number(value.frozenExclusionPixels) : 0,
+    morphologyBarrierPixels: Number.isFinite(Number(value.morphologyBarrierPixels)) ? Number(value.morphologyBarrierPixels) : 0,
+    exclusionBarrierApplied: value.exclusionBarrierApplied === true,
+    exclusionRules: value.exclusionRules || null,
+    constrainedBoundaryMode: value.constrainedBoundaryMode === true,
+    activeBoundarySqft: Number.isFinite(Number(value.activeBoundarySqft)) ? Number(value.activeBoundarySqft) : null,
+    finalAcceptReason: value.finalAcceptReason || "",
   };
 }
 
@@ -1049,6 +1065,18 @@ function guardrailForMowableDetection(normalized, parcelCollection, parcelAreaSq
   const detectionMode = String(visionDiagnostics?.detectionMode || visionDiagnostics?.detection_mode || payload?.detectionMode || payload?.detection_mode || "").toLowerCase();
   const isSmallHardscapeRemainder = preset === "small_residential" && detectionMode === "hardscape_exclusion_then_remainder";
   const smallHardscapeEvidence = isSmallHardscapeRemainder && exclusionEvidence.hardscapeExcluded;
+  // Constrained/selected-boundary mode: user drew a mowable focus area.
+  // Vegetation covering most of the selected area after hardscape removal is expected.
+  const usedSelectedBoundary = Boolean(
+    visionDiagnostics?.usedSelectedBoundary || payload?.usedSelectedBoundary ||
+    visionDiagnostics?.constrainedBoundaryMode || payload?.constrainedBoundaryMode
+  );
+  const constrainedBoundarySource = String(
+    visionDiagnostics?.detectionBoundarySource || payload?.detectionBoundarySource || ""
+  );
+  const isConstrainedBoundary = usedSelectedBoundary ||
+    constrainedBoundarySource === "mowable" ||
+    constrainedBoundarySource === "selected_area";
   const roughCandidateAllowed = Boolean(visionDiagnostics?.lowConfidenceCandidateReturned)
     && presetThresholds.allowLowConfidenceCandidate
     && (exclusionEvidence.present || isLargeParcel)
@@ -1073,14 +1101,17 @@ function guardrailForMowableDetection(normalized, parcelCollection, parcelAreaSq
     reason = "extremely small detection";
   } else if (detectionUsesFallbackSource(normalized)) {
     reason = "parcel-sized fallback";
-  } else if (detectedRatio > presetThresholds.hardRatioLimit && !roughCandidateAllowed) {
+  } else if (detectedRatio > presetThresholds.hardRatioLimit && !roughCandidateAllowed && !isConstrainedBoundary) {
     reason = "detected ratio above hard limit";
   } else if (
     (boundarySimilarity >= 0.97 ||
     featureCollectionsApproximatelyEqual(normalized.featureCollection, parcelCollection, detectedAreaSqft, parcelAreaSqft))
     && !allowMostlyFailedManualReview
     && !smallHardscapeEvidence
+    && !isConstrainedBoundary
   ) {
+    // For constrained boundaries, matching the selected area is the expected outcome —
+    // do not reject because the polygon fills the selected boundary.
     reason = "detected geometry matched the full parcel";
   } else if (
     (boundarySimilarity >= 0.97 ||
@@ -1098,14 +1129,25 @@ function guardrailForMowableDetection(normalized, parcelCollection, parcelAreaSq
       && boundarySimilarity < 0.95
       && exclusionEvidence.present
       && (preset === "large_rural" || exclusionEvidence.strong)
+    ) || (
+      // Constrained/selected-boundary: allow high ratio when hardscape was excluded.
+      // Inside a user-selected area, vegetation covering 75-95% of the selected
+      // boundary after manmade removal is expected and should not be rejected.
+      isConstrainedBoundary
+      && exclusionEvidence.present
+      && detectedRatio <= presetThresholds.hardRatioLimit
     );
     if (!highRatioAllowed) {
       reason = "high detected ratio without enough exclusion evidence";
     }
-  } else if (detectedRatio > presetThresholds.hardRatioLimit && !roughCandidateAllowed) {
+  } else if (detectedRatio > presetThresholds.hardRatioLimit && !roughCandidateAllowed && !isConstrainedBoundary) {
     reason = "high detected ratio";
-  } else if (confidence !== null && confidence < presetThresholds.minimumConfidence && !roughCandidateAllowed) {
+  } else if (confidence !== null && confidence < presetThresholds.minimumConfidence && !roughCandidateAllowed && !isConstrainedBoundary) {
     reason = "low confidence";
+  }
+
+  if (isConstrainedBoundary) {
+    console.log(`[AI Detect] constrained boundary mode: usedSelectedBoundary=${usedSelectedBoundary} source=${constrainedBoundarySource} exclusionEvidence.present=${exclusionEvidence.present} exclusionEvidence.strong=${exclusionEvidence.strong} highRatioAllowed=${highRatioAllowed} reason=${reason || "none"}`);
   }
 
   return {
@@ -1115,7 +1157,8 @@ function guardrailForMowableDetection(normalized, parcelCollection, parcelAreaSq
     highRatioAllowed,
     parcelBoundarySimilarity: Number(boundarySimilarity.toFixed(4)),
     exclusionEvidence,
-    guardrailReason: reason
+    guardrailReason: reason,
+    isConstrainedBoundary,
   };
 }
 
@@ -1142,19 +1185,28 @@ async function handleAiDetectMowable(req, res, options = {}) {
     features: parcelFeatures
   };
   const parcelAreaSqft = featureCollectionAreaSqft(validatedParcelGeoJson);
-  const detectionPreset = normalizeAiDetectionPreset(body.detectionPreset, parcelAreaSqft);
-
-  const rawConstraint = body.constraintGeoJson || null;
-  console.log("[AI Detect] constraintGeoJson present:", !!rawConstraint);
-  const constraintFeatures = rawConstraint ? featuresFromGeoJson(rawConstraint) : [];
+  // Priority: mowableGeoJson (user-selected boundary) > selectedAreaGeoJson > constraintGeoJson (legacy) > parcel fallback
+  const rawBoundaryGeoJson = body.mowableGeoJson || body.selectedAreaGeoJson || body.constraintGeoJson || null;
+  let boundarySource = "parcel";
+  if (body.mowableGeoJson) boundarySource = "mowable";
+  else if (body.selectedAreaGeoJson) boundarySource = "selected_area";
+  else if (body.constraintGeoJson) boundarySource = "mowable";
+  console.log("[AI Detect] constraintGeoJson present:", !!rawBoundaryGeoJson);
+  const constraintFeatures = rawBoundaryGeoJson ? featuresFromGeoJson(rawBoundaryGeoJson) : [];
   console.log("[AI Detect] parsed constraint features:", constraintFeatures?.length || 0);
   const validatedConstraintGeoJson = constraintFeatures.length
     ? { type: "FeatureCollection", features: constraintFeatures }
     : null;
   const constraintAreaSqft = validatedConstraintGeoJson ? featureCollectionAreaSqft(validatedConstraintGeoJson) : 0;
+  // Use the effective (selected/constraint) area for preset selection so a small drawn area
+  // does not inherit large_rural thresholds from a large surrounding parcel.
+  const effectiveAreaSqft = constraintAreaSqft > 0 ? constraintAreaSqft : parcelAreaSqft;
+  const detectionPreset = normalizeAiDetectionPreset(body.detectionPreset, effectiveAreaSqft);
   if (validatedConstraintGeoJson) {
+    console.log(`[AI Detect] boundary source: ${boundarySource} boundarySqft=${Math.round(constraintAreaSqft)}`);
     console.log(`[AI Detect] mode=constrained-selection constraintAreaSqft=${Math.round(constraintAreaSqft)}`);
   } else {
+    console.log(`[AI Detect] boundary source: parcel parcelSqft=${Math.round(parcelAreaSqft)}`);
     console.log("[AI Detect] mode=full-parcel");
   }
   const visionServiceUrl = (process.env.VISION_SERVICE_URL || "http://127.0.0.1:8017").replace(/\/+$/, "");
@@ -1194,7 +1246,11 @@ async function handleAiDetectMowable(req, res, options = {}) {
           provider: "esri-world-imagery",
           tileUrl: DEFAULT_SATELLITE_TILE_URL
         },
-        ...(validatedConstraintGeoJson ? { constraintGeoJson: validatedConstraintGeoJson } : {}),
+        ...(validatedConstraintGeoJson ? {
+          constraintGeoJson: validatedConstraintGeoJson,
+          mowableGeoJson: validatedConstraintGeoJson,
+          boundarySource,
+        } : {}),
       })
     }, visionTimeoutMs);
     console.log(`[AI Detect] vision service status=post_${upstream.status}`);
@@ -1223,9 +1279,7 @@ async function handleAiDetectMowable(req, res, options = {}) {
     console.log(`[AI Detect] features returned=${featuresReturned}`);
     const normalized = normalizeMowableResponse(payload);
     const detectedAreaSqft = normalized ? featureCollectionAreaSqft(normalized.featureCollection) : 0;
-    // In constrained mode use constraint area as reference so ratio guardrails are evaluated
-    // against what the user selected, not the full parcel.
-    const effectiveAreaSqft = constraintAreaSqft > 0 ? constraintAreaSqft : parcelAreaSqft;
+    // effectiveAreaSqft is computed at handler top: constraint area when present, else parcel
     const guardrail = guardrailForMowableDetection(
       normalized,
       validatedParcelGeoJson,
@@ -1243,7 +1297,7 @@ async function handleAiDetectMowable(req, res, options = {}) {
 
     if (rejectionReason) {
       console.log(`[AI Detect] REJECTED: reason=${rejectionReason} detectedRatio=${(parcelAreaSqft > 0 ? detectedAreaSqft / parcelAreaSqft : 0).toFixed(4)} parcelAreaSqft=${Math.round(parcelAreaSqft)}`);
-      return res.json(emptyMowableDetection(rejectionReason, {
+      const rejectionResp = emptyMowableDetection(rejectionReason, {
         parcelAreaSqft,
         detectedAreaSqft,
         detectionPreset,
@@ -1259,7 +1313,12 @@ async function handleAiDetectMowable(req, res, options = {}) {
           exclusionEvidence: guardrail.exclusionEvidence,
           guardrailReason: guardrail.guardrailReason
         }
-      }));
+      });
+      rejectionResp.detectionBoundarySource = boundarySource;
+      rejectionResp.detectionBoundarySqft = Math.round(effectiveAreaSqft);
+      rejectionResp.parcelSqft = Math.round(parcelAreaSqft);
+      rejectionResp.usedSelectedBoundary = boundarySource !== "parcel";
+      return res.json(rejectionResp);
     }
 
     console.log(`[AI Detect] parcelAreaSqft=${Math.round(parcelAreaSqft)}`);
@@ -1286,6 +1345,10 @@ async function handleAiDetectMowable(req, res, options = {}) {
         mode: normalized.mode ?? visionDiagnostics.mode
       });
     }
+    normalized.detectionBoundarySource = boundarySource;
+    normalized.detectionBoundarySqft = Math.round(effectiveAreaSqft);
+    normalized.parcelSqft = Math.round(parcelAreaSqft);
+    normalized.usedSelectedBoundary = boundarySource !== "parcel";
     return res.json(normalized);
   } catch (err) {
     console.log("[AI Detect] vision service status=unavailable");
@@ -1376,6 +1439,8 @@ app.get("/", (_req, res) => {
 app.get("/index.html", (_req, res) => {
   res.type("html").send(composeHtml());
 });
+
+app.get("/admin.html", (_req, res) => { res.redirect(301, "/admin/"); });
 
 app.use(express.static(path.join(__dirname, "..", "public")));
 
@@ -1622,9 +1687,15 @@ async function ensurePricingSchema() {
         maps_mode TEXT,
         minimum_cut_price NUMERIC(10,2) DEFAULT 38,
         complexity_rules JSONB DEFAULT '{}',
+        terrain_settings JSONB DEFAULT '{}',
         updated_at TIMESTAMPTZ DEFAULT NOW()
       )
     `);
+
+    // Add terrain_settings column to existing deployments that pre-date this column
+    await pgdb.query(`
+      ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS terrain_settings JSONB DEFAULT '{}'
+    `).catch(() => {});
 
     await pgdb.query(`
       CREATE TABLE IF NOT EXISTS services (
@@ -1695,6 +1766,38 @@ async function ensurePricingSchema() {
         updated_at TIMESTAMPTZ DEFAULT NOW()
       )
     `);
+
+    /* Global bulk / sliding-scale pricing tiers (not per-service) */
+    await pgdb.query(`
+      CREATE TABLE IF NOT EXISTS bulk_pricing_tiers (
+        id TEXT PRIMARY KEY,
+        label TEXT NOT NULL,
+        enabled BOOLEAN DEFAULT true,
+        start_sqft INTEGER NOT NULL DEFAULT 0,
+        end_sqft INTEGER,
+        rate_per_1000_sqft NUMERIC(10,4) NOT NULL,
+        sort_order INTEGER DEFAULT 0,
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+
+    /* Seed default bulk tiers if none exist yet */
+    const existingBulk = await pgdb.query("SELECT 1 FROM bulk_pricing_tiers LIMIT 1").catch(() => ({ rows: [] }));
+    if (!existingBulk.rows.length) {
+      const defaults = [
+        { id: 'bulk_std',   label: 'Standard (0–8,000 sq ft)',        enabled: true, start: 0,     end: 8000,  rate: 4.50, order: 0 },
+        { id: 'bulk_med',   label: 'Volume (8,001–15,000 sq ft)',      enabled: true, start: 8000,  end: 15000, rate: 3.80, order: 1 },
+        { id: 'bulk_large', label: 'Large lawn (15,001–30,000 sq ft)', enabled: true, start: 15000, end: 30000, rate: 3.25, order: 2 },
+        { id: 'bulk_open',  label: 'Open lawn (30,001+ sq ft)',        enabled: true, start: 30000, end: null,  rate: 2.75, order: 3 },
+      ];
+      for (const d of defaults) {
+        await pgdb.query(
+          `INSERT INTO bulk_pricing_tiers (id, label, enabled, start_sqft, end_sqft, rate_per_1000_sqft, sort_order, updated_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,NOW()) ON CONFLICT (id) DO NOTHING`,
+          [d.id, d.label, d.enabled, d.start, d.end, d.rate, d.order]
+        ).catch(() => {});
+      }
+    }
 
     /* Snapshot of the pricing breakdown used at booking time */
     await pgdb.query(`
@@ -2796,11 +2899,12 @@ function findService(settings, serviceId) {
 
 async function loadSettingsFromDb() {
   try {
-    const [settingsResult, servicesResult, regionsResult, tiersResult] = await Promise.all([
+    const [settingsResult, servicesResult, regionsResult, tiersResult, bulkTiersResult] = await Promise.all([
       pgdb.query("SELECT * FROM app_settings WHERE id = 1 LIMIT 1"),
       pgdb.query("SELECT * FROM services WHERE active = true ORDER BY sort_order ASC, name ASC"),
       pgdb.query("SELECT * FROM regions WHERE active = true ORDER BY sort_order ASC, name ASC"),
-      pgdb.query("SELECT * FROM price_tiers WHERE active = true ORDER BY service_id, sort_order ASC, min_sqft ASC").catch(() => ({ rows: [] }))
+      pgdb.query("SELECT * FROM price_tiers WHERE active = true ORDER BY service_id, sort_order ASC, min_sqft ASC").catch(() => ({ rows: [] })),
+      pgdb.query("SELECT * FROM bulk_pricing_tiers ORDER BY sort_order ASC, start_sqft ASC").catch(() => ({ rows: [] }))
     ]);
 
     const row = settingsResult.rows[0] || {};
@@ -2845,6 +2949,16 @@ async function loadSettingsFromDb() {
       sortOrder: Number(r.sort_order || 0)
     }));
 
+    const bulkTiers = bulkTiersResult.rows.map((t) => ({
+      id: t.id,
+      label: t.label || "",
+      enabled: Boolean(t.enabled),
+      startSqft: Number(t.start_sqft || 0),
+      endSqft: t.end_sqft != null ? Number(t.end_sqft) : null,
+      ratePer1000Sqft: Number(t.rate_per_1000_sqft || 0),
+      sortOrder: Number(t.sort_order || 0)
+    }));
+
     return {
       appName: row.app_name || APP_NAME,
       defaultState: row.default_state || DEFAULT_STATE,
@@ -2854,7 +2968,8 @@ async function loadSettingsFromDb() {
       complexityRules: row.complexity_rules || defaultSettings.complexityRules,
       services: dbServices.length ? dbServices : (localSettings.services || []),
       regions: dbRegions.length ? dbRegions : (localSettings.regions || []),
-      tiersByService
+      tiersByService,
+      bulkTiers: bulkTiers.filter((t) => t.enabled)
     };
   } catch (err) {
     console.warn("DB unavailable, using local settings.json fallback:", err.message);
@@ -2862,7 +2977,8 @@ async function loadSettingsFromDb() {
       ...defaultSettings,
       services: localSettings.services || [],
       regions: localSettings.regions || [],
-      tiersByService: {}
+      tiersByService: {},
+      bulkTiers: []
     };
   }
 }
@@ -3028,6 +3144,54 @@ function applyTieredAreaCharge(mowAreaSqft, service) {
   return { areaCharge: Math.round(total * 100) / 100, tierLines };
 }
 
+/* applyBulkSlidingScale — incremental sliding-scale pricing for large lawns.
+   Each tier covers a band [startSqft, endSqft) and applies its own rate to the
+   sqft that falls inside that band — no retroactive repricing of earlier bands.
+   Returns { areaCharge, standardCharge, bulkDiscount, tierLines, isBulkApplied } */
+function applyBulkSlidingScale(mowAreaSqft, standardRatePer1000, bulkTiers) {
+  const activeTiers = (bulkTiers || [])
+    .filter((t) => t.enabled !== false && t.ratePer1000Sqft != null)
+    .sort((a, b) => a.startSqft - b.startSqft);
+
+  const standardCharge = Math.round((mowAreaSqft / 1000) * standardRatePer1000 * 100) / 100;
+
+  if (!activeTiers.length) {
+    const label = `Area charge (${Math.round(mowAreaSqft).toLocaleString()} sq ft × $${standardRatePer1000}/k sq ft)`;
+    return { areaCharge: standardCharge, standardCharge, bulkDiscount: 0, tierLines: [{ label, amount: standardCharge }], isBulkApplied: false };
+  }
+
+  let remaining = mowAreaSqft;
+  let totalCharge = 0;
+  const tierLines = [];
+  let isBulkApplied = false;
+
+  for (const tier of activeTiers) {
+    if (remaining <= 0) break;
+    const bandEnd = tier.endSqft != null ? tier.endSqft : Infinity;
+    const bandWidth = bandEnd === Infinity ? remaining : Math.max(0, bandEnd - tier.startSqft);
+    const sqftInBand = Math.min(remaining, bandWidth);
+    if (sqftInBand <= 0) continue;
+
+    const rate = Number(tier.ratePer1000Sqft || 0);
+    const charge = Math.round((sqftInBand / 1000) * rate * 100) / 100;
+    totalCharge += charge;
+
+    const isDiscount = rate < standardRatePer1000;
+    if (isDiscount) isBulkApplied = true;
+
+    const lineLabel = tier.label || (isDiscount
+      ? `Volume pricing (${Math.round(sqftInBand).toLocaleString()} sq ft × $${rate}/k sq ft)`
+      : `Area charge (${Math.round(sqftInBand).toLocaleString()} sq ft × $${rate}/k sq ft)`);
+
+    tierLines.push({ label: lineLabel, amount: charge });
+    remaining -= sqftInBand;
+  }
+
+  const areaCharge = Math.round(totalCharge * 100) / 100;
+  const bulkDiscount = Math.max(0, Math.round((standardCharge - areaCharge) * 100) / 100);
+  return { areaCharge, standardCharge, bulkDiscount, tierLines, isBulkApplied };
+}
+
 function estimateQuoteWithBreakdown(payload, settings) {
   const service = findService(settings, payload.serviceType) || settings.services[0];
   const region = findRegion(settings, payload.regionId);
@@ -3040,8 +3204,20 @@ function estimateQuoteWithBreakdown(payload, settings) {
   const baseFee = Number(service?.baseFee || 0);
   const serviceMinimum = Number(service?.minimumPrice || settings.minimumCutPrice || 0);
 
-  /* Tiered or flat area charge */
-  const { areaCharge, tierLines } = applyTieredAreaCharge(mowAreaSqft, service);
+  /* Bulk sliding-scale takes priority over service-specific tiers when configured */
+  const bulkTiers = Array.isArray(settings.bulkTiers) ? settings.bulkTiers : [];
+  const hasServiceTiers = Array.isArray(service?.tiers) && service.tiers.filter((t) => t.ratePer1000Sqft != null).length > 0;
+  const standardRatePer1000 = Number(service?.ratePer1000Sqft || 0);
+
+  let areaCharge, tierLines, bulkDiscount = 0, isBulkApplied = false;
+  if (bulkTiers.length > 0) {
+    ({ areaCharge, tierLines, bulkDiscount, isBulkApplied } = applyBulkSlidingScale(mowAreaSqft, standardRatePer1000, bulkTiers));
+  } else if (hasServiceTiers) {
+    ({ areaCharge, tierLines } = applyTieredAreaCharge(mowAreaSqft, service));
+  } else {
+    ({ areaCharge, tierLines } = applyTieredAreaCharge(mowAreaSqft, service));
+  }
+
   const rawServiceCharge = baseFee + areaCharge;
   const appliedMinimum = rawServiceCharge < serviceMinimum;
 
@@ -3051,7 +3227,14 @@ function estimateQuoteWithBreakdown(payload, settings) {
     breakdown.push({ label: "Service minimum", amount: estimate });
   } else {
     if (baseFee > 0) breakdown.push({ label: "Base fee", amount: baseFee });
-    for (const line of tierLines) breakdown.push(line);
+    if (isBulkApplied && bulkDiscount > 0) {
+      /* Show: standard rate charge + discount line so they add up to areaCharge */
+      const stdCharge = Math.round((areaCharge + bulkDiscount) * 100) / 100;
+      breakdown.push({ label: `Area charge (${Math.round(mowAreaSqft).toLocaleString()} sq ft × $${standardRatePer1000}/k sq ft)`, amount: stdCharge });
+      breakdown.push({ label: "Bulk / open-lawn pricing discount", amount: -bulkDiscount });
+    } else {
+      for (const line of tierLines) breakdown.push(line);
+    }
   }
 
   const regionMinimum = Number(region?.minimumJob || 0);
@@ -3116,7 +3299,8 @@ function estimateQuoteWithBreakdown(payload, settings) {
   addMultiplier(isTrue(payload.denseVegetation), `Dense vegetation (+${Math.round((Number(rules.denseVegetationMultiplier || 1) - 1) * 100)}%)`, Number(rules.denseVegetationMultiplier || 1));
 
   const final = roundToNearestFive(Math.round(estimate * 100) / 100);
-  return { estimate: final, breakdown };
+  const activeBulkTiers = isBulkApplied ? (settings?.bulkTiers || []) : [];
+  return { estimate: final, breakdown, activeBulkTiers };
 }
 
 function numberField(body, name) {
@@ -3288,6 +3472,7 @@ async function lookupParcel(lat, lng, address = "", city = "", zip = "") {
       geometry: `${lng},${lat}`,
       geometryType: "esriGeometryPoint",
       inSR: "4326",
+      outSR: "4326",
       spatialRel: "esriSpatialRelIntersects",
       outFields,
       returnGeometry: "true"
@@ -3307,6 +3492,7 @@ async function lookupParcel(lat, lng, address = "", city = "", zip = "") {
       geometry: `${lng},${lat}`,
       geometryType: "esriGeometryPoint",
       inSR: "4326",
+      outSR: "4326",
       spatialRel: "esriSpatialRelIntersects",
       distance: "120",
       units: "esriSRUnit_Meter",
@@ -3330,6 +3516,7 @@ async function lookupParcel(lat, lng, address = "", city = "", zip = "") {
       const polygonById = await fetchLayerQuery(6, {
         where: `parcelid='${escapeSqlLike(centroidParcelId)}'`,
         outFields,
+        outSR: "4326",
         returnGeometry: "true",
         resultRecordCount: "1"
       });
@@ -3362,6 +3549,7 @@ async function lookupParcel(lat, lng, address = "", city = "", zip = "") {
     const textHit = await fetchLayerQuery(6, {
       where: clauses.join(" AND "),
       outFields,
+      outSR: "4326",
       returnGeometry: "true",
       orderByFields: "objectid ASC",
       resultRecordCount: "1"
@@ -3695,6 +3883,491 @@ app.put("/api/settings", requireAuth, requireRole("admin"), async (req, res) => 
   }
 });
 
+/* -----------------------------------------------------------------------
+   Admin terrain settings — GET / PATCH / test
+   ----------------------------------------------------------------------- */
+
+/** Read terrain_settings from DB row, merged with env defaults. */
+async function loadTerrainSettings() {
+  try {
+    const result = await pgdb.query("SELECT terrain_settings FROM app_settings WHERE id = 1 LIMIT 1");
+    const db = result.rows[0]?.terrain_settings || {};
+    return {
+      mode:                       db.mode           || process.env.TERRAIN_MODE                    || "off",
+      provider:                   db.provider       || process.env.TERRAIN_ELEVATION_PROVIDER       || "usgs_epqs",
+      samplePoints:               db.samplePoints   != null ? Number(db.samplePoints) : parseInt(process.env.TERRAIN_SAMPLE_POINTS || "9", 10),
+      cacheTtlHours:              db.cacheTtlHours  != null ? Number(db.cacheTtlHours) : parseFloat(process.env.TERRAIN_CACHE_TTL_HOURS || "168"),
+      customerUI:                 db.customerUI     != null ? Boolean(db.customerUI) : (process.env.TERRAIN_ENABLE_CUSTOMER_UI || "true") !== "false",
+      debug:                      db.debug          != null ? Boolean(db.debug) : (process.env.TERRAIN_DEBUG || "false") === "true",
+      instantBookingMaxCategory:  db.instantBookingMaxCategory  || process.env.TERRAIN_INSTANT_BOOKING_MAX_CATEGORY || "High",
+      instantBookingMaxScore:     db.instantBookingMaxScore     != null ? Number(db.instantBookingMaxScore)    : parseFloat(process.env.TERRAIN_INSTANT_BOOKING_MAX_SCORE || "8.0"),
+      blockExtremeInstantPay:     db.blockExtremeInstantPay     != null ? Boolean(db.blockExtremeInstantPay)  : (process.env.TERRAIN_BLOCK_EXTREME_INSTANT_PAY || "true") !== "false",
+      manualReviewMessage:        db.manualReviewMessage        || DEFAULT_TERRAIN_MANUAL_REVIEW_MESSAGE,
+    };
+  } catch (_) {
+    return {
+      mode:                       process.env.TERRAIN_MODE                    || "off",
+      provider:                   process.env.TERRAIN_ELEVATION_PROVIDER       || "usgs_epqs",
+      samplePoints:               parseInt(process.env.TERRAIN_SAMPLE_POINTS  || "9", 10),
+      cacheTtlHours:              parseFloat(process.env.TERRAIN_CACHE_TTL_HOURS || "168"),
+      customerUI:                 (process.env.TERRAIN_ENABLE_CUSTOMER_UI || "true") !== "false",
+      debug:                      (process.env.TERRAIN_DEBUG || "false") === "true",
+      instantBookingMaxCategory:  process.env.TERRAIN_INSTANT_BOOKING_MAX_CATEGORY || "High",
+      instantBookingMaxScore:     parseFloat(process.env.TERRAIN_INSTANT_BOOKING_MAX_SCORE || "8.0"),
+      blockExtremeInstantPay:     (process.env.TERRAIN_BLOCK_EXTREME_INSTANT_PAY || "true") !== "false",
+      manualReviewMessage:        DEFAULT_TERRAIN_MANUAL_REVIEW_MESSAGE,
+    };
+  }
+}
+
+app.get("/api/admin/settings/terrain", requireAuth, requireRole("admin"), async (req, res) => {
+  try {
+    const settings  = await loadTerrainSettings();
+    const providers = listTerrainProviders();
+    res.json({ ok: true, settings, providers, cacheSize: terrainCacheSize() });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+app.patch("/api/admin/settings/terrain", requireAuth, requireRole("admin"), async (req, res) => {
+  try {
+    const body    = req.body || {};
+    const current = await loadTerrainSettings();
+    const VALID_MODES     = ["off", "display_only", "pricing_enabled"];
+    const VALID_PROVIDERS = listTerrainProviders();
+    const VALID_SAMPLES   = [5, 9, 13, 17];
+
+    const VALID_MAX_CATEGORIES = ["Flat", "Moderate", "High", "Extreme"];
+    const next = {
+      mode:                      VALID_MODES.includes(body.mode)          ? body.mode     : current.mode,
+      provider:                  VALID_PROVIDERS.includes(body.provider)  ? body.provider : current.provider,
+      samplePoints:              VALID_SAMPLES.includes(Number(body.samplePoints)) ? Number(body.samplePoints) : current.samplePoints,
+      cacheTtlHours:             body.cacheTtlHours != null ? Math.max(0, Number(body.cacheTtlHours)) : current.cacheTtlHours,
+      customerUI:                body.customerUI    != null ? Boolean(body.customerUI) : current.customerUI,
+      debug:                     body.debug         != null ? Boolean(body.debug)      : current.debug,
+      instantBookingMaxCategory: VALID_MAX_CATEGORIES.includes(body.instantBookingMaxCategory) ? body.instantBookingMaxCategory : current.instantBookingMaxCategory,
+      instantBookingMaxScore:    body.instantBookingMaxScore != null ? Math.min(10, Math.max(0, Number(body.instantBookingMaxScore))) : current.instantBookingMaxScore,
+      blockExtremeInstantPay:    body.blockExtremeInstantPay != null ? Boolean(body.blockExtremeInstantPay) : current.blockExtremeInstantPay,
+      manualReviewMessage:       typeof body.manualReviewMessage === "string" ? body.manualReviewMessage.slice(0, 1000) : current.manualReviewMessage,
+    };
+
+    await pgdb.query(
+      `INSERT INTO app_settings (id, terrain_settings, updated_at)
+       VALUES (1, $1, NOW())
+       ON CONFLICT (id) DO UPDATE SET terrain_settings = EXCLUDED.terrain_settings, updated_at = NOW()`,
+      [JSON.stringify(next)]
+    );
+
+    // Apply to process.env so the running instance picks up the change immediately
+    process.env.TERRAIN_MODE                              = next.mode;
+    process.env.TERRAIN_ELEVATION_PROVIDER               = next.provider;
+    process.env.TERRAIN_SAMPLE_POINTS                    = String(next.samplePoints);
+    process.env.TERRAIN_CACHE_TTL_HOURS                  = String(next.cacheTtlHours);
+    process.env.TERRAIN_ENABLE_CUSTOMER_UI               = next.customerUI ? "true" : "false";
+    process.env.TERRAIN_DEBUG                            = next.debug ? "true" : "false";
+    process.env.TERRAIN_INSTANT_BOOKING_MAX_CATEGORY     = next.instantBookingMaxCategory;
+    process.env.TERRAIN_INSTANT_BOOKING_MAX_SCORE        = String(next.instantBookingMaxScore);
+    process.env.TERRAIN_BLOCK_EXTREME_INSTANT_PAY        = next.blockExtremeInstantPay ? "true" : "false";
+
+    // Clear cache when settings change (provider/mode switch)
+    terrainCacheClear();
+
+    res.json({ ok: true, settings: next });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+app.post("/api/admin/settings/terrain/test", requireAuth, requireRole("admin"), async (req, res) => {
+  try {
+    const body = req.body || {};
+    const result = await calculateTerrain({
+      parcelGeoJson:  body.parcelGeoJson  || undefined,
+      mowableGeoJson: body.mowableGeoJson || undefined,
+      lat:            body.lat   != null ? Number(body.lat)   : undefined,
+      lng:            body.lng   != null ? Number(body.lng)   : undefined,
+      address:        body.address || undefined,
+      _adminOverrides: {
+        mode:     body.mode     || undefined,
+        provider: body.provider || undefined,
+      },
+    }).catch((err) => ({ available: false, error: err?.message }));
+
+    res.json({ ok: true, terrain: result });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+/* -----------------------------------------------------------------------
+   Terrain manual review request — customer submits when blocked by guardrail
+   ----------------------------------------------------------------------- */
+
+app.post("/api/terrain/manual-review-request", optionalAuth, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const review = {
+      id:             nanoid(12),
+      createdAt:      new Date().toISOString(),
+      status:         "new",
+      customerName:   String(body.customerName || body.name || "").trim().slice(0, 200),
+      customerPhone:  String(body.customerPhone || body.phone || "").trim().slice(0, 30),
+      customerEmail:  String(body.customerEmail || body.email || "").trim().slice(0, 200),
+      address:        String(body.address || "").trim().slice(0, 300),
+      city:           String(body.city || "").trim().slice(0, 100),
+      state:          String(body.state || "").trim().slice(0, 50),
+      zip:            String(body.zip || "").trim().slice(0, 20),
+      estimate:       Number(body.estimate || 0) || null,
+      terrain: body.terrain && typeof body.terrain === "object" ? {
+        difficultyScore:    body.terrain.difficultyScore,
+        difficultyCategory: body.terrain.difficultyCategory,
+        elevationChangeFt:  body.terrain.elevationChangeFt,
+        averageGradePercent: body.terrain.averageGradePercent,
+        maxGradePercent:    body.terrain.maxGradePercent,
+        terrainGuardrail:   body.terrain.terrainGuardrail,
+      } : null,
+      reasonCode:     String(body.reasonCode || "").trim().slice(0, 100),
+      parcelGeoJson:  body.parcelGeoJson || body.parcelGeoJSON || null,
+      mowableGeoJson: body.mowableGeoJson || body.mowableGeoJSON || body.selectedMowableGeoJSON || null,
+      notes:          String(body.notes || body.message || "").trim().slice(0, 2000),
+    };
+
+    const reviews = readJsonArray(TERRAIN_MANUAL_REVIEWS_FILE);
+    reviews.push(review);
+    writeJsonArray(TERRAIN_MANUAL_REVIEWS_FILE, reviews);
+
+    res.json({ ok: true, id: review.id, message: "Manual review request submitted." });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+app.get("/api/admin/terrain/manual-review-requests", requireAuth, requireRole("admin"), async (req, res) => {
+  try {
+    const reviews = readJsonArray(TERRAIN_MANUAL_REVIEWS_FILE);
+    res.json({ ok: true, reviews: reviews.slice().reverse() });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+// ── AI DETECTION TUNING — admin-only endpoints ──────────────────────────────
+const AI_TUNING_PRESETS_FILE = path.join(__dirname, "../data/ai_tuning_presets.json");
+const AI_TEST_PARCELS_FILE   = path.join(__dirname, "../data/ai_test_parcels.json");
+const VISION_URL_FOR_ADMIN   = () => (process.env.TURFLYNK_VISION_URL || process.env.VISION_SERVICE_URL || "http://127.0.0.1:8017").replace(/\/$/, "");
+
+function readAiJsonFile(filePath, fallback = []) {
+  try { return JSON.parse(readFileSync(filePath, "utf8")); } catch { return fallback; }
+}
+function writeAiJsonFile(filePath, data) {
+  writeFileSync(filePath, JSON.stringify(data, null, 2), "utf8");
+}
+
+// GET /api/admin/ai-tuning/presets
+app.get("/api/admin/ai-tuning/presets", requireAuth, requireRole("admin"), (_req, res) => {
+  res.json({ ok: true, presets: readAiJsonFile(AI_TUNING_PRESETS_FILE) });
+});
+
+// POST /api/admin/ai-tuning/presets — upsert a preset by name (draft/validated only — never overwrites production)
+app.post("/api/admin/ai-tuning/presets", requireAuth, requireRole("admin"), (req, res) => {
+  const {
+    name, label, description, basePreset, thresholds, status,
+    // New enriched metadata fields (all optional, backward-compatible)
+    notes, parcelLabel, parcelAddress, detectionMode, confidenceScore, settingsFingerprint,
+  } = req.body || {};
+  if (!name || !thresholds) return res.status(400).json({ ok: false, error: "name and thresholds required" });
+  const validStatuses = ["draft", "validated"];
+  const safeStatus = validStatuses.includes(status) ? status : "draft";
+  const presets = readAiJsonFile(AI_TUNING_PRESETS_FILE);
+  const idx = presets.findIndex((p) => p.name === name);
+  if (idx >= 0) {
+    const existing = presets[idx];
+    const existingStatus = existing.status || (existing.isProduction ? "production" : "draft");
+    if (existingStatus === "production") {
+      return res.status(400).json({ ok: false, error: "Cannot overwrite a production preset via normal save. Use the promote endpoint or archive it first." });
+    }
+  }
+  const now = new Date().toISOString();
+  const record = {
+    name, label: label || name,
+    description: description || notes || "",
+    notes: notes || description || "",
+    basePreset: basePreset || "medium_residential", thresholds,
+    status: safeStatus, isProduction: false,
+    // Enriched metadata — nullable, safe for old clients that don't send them
+    parcelLabel:          parcelLabel          || null,
+    parcelAddress:        parcelAddress        || null,
+    detectionMode:        detectionMode        || null,
+    confidenceScore:      confidenceScore      != null ? Number(confidenceScore) : null,
+    settingsFingerprint:  settingsFingerprint  || null,
+    savedAt: idx >= 0 ? (presets[idx].savedAt || now) : now,
+    updatedAt: now,
+  };
+  if (idx >= 0) presets[idx] = record; else presets.push(record);
+  writeAiJsonFile(AI_TUNING_PRESETS_FILE, presets);
+  res.json({ ok: true, preset: record });
+});
+
+// PATCH /api/admin/ai-tuning/presets/:name/label — rename display label (does not change internal name key)
+app.patch("/api/admin/ai-tuning/presets/:name/label", requireAuth, requireRole("admin"), (req, res) => {
+  const { label, notes } = req.body || {};
+  if (!label?.trim()) return res.status(400).json({ ok: false, error: "label is required" });
+  const presets = readAiJsonFile(AI_TUNING_PRESETS_FILE);
+  const idx = presets.findIndex((p) => p.name === req.params.name);
+  if (idx < 0) return res.status(404).json({ ok: false, error: "Preset not found" });
+  presets[idx].label = label.trim().slice(0, 120);
+  if (notes !== undefined) {
+    presets[idx].notes = String(notes || "").slice(0, 500);
+    presets[idx].description = presets[idx].notes;
+  }
+  presets[idx].updatedAt = new Date().toISOString();
+  writeAiJsonFile(AI_TUNING_PRESETS_FILE, presets);
+  res.json({ ok: true, preset: presets[idx] });
+});
+
+// POST /api/admin/ai-tuning/presets/:name/duplicate — copy a preset with a new unique name
+app.post("/api/admin/ai-tuning/presets/:name/duplicate", requireAuth, requireRole("admin"), (req, res) => {
+  const presets = readAiJsonFile(AI_TUNING_PRESETS_FILE);
+  const src = presets.find((p) => p.name === req.params.name);
+  if (!src) return res.status(404).json({ ok: false, error: "Preset not found" });
+  const now = new Date();
+  const ts = `${(now.getMonth()+1).toString().padStart(2,"0")}${now.getDate().toString().padStart(2,"0")}-${now.getHours().toString().padStart(2,"0")}${now.getMinutes().toString().padStart(2,"0")}`;
+  // Build a unique name: slug of existing name + timestamp
+  const baseSlug = src.name.replace(/[^a-z0-9-]/gi, "-").replace(/-+/g, "-").slice(0, 28).replace(/-$/, "");
+  let newName = `${baseSlug}-copy-${ts}`;
+  // Ensure uniqueness
+  let suffix = 2;
+  while (presets.some((p) => p.name === newName)) { newName = `${baseSlug}-copy-${ts}-${suffix++}`; }
+  const record = {
+    ...src,
+    name: newName,
+    label: `${src.label || src.name} (copy)`,
+    status: "draft",
+    isProduction: false,
+    savedAt: now.toISOString(),
+    updatedAt: now.toISOString(),
+    promotedAt: undefined,
+    archivedAt: undefined,
+  };
+  delete record.promotedAt;
+  delete record.archivedAt;
+  presets.push(record);
+  writeAiJsonFile(AI_TUNING_PRESETS_FILE, presets);
+  res.json({ ok: true, preset: record });
+});
+
+// PATCH /api/admin/ai-tuning/presets/:name/status — change status (draft ↔ validated, or archive)
+app.patch("/api/admin/ai-tuning/presets/:name/status", requireAuth, requireRole("admin"), (req, res) => {
+  const { status } = req.body || {};
+  const allowed = ["draft", "validated", "archived"];
+  if (!allowed.includes(status)) return res.status(400).json({ ok: false, error: `status must be one of: ${allowed.join(", ")}` });
+  const presets = readAiJsonFile(AI_TUNING_PRESETS_FILE);
+  const idx = presets.findIndex((p) => p.name === req.params.name);
+  if (idx < 0) return res.status(404).json({ ok: false, error: "Preset not found" });
+  const current = presets[idx].status || (presets[idx].isProduction ? "production" : "draft");
+  if (current === "production") {
+    return res.status(400).json({ ok: false, error: "Cannot change production preset status. Use the promote endpoint to demote it first." });
+  }
+  presets[idx].status = status;
+  presets[idx].isProduction = false;
+  presets[idx].statusUpdatedAt = new Date().toISOString();
+  writeAiJsonFile(AI_TUNING_PRESETS_FILE, presets);
+  res.json({ ok: true, preset: presets[idx] });
+});
+
+// POST /api/admin/ai-tuning/presets/:name/promote — promote to production, auto-archive previous production
+app.post("/api/admin/ai-tuning/presets/:name/promote", requireAuth, requireRole("admin"), (req, res) => {
+  const presets = readAiJsonFile(AI_TUNING_PRESETS_FILE);
+  const idx = presets.findIndex((p) => p.name === req.params.name);
+  if (idx < 0) return res.status(404).json({ ok: false, error: "Preset not found" });
+  const candidateStatus = presets[idx].status || (presets[idx].isProduction ? "production" : "draft");
+  if (candidateStatus === "archived") return res.status(400).json({ ok: false, error: "Cannot promote an archived preset. Unarchive it first." });
+  const archivedNames = [];
+  for (const p of presets) {
+    if ((p.status === "production" || p.isProduction) && p.name !== req.params.name) {
+      p.status = "archived";
+      p.isProduction = false;
+      p.archivedAt = new Date().toISOString();
+      archivedNames.push(p.name);
+    }
+  }
+  presets[idx].status = "production";
+  presets[idx].isProduction = true;
+  presets[idx].promotedAt = new Date().toISOString();
+  writeAiJsonFile(AI_TUNING_PRESETS_FILE, presets);
+  res.json({ ok: true, preset: presets[idx], archivedPrev: archivedNames });
+});
+
+// DELETE /api/admin/ai-tuning/presets/:name — blocked for production presets
+app.delete("/api/admin/ai-tuning/presets/:name", requireAuth, requireRole("admin"), (req, res) => {
+  const presets = readAiJsonFile(AI_TUNING_PRESETS_FILE);
+  const target = presets.find((p) => p.name === req.params.name);
+  if (target && (target.status === "production" || target.isProduction)) {
+    return res.status(400).json({ ok: false, error: "Cannot delete a production preset. Archive it first." });
+  }
+  writeAiJsonFile(AI_TUNING_PRESETS_FILE, presets.filter((p) => p.name !== req.params.name));
+  res.json({ ok: true });
+});
+
+// GET /api/admin/ai-tuning/test-parcels
+app.get("/api/admin/ai-tuning/test-parcels", requireAuth, requireRole("admin"), (_req, res) => {
+  res.json({ ok: true, parcels: readAiJsonFile(AI_TEST_PARCELS_FILE) });
+});
+
+// POST /api/admin/ai-tuning/test-parcels
+app.post("/api/admin/ai-tuning/test-parcels", requireAuth, requireRole("admin"), (req, res) => {
+  const { label, address, parcelGeoJson, lat, lng, notes, category } = req.body || {};
+  if (!label || !parcelGeoJson) return res.status(400).json({ ok: false, error: "label and parcelGeoJson required" });
+  const parcels = readAiJsonFile(AI_TEST_PARCELS_FILE);
+  const record = { id: nanoid(8), label, address: address || "", parcelGeoJson, lat, lng, notes: notes || "", category: category || "general", savedAt: new Date().toISOString() };
+  parcels.push(record);
+  writeAiJsonFile(AI_TEST_PARCELS_FILE, parcels);
+  res.json({ ok: true, parcel: record });
+});
+
+// DELETE /api/admin/ai-tuning/test-parcels/:id
+app.delete("/api/admin/ai-tuning/test-parcels/:id", requireAuth, requireRole("admin"), (req, res) => {
+  const parcels = readAiJsonFile(AI_TEST_PARCELS_FILE).filter((p) => p.id !== req.params.id);
+  writeAiJsonFile(AI_TEST_PARCELS_FILE, parcels);
+  res.json({ ok: true });
+});
+
+// POST /api/admin/ai-tuning/detect — proxy to vision /detect-debug (admin only)
+app.post("/api/admin/ai-tuning/detect", requireAuth, requireRole("admin"), async (req, res) => {
+  try {
+    const upstream = await fetch(`${VISION_URL_FOR_ADMIN()}/detect-debug`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req.body || {}),
+    });
+    const text = await upstream.text();
+    res.status(upstream.status).type(upstream.headers.get("content-type") || "application/json").send(text);
+  } catch (err) {
+    res.status(503).json({ ok: false, error: "Vision service unavailable", detail: err.message });
+  }
+});
+
+// GET /api/admin/ai-tuning/built-in-presets — fetch preset definitions from vision service
+app.get("/api/admin/ai-tuning/built-in-presets", requireAuth, requireRole("admin"), async (_req, res) => {
+  try {
+    const upstream = await fetch(`${VISION_URL_FOR_ADMIN()}/debug/presets`);
+    const json = await upstream.json().catch(() => ({}));
+    res.status(upstream.status).json(json);
+  } catch (err) {
+    res.status(503).json({ ok: false, error: "Vision service unavailable", detail: err.message });
+  }
+});
+
+// ── AI TUNING PRO: Ground Truth Annotations ──────────────────────────────────
+// Admin-only. Stores parcel annotations (tags, notes) for ML training support.
+// Does NOT affect production detection or customer-facing flows.
+
+const AI_GT_PATH = path.join(__dirname, "..", "data", "ai_ground_truth.json");
+
+function readGroundTruth() {
+  try {
+    if (!existsSync(AI_GT_PATH)) return {};
+    return JSON.parse(readFileSync(AI_GT_PATH, "utf8"));
+  } catch { return {}; }
+}
+
+function writeGroundTruth(data) {
+  writeFileSync(AI_GT_PATH, JSON.stringify(data, null, 2), "utf8");
+}
+
+app.get("/api/admin/ai-tuning/ground-truth", requireAuth, requireRole("admin"), (_req, res) => {
+  res.json({ ok: true, annotations: readGroundTruth() });
+});
+
+app.post("/api/admin/ai-tuning/ground-truth", requireAuth, requireRole("admin"), (req, res) => {
+  try {
+    const { parcelHash, tags, notes, manualAreas, savedAt } = req.body || {};
+    if (!parcelHash) return res.status(400).json({ ok: false, error: "parcelHash required" });
+    const all = readGroundTruth();
+    all[parcelHash] = {
+      tags: Array.isArray(tags) ? tags : [],
+      notes: String(notes || "").slice(0, 1000),
+      manualAreas: manualAreas || null,
+      savedAt: savedAt || new Date().toISOString(),
+      savedBy: req.user?.email || "admin",
+    };
+    writeGroundTruth(all);
+    res.json({ ok: true, annotation: all[parcelHash] });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.delete("/api/admin/ai-tuning/ground-truth/:hash", requireAuth, requireRole("admin"), (req, res) => {
+  try {
+    const all = readGroundTruth();
+    if (!all[req.params.hash]) return res.status(404).json({ ok: false, error: "Not found" });
+    delete all[req.params.hash];
+    writeGroundTruth(all);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── AI TUNING PRO: Experiment Snapshots ──────────────────────────────────────
+// Persists named experiment snapshots server-side (per-admin session).
+// Complements the client-side localStorage snapshots with server-backed storage.
+
+const AI_SNAPSHOTS_PATH = path.join(__dirname, "..", "data", "ai_experiment_snapshots.json");
+
+function readSnapshots() {
+  try {
+    if (!existsSync(AI_SNAPSHOTS_PATH)) return [];
+    return JSON.parse(readFileSync(AI_SNAPSHOTS_PATH, "utf8"));
+  } catch { return []; }
+}
+
+function writeSnapshots(arr) {
+  writeFileSync(AI_SNAPSHOTS_PATH, JSON.stringify(arr, null, 2), "utf8");
+}
+
+app.get("/api/admin/ai-tuning/experiment-snapshots", requireAuth, requireRole("admin"), (_req, res) => {
+  res.json({ ok: true, snapshots: readSnapshots() });
+});
+
+app.post("/api/admin/ai-tuning/experiment-snapshots", requireAuth, requireRole("admin"), (req, res) => {
+  try {
+    const { name, overrides, basePreset, resultSummary } = req.body || {};
+    if (!name) return res.status(400).json({ ok: false, error: "name required" });
+    const all = readSnapshots();
+    const snapshot = {
+      id: "snap-" + Date.now() + "-" + Math.random().toString(36).slice(2, 6),
+      name: String(name).slice(0, 100),
+      overrides: overrides || {},
+      basePreset: basePreset || "medium_residential",
+      resultSummary: resultSummary || null,
+      savedAt: new Date().toISOString(),
+      savedBy: req.user?.email || "admin",
+    };
+    all.push(snapshot);
+    // Keep last 50 server snapshots
+    if (all.length > 50) all.splice(0, all.length - 50);
+    writeSnapshots(all);
+    res.json({ ok: true, snapshot });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.delete("/api/admin/ai-tuning/experiment-snapshots/:id", requireAuth, requireRole("admin"), (req, res) => {
+  try {
+    const all = readSnapshots().filter((s) => s.id !== req.params.id);
+    writeSnapshots(all);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── END AI DETECTION TUNING ──────────────────────────────────────────────────
+
 app.put("/api/services/:id", requireAuth, requireRole("admin"), async (req, res) => {
   try {
     const body = req.body || {};
@@ -3915,6 +4588,124 @@ app.delete("/api/price-tiers/:id", requireAuth, requireRole("admin"), async (req
 });
 
 /* =========================================================
+   BULK / VOLUME PRICING TIERS — admin-controlled sliding-scale
+   GET    /api/admin/bulk-tiers       — list all tiers
+   POST   /api/admin/bulk-tiers       — create tier
+   PUT    /api/admin/bulk-tiers/:id   — update tier
+   DELETE /api/admin/bulk-tiers/:id   — delete tier
+   POST   /api/admin/bulk-tiers/seed  — (re)seed defaults if empty
+   ========================================================= */
+
+function rowToBulkTier(t) {
+  return {
+    id: t.id,
+    label: t.label || "",
+    enabled: Boolean(t.enabled),
+    startSqft: Number(t.start_sqft || 0),
+    endSqft: t.end_sqft != null ? Number(t.end_sqft) : null,
+    ratePer1000Sqft: Number(t.rate_per_1000_sqft || 0),
+    sortOrder: Number(t.sort_order || 0)
+  };
+}
+
+app.get("/api/admin/bulk-tiers", requireAuth, requireRole("admin"), async (req, res) => {
+  try {
+    const result = await pgdb.query("SELECT * FROM bulk_pricing_tiers ORDER BY sort_order ASC, start_sqft ASC");
+    res.json({ ok: true, tiers: result.rows.map(rowToBulkTier) });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.post("/api/admin/bulk-tiers", requireAuth, requireRole("admin"), async (req, res) => {
+  try {
+    const body = req.body || {};
+    if (body.startSqft == null) return res.status(400).json({ ok: false, error: "startSqft required" });
+    if (body.ratePer1000Sqft == null) return res.status(400).json({ ok: false, error: "ratePer1000Sqft required" });
+    const result = await pgdb.query(
+      `INSERT INTO bulk_pricing_tiers (id, label, enabled, start_sqft, end_sqft, rate_per_1000_sqft, sort_order, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,NOW()) RETURNING *`,
+      [
+        nanoid(10),
+        String(body.label || ""),
+        body.enabled !== false,
+        Number(body.startSqft),
+        body.endSqft != null ? Number(body.endSqft) : null,
+        Number(body.ratePer1000Sqft),
+        Number(body.sortOrder || 0)
+      ]
+    );
+    res.status(201).json({ ok: true, tier: rowToBulkTier(result.rows[0]) });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.put("/api/admin/bulk-tiers/:id", requireAuth, requireRole("admin"), async (req, res) => {
+  try {
+    const body = req.body || {};
+    const result = await pgdb.query(
+      `UPDATE bulk_pricing_tiers SET
+        label = COALESCE($2, label),
+        enabled = COALESCE($3, enabled),
+        start_sqft = COALESCE($4, start_sqft),
+        end_sqft = CASE WHEN $5::boolean THEN $6::integer ELSE end_sqft END,
+        rate_per_1000_sqft = COALESCE($7, rate_per_1000_sqft),
+        sort_order = COALESCE($8, sort_order),
+        updated_at = NOW()
+       WHERE id = $1 RETURNING *`,
+      [
+        req.params.id,
+        body.label != null ? String(body.label) : null,
+        body.enabled != null ? Boolean(body.enabled) : null,
+        body.startSqft != null ? Number(body.startSqft) : null,
+        "endSqft" in body,
+        body.endSqft != null ? Number(body.endSqft) : null,
+        body.ratePer1000Sqft != null ? Number(body.ratePer1000Sqft) : null,
+        body.sortOrder != null ? Number(body.sortOrder) : null
+      ]
+    );
+    if (!result.rows.length) return res.status(404).json({ ok: false, error: "Tier not found" });
+    res.json({ ok: true, tier: rowToBulkTier(result.rows[0]) });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.delete("/api/admin/bulk-tiers/:id", requireAuth, requireRole("admin"), async (req, res) => {
+  try {
+    const result = await pgdb.query("DELETE FROM bulk_pricing_tiers WHERE id = $1 RETURNING id", [req.params.id]);
+    if (!result.rows.length) return res.status(404).json({ ok: false, error: "Tier not found" });
+    res.json({ ok: true, deleted: result.rows[0].id });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.post("/api/admin/bulk-tiers/seed", requireAuth, requireRole("admin"), async (req, res) => {
+  try {
+    const existing = await pgdb.query("SELECT 1 FROM bulk_pricing_tiers LIMIT 1");
+    if (existing.rows.length) return res.json({ ok: true, seeded: false, message: "Tiers already exist — delete all before re-seeding." });
+    const defaults = [
+      { id: 'bulk_std',   label: 'Standard (0–8,000 sq ft)',        enabled: true, start: 0,     end: 8000,  rate: 4.50, order: 0 },
+      { id: 'bulk_med',   label: 'Volume (8,001–15,000 sq ft)',      enabled: true, start: 8000,  end: 15000, rate: 3.80, order: 1 },
+      { id: 'bulk_large', label: 'Large lawn (15,001–30,000 sq ft)', enabled: true, start: 15000, end: 30000, rate: 3.25, order: 2 },
+      { id: 'bulk_open',  label: 'Open lawn (30,001+ sq ft)',        enabled: true, start: 30000, end: null,  rate: 2.75, order: 3 },
+    ];
+    for (const d of defaults) {
+      await pgdb.query(
+        `INSERT INTO bulk_pricing_tiers (id, label, enabled, start_sqft, end_sqft, rate_per_1000_sqft, sort_order, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,NOW()) ON CONFLICT (id) DO NOTHING`,
+        [d.id, d.label, d.enabled, d.start, d.end, d.rate, d.order]
+      );
+    }
+    res.json({ ok: true, seeded: true, count: defaults.length });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+/* =========================================================
    PROVIDER SERVICE PRICING — per-service overrides
    GET  /api/provider/pricing      — provider's per-service pricing
    PUT  /api/provider/pricing      — save per-service pricing
@@ -3998,9 +4789,25 @@ app.post("/api/estimate", async (req, res) => {
     const _body = req.body || {};
     console.log('[TurfLynk Area Trace] F. /api/estimate received | mowAreaSqft=' + Number(_body.mowAreaSqft || 0) + ' lotAreaSqft=' + Number(_body.lotAreaSqft || 0) + ' serviceType=' + (_body.serviceType || '') + ' source=request.body');
     const settings = await loadSettingsFromDb();
-    const { estimate, breakdown } = estimateQuoteWithBreakdown(_body, settings);
+    const { estimate, breakdown, activeBulkTiers } = estimateQuoteWithBreakdown(_body, settings);
     console.log('[TurfLynk Area Trace] F. /api/estimate result | estimate=' + estimate + ' mowAreaSqft=' + Number(_body.mowAreaSqft || 0));
-    res.json({ ok: true, estimate, breakdown });
+
+    // Terrain system — safe no-op when TERRAIN_MODE=off (default).
+    // Never throws; always returns at minimum a disabled stub.
+    // Priority: mowableGeoJson > parcelGeoJson (do NOT sample steep woods/ditches outside mow area).
+    const terrain = await calculateTerrain({
+      lat:             _body.lat    ? Number(_body.lat)    : undefined,
+      lng:             _body.lng    ? Number(_body.lng)    : undefined,
+      address:         _body.address        || undefined,
+      parcelGeoJson:   _body.parcelGeoJson  || _body.parcelGeoJSON  || undefined,
+      mowableGeoJson:  _body.mowableGeoJson || _body.mowableGeoJSON || _body.selectedMowableGeoJSON || undefined,
+    }).catch(() => ({ enabled: false, mode: "off", available: false, priceMultiplier: 1.0 }));
+
+    // Attach guardrail — tells client whether instant booking is allowed.
+    const terrainSettings = await loadTerrainSettings().catch(() => ({}));
+    terrain.terrainGuardrail = computeTerrainGuardrail(terrain, terrainSettings);
+
+    res.json({ ok: true, estimate, breakdown, activeBulkTiers: activeBulkTiers || [], terrain });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
   }
@@ -4026,6 +4833,36 @@ function instantCheckoutMissingFields(payload = {}) {
   const accessNotes = payload.yard_access_notes || payload.access_notes || payload.notes || payload.community_access_instructions || "";
   if (bookingAccessNotesRequired(payload) && !String(accessNotes).trim()) missing.push("access notes");
   return missing;
+}
+
+/**
+ * Server-side terrain guardrail check for checkout endpoints.
+ * Re-calculates terrain from GeoJSON (uses cache — same data as estimate call).
+ * Returns null when no check is needed, or { blocked, guardrail } when check ran.
+ */
+async function checkTerrainGuardrailForCheckout(jobPayload) {
+  const mowableGeoJson =
+    jobPayload.mowableGeoJson  || jobPayload.mowableGeoJSON ||
+    jobPayload.selectedMowableGeoJSON || null;
+  const parcelGeoJson  =
+    jobPayload.parcelGeoJson   || jobPayload.parcelGeoJSON  || null;
+
+  if (!mowableGeoJson && !parcelGeoJson) return null; // No location data — skip
+
+  const terrainSettings = await loadTerrainSettings().catch(() => ({}));
+  if ((terrainSettings.mode || "off") === "off") return null; // Terrain disabled
+
+  const terrain = await calculateTerrain({
+    lat:            jobPayload.lat ? Number(jobPayload.lat) : undefined,
+    lng:            jobPayload.lng ? Number(jobPayload.lng) : undefined,
+    parcelGeoJson,
+    mowableGeoJson,
+  }).catch(() => null);
+
+  if (!terrain) return null;
+
+  const guardrail = computeTerrainGuardrail(terrain, terrainSettings);
+  return { terrain, guardrail, blocked: guardrail.manualReviewRequired };
 }
 
 function normalizeInstantCheckoutPayload(payload = {}, calculatedEstimate = 0) {
@@ -4078,6 +4915,18 @@ app.post("/api/checkout/instant-mow", optionalAuth, async (req, res) => {
       return sendCheckoutAccountContactConflict(res, contactConflict, {
         email: checkoutJobPayload.email,
         phone: checkoutJobPayload.phone
+      });
+    }
+
+    // Terrain guardrail — re-checks from GeoJSON (uses cache; same data as estimate).
+    const terrainCheck = await checkTerrainGuardrailForCheckout(jobPayload).catch(() => null);
+    if (terrainCheck?.blocked) {
+      return res.status(422).json({
+        ok: false,
+        terrain_blocked: true,
+        terrainBlocked: true,
+        terrainGuardrail: terrainCheck.guardrail,
+        error: terrainCheck.guardrail.message || "Online booking is not available for this property due to terrain. Please request a manual review.",
       });
     }
 
@@ -4329,6 +5178,18 @@ app.post("/api/checkout/pay-onsite", optionalAuth, async (req, res) => {
       return sendCheckoutAccountContactConflict(res, contactConflict, {
         email: onsiteJobPayload.email,
         phone: onsiteJobPayload.phone
+      });
+    }
+
+    // Terrain guardrail — re-checks from GeoJSON (uses cache; same data as estimate).
+    const onsiteTerrainCheck = await checkTerrainGuardrailForCheckout(jobPayload).catch(() => null);
+    if (onsiteTerrainCheck?.blocked) {
+      return res.status(422).json({
+        ok: false,
+        terrain_blocked: true,
+        terrainBlocked: true,
+        terrainGuardrail: onsiteTerrainCheck.guardrail,
+        error: onsiteTerrainCheck.guardrail.message || "Online booking is not available for this property due to terrain. Please request a manual review.",
       });
     }
 
@@ -4722,12 +5583,18 @@ app.post("/api/auth/register", async (req, res) => {
   let normalizedEmail = "";
   let normalizedPhone = "";
   try {
-    const { email, password, fullName, firstName, lastName, phone, role } = req.body || {};
+    const { email, password, confirmPassword, fullName, firstName, lastName, phone, role } = req.body || {};
     normalizedEmail = normalizeAccountEmail(email);
     normalizedPhone = normalizeAccountPhone(phone);
 
     if (!normalizedEmail || !password) {
       return res.status(400).json({ ok: false, error: "Missing email or password" });
+    }
+    if (String(password).length < 8) {
+      return res.status(400).json({ ok: false, field: "password", error: "Password must be at least 8 characters." });
+    }
+    if (confirmPassword !== undefined && confirmPassword !== password) {
+      return res.status(400).json({ ok: false, field: "confirmPassword", error: "Passwords do not match." });
     }
 
     const allowedRoles = new Set(["customer", "provider"]);
@@ -6062,6 +6929,15 @@ function buildJobScopeSnapshot(body = {}, pricingBreakdown = null) {
     smsConsent: body.sms_consent_at || body.smsConsentAt ? {
       at: body.sms_consent_at || body.smsConsentAt,
       text: body.sms_consent_text || body.smsConsentText || SMS_CONSENT_TEXT
+    } : null,
+    terrain: body.terrain && typeof body.terrain === "object" ? {
+      difficultyScore:     body.terrain.difficultyScore,
+      difficultyCategory:  body.terrain.difficultyCategory,
+      elevationChangeFt:   body.terrain.elevationChangeFt,
+      averageGradePercent: body.terrain.averageGradePercent,
+      maxGradePercent:     body.terrain.maxGradePercent,
+      source:              body.terrain.source,
+      terrainGuardrail:    body.terrain.terrainGuardrail,
     } : null,
     customerNotes: serviceFields.customer_notes,
     notes: serviceFields.customer_notes,

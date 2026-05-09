@@ -68,14 +68,15 @@
   <!-- Admin — shown to admin role only -->
   <div class="drawer-section admin-only-nav" style="display:none">
     <h4 class="drawer-section-label">Admin</h4>
+    <!-- drawerAdminLogin still present so admin-visibility.js can hide it once admin is confirmed -->
     <button type="button" data-open-auth id="drawerAdminLogin" class="drawer-btn ui-icon-btn">
       <img src="/assets/icons/lucide/shield.svg" alt="" class="ui-icon drawer-icon">
       <span class="ui-label">Admin Login</span>
     </button>
-    <button type="button" class="admin-only-nav drawer-btn ui-icon-btn" data-drawer-view="admin" data-scroll-target="adminRecentActivityPanel" style="display:none"><img src="/assets/icons/lucide/clipboard-check.svg" alt="" class="ui-icon drawer-icon"><span class="ui-label">Recent Activity</span></button>
-    <button type="button" class="admin-only-nav drawer-btn ui-icon-btn" data-drawer-view="admin" data-scroll-target="adminRecentJobsPanel" style="display:none"><img src="/assets/icons/lucide/briefcase.svg" alt="" class="ui-icon drawer-icon"><span class="ui-label">Recent Jobs</span></button>
-    <button type="button" class="admin-only-nav drawer-btn ui-icon-btn" data-drawer-view="admin" data-scroll-target="leadsPanel" style="display:none"><img src="/assets/icons/lucide/clipboard-list.svg" alt="" class="ui-icon drawer-icon"><span class="ui-label">Leads / Jobs</span></button>
-    <button type="button" class="admin-only-nav drawer-btn ui-icon-btn" data-drawer-view="admin" data-scroll-target="adminControlsWrap" style="display:none"><img src="/assets/icons/lucide/settings.svg" alt="" class="ui-icon drawer-icon"><span class="ui-label">Pricing</span></button>
+    <a href="/admin/" class="admin-only-nav drawer-btn ui-icon-btn" style="display:none;text-decoration:none">
+      <img src="/assets/icons/lucide/shield.svg" alt="" class="ui-icon drawer-icon">
+      <span class="ui-label">Admin Console</span>
+    </a>
   </div>
 
   <!-- INFO — always visible -->

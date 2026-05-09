@@ -9,6 +9,7 @@ const adminState = {
   users: [],
   providers: [],
   servicePricing: [],
+  bulkTiers: [],
   orphans: null,
   system: null,
 };
@@ -209,6 +210,7 @@ async function loadAdminTab(tab = adminState.tab) {
   if (tab === 'providers') return loadAdminMgmtProviders();
   if (tab === 'pricing') return loadAdminPricing();
   if (tab === 'system') return loadAdminSystem();
+  if (tab === 'ai-detection') return typeof loadAiTuning === 'function' ? loadAiTuning() : Promise.resolve();
 }
 
 async function loadAdmin() {
@@ -1092,6 +1094,7 @@ async function loadAdminPricing() {
   `;
   hydrateRegionEditor();
   renderServicePricingTable();
+  await loadBulkTiers();
 }
 
 async function loadAdminSystem() {
@@ -1120,6 +1123,85 @@ async function loadAdminSystem() {
       `).join('') || '<div class="admin-muted">No orphan jobs found.</div>'}</div>
     </div>
   `;
+
+  // Load terrain settings in parallel with system info
+  loadTerrainSettingsPanel().catch(() => {});
+}
+
+async function loadTerrainSettingsPanel() {
+  try {
+    const { settings, providers, cacheSize } = await api('/api/admin/settings/terrain');
+    const modeEl        = byId('terrainModeSelect');
+    const provEl        = byId('terrainProviderSelect');
+    const samplesEl     = byId('terrainSamplePointsSelect');
+    const cacheLabel    = byId('terrainCacheSizeLabel');
+    const maxCatEl      = byId('terrainInstantBookingMaxCategory');
+    const maxScoreEl    = byId('terrainInstantBookingMaxScore');
+    const blockExtEl    = byId('terrainBlockExtremeInstantPay');
+    const manualMsgEl   = byId('terrainManualReviewMessage');
+
+    if (modeEl)      modeEl.value      = settings.mode     || 'off';
+    if (provEl)      provEl.value      = settings.provider || 'usgs_epqs';
+    if (samplesEl)   samplesEl.value   = String(settings.samplePoints || 9);
+    if (cacheLabel)  cacheLabel.textContent = `Cache: ${cacheSize || 0} entries`;
+    if (maxCatEl)    maxCatEl.value    = settings.instantBookingMaxCategory || 'High';
+    if (maxScoreEl)  maxScoreEl.value  = settings.instantBookingMaxScore != null ? String(settings.instantBookingMaxScore) : '8.0';
+    if (blockExtEl)  blockExtEl.checked = settings.blockExtremeInstantPay !== false;
+    if (manualMsgEl) manualMsgEl.value = settings.manualReviewMessage || '';
+  } catch (_) {
+    // non-fatal — form stays at defaults
+  }
+}
+
+async function saveTerrainSettings(e) {
+  e.preventDefault();
+  const result = byId('terrainSettingsResult');
+  if (result) { result.className = 'result'; result.textContent = 'Saving…'; }
+  try {
+    await api('/api/admin/settings/terrain', {
+      method: 'PATCH',
+      body: JSON.stringify({
+        mode:                       byId('terrainModeSelect')?.value        || 'off',
+        provider:                   byId('terrainProviderSelect')?.value    || 'usgs_epqs',
+        samplePoints:               Number(byId('terrainSamplePointsSelect')?.value || 9),
+        instantBookingMaxCategory:  byId('terrainInstantBookingMaxCategory')?.value || 'High',
+        instantBookingMaxScore:     Number(byId('terrainInstantBookingMaxScore')?.value ?? 8.0),
+        blockExtremeInstantPay:     Boolean(byId('terrainBlockExtremeInstantPay')?.checked),
+        manualReviewMessage:        byId('terrainManualReviewMessage')?.value || '',
+      }),
+    });
+    if (result) { result.className = 'result success'; result.innerHTML = '<strong>Terrain settings saved.</strong> Cache cleared.'; }
+  } catch (error) {
+    if (result) { result.className = 'result error'; result.innerHTML = `<strong>Could not save:</strong> ${escapeHtml(friendlyAdminSaveError(error))}`; }
+  }
+}
+
+async function testTerrainProvider() {
+  const result = byId('terrainTestResult');
+  if (result) { result.className = 'result'; result.textContent = 'Running provider test…'; result.hidden = false; }
+  try {
+    const { terrain } = await api('/api/admin/settings/terrain/test', {
+      method: 'POST',
+      body: JSON.stringify({
+        mode:     byId('terrainModeSelect')?.value     || 'display_only',
+        provider: byId('terrainProviderSelect')?.value || 'usgs_epqs',
+        lat: 36.3729, lng: -94.2088, // Bentonville, AR — test coordinate
+      }),
+    });
+    const lines = [
+      `available: ${terrain.available}`,
+      `source: ${terrain.source || 'n/a'}`,
+      terrain.elevationMinFt  != null ? `min: ${Math.round(terrain.elevationMinFt)} ft` : null,
+      terrain.elevationMaxFt  != null ? `max: ${Math.round(terrain.elevationMaxFt)} ft` : null,
+      terrain.elevationChangeFt != null ? `change: ${Math.round(terrain.elevationChangeFt)} ft` : null,
+      terrain.averageGradePercent != null ? `avgGrade: ${terrain.averageGradePercent}%` : null,
+      `difficulty: ${terrain.difficultyCategory || 'Flat'} (score ${terrain.difficultyScore ?? 0})`,
+      terrain.available === false && terrain.debug?.rawData?.reason ? `reason: ${terrain.debug.rawData.reason}` : null,
+    ].filter(Boolean);
+    if (result) { result.className = 'result success'; result.innerHTML = `<strong>Provider test result:</strong><br><pre style="margin:4px 0 0;font-size:.8rem">${escapeHtml(lines.join('\n'))}</pre>`; }
+  } catch (error) {
+    if (result) { result.className = 'result error'; result.innerHTML = `<strong>Test failed:</strong> ${escapeHtml(prettyApiError(error))}`; }
+  }
 }
 
 function friendlyAdminSaveError(error) {
@@ -1202,6 +1284,89 @@ async function saveServicePricing(button) {
   }
 }
 
+/* ── Bulk / Volume Pricing Tiers ──────────────────────────── */
+
+async function loadBulkTiers() {
+  const data = await api('/api/admin/bulk-tiers');
+  adminState.bulkTiers = data.tiers || [];
+  renderBulkTiersTable();
+}
+
+function renderBulkTiersTable() {
+  const wrap = byId('adminBulkTiersTable');
+  if (!wrap) return;
+  if (!adminState.bulkTiers.length) {
+    wrap.innerHTML = '<div class="admin-empty">No bulk pricing tiers configured. Use <strong>Add Tier</strong> or restore defaults.</div>';
+    return;
+  }
+  const rows = adminState.bulkTiers.map((tier) => [
+    `<input class="bulk-tier-input" data-field="label" type="text" value="${escapeHtml(tier.label)}" style="min-width:140px" aria-label="Label for tier ${escapeHtml(tier.id)}" />`,
+    `<input class="bulk-tier-input" data-field="startSqft" type="number" min="0" step="1" value="${tier.startSqft}" style="width:80px" aria-label="Start sq ft" />`,
+    `<input class="bulk-tier-input" data-field="endSqft" type="number" min="0" step="1" value="${tier.endSqft ?? ''}" placeholder="∞" style="width:80px" aria-label="End sq ft (blank = unlimited)" />`,
+    `<input class="bulk-tier-input" data-field="ratePer1000Sqft" type="number" min="0" step="0.01" value="${tier.ratePer1000Sqft}" style="width:72px" aria-label="Rate per 1000 sq ft" />`,
+    `<input class="bulk-tier-enabled" type="checkbox" ${tier.enabled ? 'checked' : ''} aria-label="Enabled" />`,
+    `<button class="btn primary small ui-icon-btn bulk-tier-save" type="button" data-tier-id="${escapeHtml(tier.id)}">${adminUiIcon('save', 'Save')}</button>
+     <button class="btn secondary small ui-icon-btn bulk-tier-delete" type="button" data-tier-id="${escapeHtml(tier.id)}">${adminUiIcon('trash', 'Delete')}</button>`,
+  ]);
+  wrap.innerHTML = adminTable(['Label', 'Start sq ft', 'End sq ft', '$/k sq ft', 'On', 'Actions'], rows);
+  wrap.querySelectorAll('tbody tr').forEach((row, i) => {
+    row.dataset.tierId = adminState.bulkTiers[i]?.id || '';
+  });
+  wrap.querySelectorAll('.bulk-tier-save').forEach((btn) => {
+    btn.addEventListener('click', () => saveBulkTier(btn.dataset.tierId).catch((err) => showError(friendlyAdminSaveError(err))));
+  });
+  wrap.querySelectorAll('.bulk-tier-delete').forEach((btn) => {
+    btn.addEventListener('click', () => deleteBulkTier(btn.dataset.tierId).catch((err) => showError(friendlyAdminSaveError(err))));
+  });
+}
+
+function collectBulkTierRow(tierId) {
+  const wrap = byId('adminBulkTiersTable');
+  const row = wrap?.querySelector(`tr[data-tier-id="${tierId}"]`);
+  if (!row) throw new Error('Tier row not found');
+  const fields = {};
+  row.querySelectorAll('.bulk-tier-input').forEach((input) => {
+    const raw = input.value.trim();
+    if (input.dataset.field === 'label') {
+      fields.label = raw;
+    } else if (input.dataset.field === 'endSqft') {
+      fields.endSqft = raw === '' ? null : Number(raw);
+    } else {
+      const n = Number(raw);
+      if (!Number.isFinite(n) || n < 0) throw new Error(`Invalid value for ${input.dataset.field}`);
+      fields[input.dataset.field] = n;
+    }
+  });
+  fields.enabled = Boolean(row.querySelector('.bulk-tier-enabled')?.checked);
+  return fields;
+}
+
+async function saveBulkTier(tierId) {
+  const fields = collectBulkTierRow(tierId);
+  await api(`/api/admin/bulk-tiers/${tierId}`, { method: 'PUT', body: JSON.stringify(fields) });
+  showResult('bulkTierResult', '<strong>Tier saved.</strong>');
+  await loadBulkTiers();
+}
+
+async function deleteBulkTier(tierId) {
+  if (!confirm('Delete this bulk pricing tier?')) return;
+  await api(`/api/admin/bulk-tiers/${tierId}`, { method: 'DELETE' });
+  showResult('bulkTierResult', '<strong>Tier deleted.</strong>');
+  await loadBulkTiers();
+}
+
+async function addBulkTier() {
+  const maxSort = adminState.bulkTiers.reduce((m, t) => Math.max(m, t.sortOrder || 0), -1);
+  const maxStart = adminState.bulkTiers.reduce((m, t) => Math.max(m, t.endSqft || t.startSqft || 0), 0);
+  const newTier = { label: 'New tier', startSqft: maxStart, endSqft: null, ratePer1000Sqft: 4.5, enabled: true, sortOrder: maxSort + 1 };
+  const data = await api('/api/admin/bulk-tiers', { method: 'POST', body: JSON.stringify(newTier) });
+  adminState.bulkTiers.push(data.tier);
+  renderBulkTiersTable();
+  showResult('bulkTierResult', '<strong>New tier added — edit and save.</strong>');
+}
+
+/* ─────────────────────────────────────────────────────────── */
+
 function initCleanupModal() {
   const modal = byId('adminCleanupModal');
   const input = byId('cleanupConfirmInput');
@@ -1265,6 +1430,8 @@ document.querySelectorAll('.admin-tab').forEach((btn) => btn.addEventListener('c
 byId('adminConsoleRefresh')?.addEventListener('click', () => loadAdminTab().catch((err) => showError(prettyApiError(err))));
 byId('refreshAdminAlertsBtn')?.addEventListener('click', () => setAdminTab('system'));
 byId('refreshServices')?.addEventListener('click', () => loadAdminPricing().catch((err) => showError(prettyApiError(err))));
+byId('refreshBulkTiers')?.addEventListener('click', () => loadBulkTiers().catch((err) => showError(prettyApiError(err))));
+byId('addBulkTierBtn')?.addEventListener('click', () => addBulkTier().catch((err) => showError(prettyApiError(err))));
 byId('refreshMgmtJobsBtn')?.addEventListener('click', () => loadAdminMgmtJobs().catch((err) => showError(prettyApiError(err))));
 byId('adminDeleteSelectedJobsBtn')?.addEventListener('click', () => deleteSelectedAdminJobs().catch((err) => showError(prettyApiError(err))));
 byId('refreshMgmtQuotesBtn')?.addEventListener('click', () => loadAdminMgmtQuotes().catch((err) => showError(prettyApiError(err))));
@@ -1272,6 +1439,9 @@ byId('refreshMgmtUsersBtn')?.addEventListener('click', () => loadAdminMgmtUsers(
 byId('adminDeleteSelectedUsersBtn')?.addEventListener('click', () => deleteSelectedAdminUsers().catch((err) => showError(prettyApiError(err))));
 byId('refreshMgmtProvidersBtn')?.addEventListener('click', () => loadAdminMgmtProviders().catch((err) => showError(prettyApiError(err))));
 byId('refreshAdminSystemBtn')?.addEventListener('click', () => loadAdminSystem().catch((err) => showError(prettyApiError(err))));
+byId('refreshTerrainSettingsBtn')?.addEventListener('click', () => loadTerrainSettingsPanel().catch(() => {}));
+byId('terrainSettingsForm')?.addEventListener('submit', (e) => saveTerrainSettings(e).catch((err) => showError(prettyApiError(err))));
+byId('testTerrainSettingsBtn')?.addEventListener('click', () => testTerrainProvider().catch(() => {}));
 
 ['adminJobsSearch','adminJobsStatusFilter','adminJobsPaymentFilter'].forEach((id) => byId(id)?.addEventListener(id.endsWith('Search') ? 'input' : 'change', adminDebounce(() => loadAdminMgmtJobs().catch(() => {}))));
 ['adminQuotesSearch','adminQuotesStatusFilter'].forEach((id) => byId(id)?.addEventListener(id.endsWith('Search') ? 'input' : 'change', adminDebounce(() => renderAdminQuotes())));

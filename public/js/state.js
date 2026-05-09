@@ -13,6 +13,7 @@ const state = {
   parcelProperties: null,
   selectedParcel: null,
   selectedParcelProperties: null,
+  selectedServiceLocation: null,
   parcelGeometry: null,
   drawGroup: null,
   mowableFeatureCollection: { type: 'FeatureCollection', features: [] },

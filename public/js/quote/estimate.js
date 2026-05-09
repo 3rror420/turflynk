@@ -133,4 +133,9 @@ function renderEstimateResult(payload) {
       <p class="estimate-reassurance">No contracts. Cancel anytime before service is assigned.</p>
     </div>`
   );
+
+  // Terrain card — safe no-op when TERRAIN_MODE=off or terrain unavailable
+  if (typeof renderTerrainCard === 'function') {
+    renderTerrainCard(payload.terrain || null);
+  }
 }

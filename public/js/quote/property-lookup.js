@@ -251,6 +251,8 @@ function fillMissingServiceAddressFromReverseGeocodeLater(address, point = {}) {
 }
 
 function parcelLookupPointFromGeometry(geometry = null) {
+  const centroid = parcelCentroidFromGeometry(geometry);
+  if (centroid) return centroid;
   const ring = geometry?.rings?.[0] || geometry?.coordinates?.[0]?.[0] || geometry?.coordinates?.[0] || [];
   const points = Array.isArray(ring) ? ring : [];
   const totals = points.reduce((acc, point) => {
@@ -449,15 +451,23 @@ async function lookupParcel(options = {}) {
     const addressLabel = propText(parcelProps, 'adrlabel') || 'n/a';
     const county = normalized.county || propText(attrs, 'countyid', 'county', 'COUNTY') || 'n/a';
     const geometry = data.feature?.geometry || null;
-    const validationPoint = parcelLookupArkansasPoint(geometry, selectedPoint);
-    const validationState = serviceAddress.state || addressPartsFromParcelProps(parcelProps).state || '';
-    if (!isLngLatInArkansas(validationPoint)) {
-      showArkansasOnlyPropertyBlock({ toast: { force: true } });
-      clearParcelLayer();
-      updateQuoteFlowState();
-      return { ok: false, reason: 'outside_arkansas', blocked: true };
-    }
-    if (validationState && !isLngLatInArkansas({ ...validationPoint, state: validationState })) {
+    const parcelGeoJson = geometry
+      ? esriPolygonToGeoJSONFeature(geometry, { ...parcelProps, role: 'parcel' })
+      : null;
+    const selectedServiceLocation = buildSelectedServiceLocation({
+      displayAddress: firstTextValue(addressLabel, serviceAddress.street, serviceAddress.address),
+      googleAddress: state.currentServiceAddress?.source === 'google-places' ? state.currentServiceAddress : null,
+      serviceAddress,
+      lookupContext: fallbackAddress,
+      lookupPoint: selectedPoint,
+      geometry,
+      parcelGeoJson,
+      parcelProps,
+      parcelId,
+      county,
+    });
+    const arkansasValidation = validateArkansasSelectedServiceLocation(selectedServiceLocation);
+    if (!arkansasValidation.accepted) {
       showArkansasOnlyPropertyBlock({ toast: { force: true } });
       clearParcelLayer();
       updateQuoteFlowState();
@@ -467,6 +477,8 @@ async function lookupParcel(options = {}) {
     state.parcelProperties = parcelProps;
     state.selectedParcelProperties = parcelProps;
     state.selectedParcel = { type: 'Feature', geometry: null, properties: parcelProps };
+    state.selectedServiceLocation = selectedServiceLocation;
+    window.selectedServiceLocation = selectedServiceLocation;
 
     quoteForm.elements.parcelId.value = parcelId;
     quoteForm.elements.lotAreaSqft.value = '';
@@ -477,7 +489,7 @@ async function lookupParcel(options = {}) {
       : options.allowAddressFallback === false
         ? 'parcel-no-address'
         : `parcel-${data.method || 'lookup'}`;
-    setCurrentServiceAddress(serviceAddress, serviceAddressSource, {
+    setCurrentServiceAddress(selectedServiceLocation, serviceAddressSource, {
       syncQuoteForm: true,
       clearQuoteFormMissing: true,
       replace: true,
@@ -590,14 +602,15 @@ function setGpsStatus(message) {
 function setGpsButtonLocating(isLocating) {
   $$('[data-use-current-location]').forEach((btn) => {
     if (isLocating) {
-      btn.dataset.originalText = btn.textContent || 'Use Current Location';
-      btn.textContent = 'Finding your location...';
+      btn.dataset.originalHtml = btn.innerHTML || '';
+      btn.innerHTML = '<span class="ui-label">Finding your location…</span>';
       btn.disabled = true;
       return;
     }
     btn.disabled = false;
-    btn.textContent = btn.dataset.originalText || 'Use Current Location';
-    delete btn.dataset.originalText;
+    if (btn.dataset.originalHtml) btn.innerHTML = btn.dataset.originalHtml;
+    else btn.textContent = 'Use Current Location';
+    delete btn.dataset.originalHtml;
   });
 }
 
@@ -670,7 +683,14 @@ if (!window.__turflynkPropertyLookupListenersInstalled) {
       return;
     }
     const validationPoint = parcelLookupPointFromGeometry(state.parcelGeometry) || quoteFormLatLng();
-    if (!isLngLatInArkansas(validationPoint)) {
+    const selectedLocationValidation = state.selectedServiceLocation
+      ? validateArkansasSelectedServiceLocation(state.selectedServiceLocation)
+      : null;
+    if (
+      selectedLocationValidation
+        ? !selectedLocationValidation.accepted
+        : !isLngLatInArkansas(validationPoint)
+    ) {
       showArkansasOnlyPropertyBlock({ toast: { force: true } });
       quoteFlowTimeEnd(timer, 'continue to draw click', { blocked: 'outside-arkansas' });
       return;

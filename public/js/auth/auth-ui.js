@@ -540,6 +540,16 @@ document.getElementById('registerForm')?.addEventListener('submit', async (e) =>
   e.preventDefault();
   clearSignupFormError(e.target);
   const data = Object.fromEntries(new FormData(e.target));
+
+  if (!data.password || data.password.length < 8) {
+    showSignupFormError(e.target, { error: 'Password must be at least 8 characters.', field: 'password' }, () => showAuthTab('login'));
+    return;
+  }
+  if (data.password !== data.confirmPassword) {
+    showSignupFormError(e.target, { error: 'Passwords do not match.', field: 'confirmPassword' }, () => showAuthTab('login'));
+    return;
+  }
+
   if (data.phone && typeof checkoutPhoneForBackend === 'function') data.phone = checkoutPhoneForBackend(data.phone);
 
   const res = await fetch('/api/auth/register', {
@@ -651,7 +661,19 @@ byId('gateRegisterForm')?.addEventListener('submit', async (e) => {
   const btn = e.target.querySelector('button[type="submit"]');
   if (btn) btn.disabled = true;
   try {
-    const { fullName, email, phone, password } = Object.fromEntries(new FormData(e.target));
+    const { fullName, email, phone, password, confirmPassword } = Object.fromEntries(new FormData(e.target));
+
+    if (!password || password.length < 8) {
+      showSignupFormError(e.target, { error: 'Password must be at least 8 characters.', field: 'password' }, () => showGateTab('login'));
+      if (btn) btn.disabled = false;
+      return;
+    }
+    if (password !== confirmPassword) {
+      showSignupFormError(e.target, { error: 'Passwords do not match.', field: 'confirmPassword' }, () => showGateTab('login'));
+      if (btn) btn.disabled = false;
+      return;
+    }
+
     const normalizedPhone = typeof checkoutPhoneForBackend === 'function' ? checkoutPhoneForBackend(phone) : phone;
     const regRes = await fetch('/api/auth/register', {
       method: 'POST',

@@ -65,6 +65,7 @@ function checkoutBindOnce(target, type, key, handler, options) {
 const SMS_CONSENT_TEXT = 'I agree to receive SMS messages from MowNWA.com about my quote, booking, scheduling, job updates, payment/COD verification, and customer support. Message frequency may vary. Msg & data rates may apply. Reply STOP to opt out or HELP for help. Consent is not a condition of purchase. View our Privacy Policy and Terms of Service.';
 const SMS_CONSENT_REQUIRED_MESSAGE = 'SMS consent is required before we can send verification texts.';
 const PHONE_VERIFICATION_CODE_SENT_MESSAGE = 'Text code sent. Enter the 6-digit code below.';
+const MANUAL_QUOTE_SUCCESS_MESSAGE = 'Your in-person quote request was submitted. We’ll contact you to review the job.';
 const CHECKOUT_PII_STORAGE_KEYS = ['turflynk.authReturn.v1', 'turflynk.quoteDraft.v5'];
 const CHECKOUT_CONTACT_NAMES = new Set(['customerName', 'customerPhone', 'customerEmail', 'name', 'phone', 'email', 'fullName']);
 const CHECKOUT_ADDRESS_NAMES = new Set(['address', 'city', 'state', 'zip', 'lat', 'lng', 'parcelId']);
@@ -143,7 +144,7 @@ function clearCheckoutPii(options = {}) {
     checkoutPhoneVerificationState.phone = '';
     checkoutPhoneVerificationState.verifiedAt = 0;
     checkoutPhoneVerificationState.resendLockedUntil = 0;
-    clearPendingCodBookingResume();
+    clearPendingPhoneVerificationResumes();
   }
 
   if (typeof applyUsPhoneFormatting === 'function') applyUsPhoneFormatting(document);
@@ -252,7 +253,8 @@ setTimeout(() => {
 function hideManualQuotePanel() {
   const panel = byId('manualQuotePanel');
   if (panel) {
-    panel.classList.add('hidden');
+    panel.classList.remove('is-active');
+    panel.classList.add('hidden', 'is-hidden');
     panel.hidden = true;
     panel.setAttribute('aria-hidden', 'true');
   }
@@ -264,52 +266,150 @@ function hideManualQuotePanel() {
    SHOW / HIDE MANUAL QUOTE PANEL
 ───────────────────────────────────────────────────────────────────────── */
 
+function checkoutArrayFromMaybe(value) {
+  if (Array.isArray(value)) return value.filter(Boolean);
+  if (typeof value === 'string' && value.trim()) return value.split(',').map((item) => item.trim()).filter(Boolean);
+  return [];
+}
+
+function checkoutHumanize(value) {
+  return String(value || '')
+    .replace(/_/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function checkoutQuoteBreakdownRows(breakdown = []) {
+  if (!Array.isArray(breakdown) || !breakdown.length) return '';
+  const rows = breakdown.slice(0, 6).map((item) => {
+    const label = item.label || item.name || item.title || item.description || 'Line item';
+    const amountValue = item.amount ?? item.price ?? item.value ?? item.total;
+    const amount = Number.isFinite(Number(amountValue)) ? money(Number(amountValue)) : String(amountValue || '');
+    return `<li><span>${escapeHtml(label)}</span>${amount ? `<strong>${escapeHtml(amount)}</strong>` : ''}</li>`;
+  }).join('');
+  return rows ? `<div class="manual-quote-context-breakdown"><strong>Quote breakdown</strong><ul>${rows}</ul></div>` : '';
+}
+
+function manualQuoteContextHtml(payload = {}) {
+  const current = state.currentEstimate || {};
+  const breakdown = checkoutArrayFromMaybe(payload.quoteBreakdown || payload.breakdown || current.breakdown);
+  const address = payload.full || payload.addressLabel || payload.parcelAddressLabel || [payload.address, payload.city, payload.state, payload.zip].filter(Boolean).join(', ');
+  const estimate = Number(payload.estimate || current.estimate || 0);
+  const mowArea = Number(payload.mowAreaSqft || 0);
+  const lotArea = Number(payload.lotAreaSqft || payload.parcelAreaSqft || 0);
+  const selectedLocation = payload.selectedServiceLocation || state.selectedServiceLocation || {};
+  const parcelLabel = selectedLocation.displayAddress || selectedLocation.parcelId || payload.parcelId || '';
+  const items = [
+    ['Property', address || parcelLabel || 'Selected property'],
+    ['Mowable area', mowArea > 0 ? `${formatAcres(mowArea)} (${Math.round(mowArea).toLocaleString()} sq ft)` : 'Not selected'],
+    ['Lot area', lotArea > 0 ? `${formatAcres(lotArea)} (${Math.round(lotArea).toLocaleString()} sq ft)` : 'Not available'],
+    ['Estimate', estimate > 0 ? money(estimate) : 'Manual review'],
+    ['Service', serviceLabel(payload.serviceType || 'mowing')],
+    ['Grass height', checkoutHumanize(payload.grass_height_range || '')],
+    ['Frequency', checkoutHumanize(payload.service_frequency || '')],
+  ].filter(([, value]) => String(value || '').trim());
+  return `
+    <div class="manual-quote-context-card" aria-label="Selected quote summary">
+      <div class="section-label">Selected quote summary</div>
+      <dl>${items.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join('')}</dl>
+      ${checkoutQuoteBreakdownRows(breakdown)}
+    </div>`;
+}
+
+function currentManualQuoteBasePayload(payload = {}) {
+  const quoteForm = byId('quoteForm');
+  const quotePayload = quoteForm ? buildQuotePayload(quoteForm) : {};
+  const estimateState = state.currentEstimate || {};
+  const currentScope = typeof currentJobScopeSnapshotFields === 'function' ? currentJobScopeSnapshotFields() : {};
+  const estimate = Number(payload.estimate || state.pendingQuote?.estimate || estimateState.estimate || quotePayload.estimate || 0);
+  return {
+    ...quotePayload,
+    ...(estimateState.payload || {}),
+    ...(state.pendingQuote || {}),
+    ...(state.lastQuote || {}),
+    ...payload,
+    ...currentScope,
+    selectedServiceLocation: payload.selectedServiceLocation || state.pendingQuote?.selectedServiceLocation || quotePayload.selectedServiceLocation || state.selectedServiceLocation || null,
+    quoteBreakdown: payload.quoteBreakdown || payload.breakdown || estimateState.breakdown || [],
+    breakdown: payload.breakdown || payload.quoteBreakdown || estimateState.breakdown || [],
+    estimate,
+    final_price: estimate,
+  };
+}
+
 function showManualQuotePanel(payload = {}) {
   const panel = byId('manualQuotePanel');
-  if (!panel) return;
-
-  const quoteForm = byId('quoteForm');
-  const quoteFields = quoteForm ? formToObject(quoteForm) : {};
-  const estimate = Number(payload.estimate || state.currentEstimate?.estimate || 0);
-  syncServiceAddressFields(payload);
-
-  const display = byId('manualQuoteEstimateDisplay');
-  if (display) display.textContent = estimate > 0 ? money(estimate) : '-';
-
-  const form = byId('manualQuoteForm');
-  if (form) {
-    if (form.elements.name) form.elements.name.value = payload.name || payload.customerName || form.elements.name.value || '';
-    if (form.elements.phone && (payload.phone || payload.customerPhone || !form.elements.phone.value)) checkoutSetVisiblePhone(form.elements.phone, payload.phone || payload.customerPhone || form.elements.phone.value || '');
-    if (form.elements.email) form.elements.email.value = payload.email || payload.customerEmail || form.elements.email.value || '';
-    if (form.elements.notes) form.elements.notes.value = form.elements.notes.value || quoteFields.notes || '';
+  if (!panel) {
+    showQuoteFlowStep('estimate', { scroll: false });
+    showError('Could not open the in-person quote form. Your quote is still available.');
+    return;
   }
 
-  byId('manualQuoteResult')?.classList.add('hidden');
-  $$('[data-quote-step-panel]').forEach((stepPanel) => {
-    stepPanel.classList.remove('is-active');
-    stepPanel.classList.add('is-hidden', 'hidden');
-    stepPanel.hidden = true;
-    stepPanel.setAttribute('aria-hidden', 'true');
-  });
-  panel.classList.remove('hidden');
-  panel.hidden = false;
-  panel.setAttribute('aria-hidden', 'false');
-  window.turflynkCanvasDiagnostics?.('checkout manual quote open');
-  panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  try {
+    const basePayload = currentManualQuoteBasePayload(payload);
+    const quoteForm = byId('quoteForm');
+    const quoteFields = quoteForm ? formToObject(quoteForm) : {};
+    const estimate = Number(basePayload.estimate || 0);
+    syncServiceAddressFields(basePayload);
+
+    const display = byId('manualQuoteEstimateDisplay');
+    if (display) display.textContent = estimate > 0 ? money(estimate) : '-';
+    const context = byId('manualQuoteContext');
+    if (context) context.innerHTML = manualQuoteContextHtml(basePayload);
+
+    const form = byId('manualQuoteForm');
+    if (form) {
+      form.dataset.requestMode = 'manual_quote';
+      if (form.elements.name) form.elements.name.value = basePayload.name || basePayload.customerName || form.elements.name.value || '';
+      if (form.elements.phone && (basePayload.phone || basePayload.customerPhone || !form.elements.phone.value)) checkoutSetVisiblePhone(form.elements.phone, basePayload.phone || basePayload.customerPhone || form.elements.phone.value || '');
+      if (form.elements.email) form.elements.email.value = basePayload.email || basePayload.customerEmail || form.elements.email.value || '';
+      if (form.elements.notes) form.elements.notes.value = form.elements.notes.value || quoteFields.notes || '';
+    }
+
+    state.requestMode = 'manual_quote';
+    state.manualQuoteContext = basePayload;
+    byId('manualQuoteResult')?.classList.add('hidden');
+    $$('[data-quote-step-panel]').forEach((stepPanel) => {
+      stepPanel.classList.remove('is-active');
+      stepPanel.classList.add('is-hidden', 'hidden');
+      stepPanel.hidden = true;
+      stepPanel.setAttribute('aria-hidden', 'true');
+    });
+    byId('leadRequestPanel')?.classList.add('hidden');
+    byId('liveBidPanel')?.classList.add('hidden');
+    panel.classList.remove('hidden', 'is-hidden');
+    panel.classList.add('is-active');
+    panel.hidden = false;
+    panel.setAttribute('aria-hidden', 'false');
+    window.turflynkCanvasDiagnostics?.('checkout manual quote open');
+    panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } catch (error) {
+    console.error('[manualQuote] render failed', error);
+    showQuoteFlowStep('estimate', { scroll: false });
+    showError('Could not open the in-person quote form. Your quote is still available.');
+  }
 }
 
 function buildManualQuoteRequestPayload(form) {
   const fd = new FormData(form);
   const contact = Object.fromEntries(fd.entries());
-  const quoteForm = byId('quoteForm');
-  const quotePayload = quoteForm ? buildQuotePayload(quoteForm) : {};
+  const quotePayload = currentManualQuoteBasePayload(state.manualQuoteContext || {});
   const serviceAddress = getCurrentServiceAddress(quotePayload);
-  const estimate = Number(state.currentEstimate?.estimate || state.pendingQuote?.estimate || quotePayload.estimate || 0);
+  const estimate = Number(quotePayload.estimate || state.currentEstimate?.estimate || state.pendingQuote?.estimate || 0);
   const preferredDayTime = String(contact.preferredDayTime || '').trim();
+  const preferredContactMethod = String(contact.preferredContactMethod || '').trim();
+  const preferredTimeWindow = String(contact.preferredTimeWindow || '').trim();
+  const preferredDays = checkedValues('available_days_json', form);
+  const extras = checkedValues('manual_quote_extras', form);
   const customerNotes = String(contact.notes || '').trim();
   const notes = [
     'Manual quote requested.',
+    preferredContactMethod ? `Preferred contact method: ${preferredContactMethod}` : '',
+    preferredDays.length ? `Preferred days: ${preferredDays.join(', ')}` : '',
+    preferredTimeWindow ? `Preferred time window: ${preferredTimeWindow}` : '',
     preferredDayTime ? `Preferred day/time: ${preferredDayTime}` : '',
+    extras.length ? `Needs reviewed: ${extras.map(checkoutHumanize).join(', ')}` : '',
     customerNotes ? `Customer notes: ${customerNotes}` : '',
     quotePayload.yard_access_notes ? `Yard access notes: ${quotePayload.yard_access_notes}` : '',
   ].filter(Boolean).join('\n');
@@ -322,7 +422,15 @@ function buildManualQuoteRequestPayload(form) {
     customerName: String(contact.name || '').trim(),
     customerPhone: String(contact.phone || '').trim(),
     customerEmail: String(contact.email || '').trim(),
+    preferredContactMethod,
     preferredDayTime,
+    preferredTimeWindow,
+    preferredDays,
+    available_days_json: preferredDays.length ? preferredDays : quotePayload.available_days_json || [],
+    availableDays: preferredDays.length ? preferredDays : quotePayload.availableDays || [],
+    manualQuoteExtras: extras,
+    requested_tasks: extras,
+    requestMode: 'manual_quote',
     notes,
     address: serviceAddress.address || quotePayload.address || '',
     city: serviceAddress.city || quotePayload.city || '',
@@ -331,8 +439,17 @@ function buildManualQuoteRequestPayload(form) {
     quote_type: 'manual_quote',
     quoteType: 'manual_quote',
     status: 'manual_requested',
+    selectedServiceLocation: quotePayload.selectedServiceLocation || state.selectedServiceLocation || null,
+    quoteBreakdown: quotePayload.quoteBreakdown || state.currentEstimate?.breakdown || [],
+    breakdown: quotePayload.breakdown || quotePayload.quoteBreakdown || state.currentEstimate?.breakdown || [],
+    parcelGeoJSON: quotePayload.parcelGeoJSON || quotePayload.parcelGeoJson || null,
+    selectedMowableGeoJSON: quotePayload.selectedMowableGeoJSON || null,
+    mowableGeoJSON: quotePayload.mowableGeoJSON || quotePayload.selectedMowableGeoJSON || null,
     estimate,
     final_price: estimate,
+    overgrown: quotePayload.overgrown || extras.includes('overgrown_grass'),
+    pet_waste_level: extras.includes('pet_waste') ? 'review_needed' : (quotePayload.pet_waste_level || ''),
+    limitedAccess: quotePayload.limitedAccess || extras.includes('locked_gate_access_issue'),
   }, form);
 }
 
@@ -342,6 +459,13 @@ function checkoutArkansasValidationPoint(payload = {}) {
     lng: Number(payload.lng || 0),
   };
   return { ...point, state: payload.state || state.currentServiceAddress?.state || '' };
+}
+
+function checkoutArkansasValidationAccepted(payload = {}) {
+  if (state.selectedServiceLocation) {
+    return validateArkansasSelectedServiceLocation(state.selectedServiceLocation).accepted;
+  }
+  return isLngLatInArkansas(checkoutArkansasValidationPoint(payload));
 }
 
 function blockCheckoutOutsideArkansas(resultId = 'quoteResult') {
@@ -388,6 +512,18 @@ if (!window.__requestServiceDelegatedHandlerBound) {
         await refreshEstimate({ force: true, navigate: false });
       }
       const q = state.pendingQuote || buildQuotePayload(form);
+
+      // Terrain guardrail — block instant booking if terrain requires manual review
+      const terrainGuardrail = state.currentEstimate?.terrain?.terrainGuardrail;
+      if (terrainGuardrail?.manualReviewRequired) {
+        if (typeof renderTerrainGuardrailCard === 'function') {
+          renderTerrainGuardrailCard(state.currentEstimate.terrain);
+        }
+        const card = byId('terrainGuardrailCard');
+        if (card) card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        return;
+      }
+
       const missing = bookingContactMissing(q);
       if (missing.length) {
         showBookingContactPanel(q);
@@ -432,37 +568,17 @@ checkoutBindOnce(byId('manualQuoteBtn'), 'click', 'manual-quote-button', async (
    MANUAL QUOTE FORM submit
 ───────────────────────────────────────────────────────────────────────── */
 
-checkoutBindOnce(byId('manualQuoteForm'), 'submit', 'manual-quote-form-submit', async (e) => {
-  e.preventDefault();
+async function submitManualQuoteRequest(payload) {
   const btn = byId('manualQuoteSubmitBtn');
   const result = byId('manualQuoteResult');
   const originalText = btn?.textContent || 'Submit Request';
 
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Submitting...';
+  }
+
   try {
-    const payload = buildManualQuoteRequestPayload(e.target);
-    if (!isLngLatInArkansas(checkoutArkansasValidationPoint(payload))) {
-      blockCheckoutOutsideArkansas('manualQuoteResult');
-      return;
-    }
-
-    const missing = [];
-    if (!payload.name) missing.push('name');
-    if (!isValidLookingPhone(payload.phone)) missing.push('phone');
-    if (missing.length) {
-      if (missing.includes('phone')) showPhoneRequiredError('manualQuoteResult');
-      else showError(`Add ${missing.join(', ')} to request an in-person quote.`);
-      return;
-    }
-    if (!smsConsentAccepted(payload)) {
-      showSmsConsentRequiredError('manualQuoteResult', e.target);
-      return;
-    }
-
-    if (btn) {
-      btn.disabled = true;
-      btn.textContent = 'Submitting...';
-    }
-
     const requestPayload = {
       ...payload,
       phone: checkoutPhoneForBackend(payload.phone),
@@ -474,26 +590,121 @@ checkoutBindOnce(byId('manualQuoteForm'), 'submit', 'manual-quote-form-submit', 
       body: JSON.stringify(requestPayload),
     });
 
-    state.lastQuote = { ...payload, ...data.quote };
+    state.lastQuote = { ...payload, ...data.quote, requestMode: 'manual_quote' };
     state.pendingQuote = state.lastQuote;
     rememberProfilePhoneIfBlank(requestPayload.phone);
+    clearPendingManualQuoteSubmission();
     if (result) {
-      result.innerHTML = `<strong>Request sent.</strong><br>Quote ID: ${escapeHtml(data.quote?.id || '')}<br><span class="meta">No payment was started.</span>`;
+      const quoteId = data.quote?.id ? `<br><span class="meta">Quote ID: ${escapeHtml(data.quote.id)}</span>` : '';
+      result.innerHTML = `<strong>${escapeHtml(MANUAL_QUOTE_SUCCESS_MESSAGE)}</strong>${quoteId}<br><span class="meta">No payment was started.</span>`;
       result.classList.remove('hidden');
     }
-    showSuccess('In-person quote request sent');
+    showSuccess(MANUAL_QUOTE_SUCCESS_MESSAGE);
     if (isAdmin()) await loadAdmin().catch(() => {});
+    return data;
   } catch (err) {
     if (result) {
       result.innerHTML = `<strong>Could not submit:</strong> ${escapeHtml(prettyApiError(err))}`;
       result.classList.remove('hidden');
     }
     showError(prettyApiError(err));
+    throw err;
   } finally {
     if (btn) {
       btn.disabled = false;
       btn.textContent = originalText;
     }
+  }
+}
+
+async function resumePendingManualQuoteAfterPhoneVerification() {
+  if (!checkoutPhoneVerificationState.pendingManualQuoteResume) return false;
+  if (checkoutPhoneVerificationState.resumingManualQuote) return true;
+  const payload = checkoutPhoneVerificationState.resumeManualQuotePayload;
+  if (!payload) {
+    clearPendingManualQuoteSubmission();
+    return false;
+  }
+  checkoutPhoneVerificationState.resumingManualQuote = true;
+  await submitManualQuoteRequest(payload);
+  return true;
+}
+
+checkoutBindOnce(byId('manualQuoteForm'), 'submit', 'manual-quote-form-submit', async (e) => {
+  e.preventDefault();
+  const btn = byId('manualQuoteSubmitBtn');
+  const result = byId('manualQuoteResult');
+  const originalText = btn?.textContent || 'Submit Request';
+
+  try {
+    const payload = buildManualQuoteRequestPayload(e.target);
+    if (!checkoutArkansasValidationAccepted(payload)) {
+      blockCheckoutOutsideArkansas('manualQuoteResult');
+      return;
+    }
+
+    const missing = [];
+    if (!payload.name) missing.push('name');
+    if (!isValidLookingPhone(payload.phone)) missing.push('phone');
+    if (!payload.preferredContactMethod) missing.push('preferred contact method');
+    if (!String(payload.notes || '').trim()) missing.push('notes');
+    if (missing.length) {
+      if (missing.includes('phone')) showPhoneRequiredError('manualQuoteResult');
+      else showError(`Add ${missing.join(', ')} to request an in-person quote.`);
+      return;
+    }
+    if (!smsConsentAccepted(payload)) {
+      showSmsConsentRequiredError('manualQuoteResult', e.target);
+      return;
+    }
+
+    const verifiedPhone = checkoutPhoneForBackend(payload.phone || payload.customerPhone || '');
+    if (!checkoutPhoneVerificationMatches(verifiedPhone, PHONE_VERIFICATION_PURPOSE_MANUAL_QUOTE)) {
+      rememberPendingManualQuoteSubmission({
+        ...payload,
+        phone: verifiedPhone,
+        customerPhone: verifiedPhone,
+      });
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = 'Sending code...';
+      }
+      try {
+        await showPhoneVerificationPanel(verifiedPhone, {
+          resultId: 'manualQuoteResult',
+          purpose: PHONE_VERIFICATION_PURPOSE_MANUAL_QUOTE,
+          message: PHONE_VERIFICATION_CODE_SENT_MESSAGE,
+          refreshReason: 'manual-quote-phone-verification-visible',
+        });
+        showSuccess(PHONE_VERIFICATION_CODE_SENT_MESSAGE);
+      } catch (error) {
+        clearPendingManualQuoteSubmission();
+        const message = phoneVerificationErrorMessage(error);
+        if (result) {
+          result.innerHTML = `<strong>Could not send verification code:</strong> ${escapeHtml(message)}`;
+          result.classList.remove('hidden');
+        }
+        showError(message);
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = originalText;
+        }
+      }
+      return;
+    }
+
+    await submitManualQuoteRequest({
+      ...payload,
+      phone: verifiedPhone,
+      customerPhone: verifiedPhone,
+    });
+  } catch (err) {
+    if (result) {
+      result.innerHTML = `<strong>Could not submit:</strong> ${escapeHtml(prettyApiError(err))}`;
+      result.classList.remove('hidden');
+    }
+    showError(prettyApiError(err));
   }
 });
 
@@ -715,6 +926,7 @@ function codVerificationPanelHtml(jobId) {
 }
 
 const PHONE_VERIFICATION_PURPOSE_COD = 'cod_checkout';
+const PHONE_VERIFICATION_PURPOSE_MANUAL_QUOTE = 'manual_quote';
 const PHONE_VERIFICATION_UNAVAILABLE_MESSAGE = 'Phone verification is temporarily unavailable. Please try again shortly.';
 const checkoutPhoneVerificationState = {
   phone: '',
@@ -725,6 +937,9 @@ const checkoutPhoneVerificationState = {
   resumingCodBooking: false,
   resumeButtonId: '',
   resumeQuote: null,
+  pendingManualQuoteResume: false,
+  resumingManualQuote: false,
+  resumeManualQuotePayload: null,
 };
 
 function phoneVerificationErrorMessage(error) {
@@ -742,12 +957,12 @@ function checkoutPhoneVerificationPhone(value) {
   return checkoutPhoneForBackend(value);
 }
 
-function checkoutPhoneVerificationMatches(value) {
+function checkoutPhoneVerificationMatches(value, purpose = PHONE_VERIFICATION_PURPOSE_COD) {
   const phone = checkoutPhoneVerificationPhone(value);
   return Boolean(
     phone
     && checkoutPhoneVerificationState.phone === phone
-    && checkoutPhoneVerificationState.purpose === PHONE_VERIFICATION_PURPOSE_COD
+    && checkoutPhoneVerificationState.purpose === purpose
     && checkoutPhoneVerificationState.verifiedAt
     && Date.now() - checkoutPhoneVerificationState.verifiedAt < 30 * 60 * 1000
   );
@@ -766,6 +981,23 @@ function clearPendingCodBookingResume() {
   checkoutPhoneVerificationState.resumingCodBooking = false;
   checkoutPhoneVerificationState.resumeButtonId = '';
   checkoutPhoneVerificationState.resumeQuote = null;
+}
+
+function rememberPendingManualQuoteSubmission(payload) {
+  checkoutPhoneVerificationState.pendingManualQuoteResume = true;
+  checkoutPhoneVerificationState.resumingManualQuote = false;
+  checkoutPhoneVerificationState.resumeManualQuotePayload = payload ? { ...payload } : null;
+}
+
+function clearPendingManualQuoteSubmission() {
+  checkoutPhoneVerificationState.pendingManualQuoteResume = false;
+  checkoutPhoneVerificationState.resumingManualQuote = false;
+  checkoutPhoneVerificationState.resumeManualQuotePayload = null;
+}
+
+function clearPendingPhoneVerificationResumes() {
+  clearPendingCodBookingResume();
+  clearPendingManualQuoteSubmission();
 }
 
 async function resumePendingCodBookingAfterPhoneVerification() {
@@ -794,9 +1026,9 @@ async function resumePendingCodBookingAfterPhoneVerification() {
   }
 }
 
-function phoneVerificationPanelHtml(phone, message = '') {
+function phoneVerificationPanelHtml(phone, message = '', purpose = PHONE_VERIFICATION_PURPOSE_COD) {
   return `
-    <div class="cod-verification-panel stack" data-phone-verification-panel data-phone="${escapeHtml(phone || '')}" style="gap:10px">
+    <div class="cod-verification-panel stack" data-phone-verification-panel data-phone="${escapeHtml(phone || '')}" data-purpose="${escapeHtml(purpose || PHONE_VERIFICATION_PURPOSE_COD)}" style="gap:10px">
       <strong>Verify your phone</strong>
       <p class="meta">${escapeHtml(message || PHONE_VERIFICATION_CODE_SENT_MESSAGE)}</p>
       <label><span>Verification code</span>${checkoutOtpInputHtml('phoneVerificationCode')}</label>
@@ -809,28 +1041,38 @@ function phoneVerificationPanelHtml(phone, message = '') {
   `;
 }
 
-async function showPhoneVerificationPanelForCod(phone) {
-  const resultEl = byId('leadRequestResult');
+async function showPhoneVerificationPanel(phone, options = {}) {
+  const resultEl = byId(options.resultId || 'leadRequestResult');
+  const purpose = options.purpose || PHONE_VERIFICATION_PURPOSE_COD;
   const normalizedPhone = checkoutPhoneVerificationPhone(phone);
   if (!resultEl || !normalizedPhone) return false;
-  resultEl.innerHTML = phoneVerificationPanelHtml(normalizedPhone, PHONE_VERIFICATION_CODE_SENT_MESSAGE);
+  resultEl.innerHTML = phoneVerificationPanelHtml(normalizedPhone, options.message || PHONE_VERIFICATION_CODE_SENT_MESSAGE, purpose);
   resultEl.classList.remove('hidden');
-  checkoutRefreshMapPreview('phone-verification-panel-visible');
+  checkoutRefreshMapPreview(options.refreshReason || 'phone-verification-panel-visible');
   resultEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
   const data = await api('/api/phone-verification/start', {
     method: 'POST',
-    body: JSON.stringify({ phone: normalizedPhone, purpose: PHONE_VERIFICATION_PURPOSE_COD }),
+    body: JSON.stringify({ phone: normalizedPhone, purpose }),
   });
   const messageEl = resultEl.querySelector('[data-phone-verification-message]');
   if (messageEl) messageEl.textContent = data.message || PHONE_VERIFICATION_CODE_SENT_MESSAGE;
   checkoutPhoneVerificationState.phone = normalizedPhone;
-  checkoutPhoneVerificationState.purpose = PHONE_VERIFICATION_PURPOSE_COD;
+  checkoutPhoneVerificationState.purpose = purpose;
   checkoutPhoneVerificationState.verifiedAt = 0;
   checkoutPhoneVerificationState.resendLockedUntil = Date.now() + 60 * 1000;
   const codeInput = resultEl.querySelector('input[name="phoneVerificationCode"]');
   codeInput?.focus();
   checkoutScrollFieldIntoView(codeInput, { delay: 160 });
   return true;
+}
+
+async function showPhoneVerificationPanelForCod(phone) {
+  return showPhoneVerificationPanel(phone, {
+    resultId: 'leadRequestResult',
+    purpose: PHONE_VERIFICATION_PURPOSE_COD,
+    message: PHONE_VERIFICATION_CODE_SENT_MESSAGE,
+    refreshReason: 'phone-verification-panel-visible',
+  });
 }
 
 function checkoutIsMobileViewport() {
@@ -1160,7 +1402,7 @@ checkoutBindOnce(document, 'input', 'checkout-contact-conflict-clear-input', (ev
   if (!event.target.closest?.('#leadRequestForm, #manualQuoteForm, #quoteForm')) return;
   if (event.target.matches('input[name="customerPhone"], input[name="phone"]')) {
     checkoutPhoneVerificationState.verifiedAt = 0;
-    clearPendingCodBookingResume();
+    clearPendingPhoneVerificationResumes();
   }
   clearCheckoutContactConflict();
 });
@@ -1175,7 +1417,7 @@ checkoutBindOnce(document, 'change', 'checkout-contact-conflict-clear-change', (
   if (!event.target.closest?.('#leadRequestForm, #manualQuoteForm, #quoteForm')) return;
   if (event.target.matches('input[name="customerPhone"], input[name="phone"]')) {
     checkoutPhoneVerificationState.verifiedAt = 0;
-    clearPendingCodBookingResume();
+    clearPendingPhoneVerificationResumes();
   }
   clearCheckoutContactConflict();
 });
@@ -1205,6 +1447,7 @@ checkoutBindOnce(document, 'click', 'checkout-phone-verification-actions', async
 
   const panel = event.target.closest('[data-phone-verification-panel]');
   const phone = panel?.dataset?.phone || checkoutPhoneVerificationState.phone || '';
+  const purpose = panel?.dataset?.purpose || checkoutPhoneVerificationState.purpose || PHONE_VERIFICATION_PURPOSE_COD;
   const messageEl = panel?.querySelector('[data-phone-verification-message]');
   if (!panel || !phone) return;
 
@@ -1218,17 +1461,24 @@ checkoutBindOnce(document, 'click', 'checkout-phone-verification-actions', async
       confirmPhoneBtn.disabled = true;
       const data = await api('/api/phone-verification/check', {
         method: 'POST',
-        body: JSON.stringify({ phone, code, purpose: PHONE_VERIFICATION_PURPOSE_COD }),
+        body: JSON.stringify({ phone, code, purpose }),
       });
       checkoutPhoneVerificationState.phone = checkoutPhoneVerificationPhone(phone);
-      checkoutPhoneVerificationState.purpose = PHONE_VERIFICATION_PURPOSE_COD;
+      checkoutPhoneVerificationState.purpose = purpose;
       checkoutPhoneVerificationState.verifiedAt = Date.now();
-      if (messageEl) messageEl.textContent = 'Phone verified. Reserving your onsite-payment job...';
+      if (messageEl) messageEl.textContent = purpose === PHONE_VERIFICATION_PURPOSE_MANUAL_QUOTE
+        ? 'Phone verified. Submitting your in-person quote request...'
+        : 'Phone verified. Reserving your onsite-payment job...';
       showSuccess(data.message || 'Phone verified');
-      const resumed = await resumePendingCodBookingAfterPhoneVerification();
+      const resumed = purpose === PHONE_VERIFICATION_PURPOSE_MANUAL_QUOTE
+        ? await resumePendingManualQuoteAfterPhoneVerification()
+        : await resumePendingCodBookingAfterPhoneVerification();
       if (!resumed) {
-        if (messageEl) messageEl.textContent = 'Phone verified. Select Reserve & Pay Onsite to continue.';
-        byId('leadPayOnsiteBtn')?.focus();
+        if (messageEl) messageEl.textContent = purpose === PHONE_VERIFICATION_PURPOSE_MANUAL_QUOTE
+          ? 'Phone verified. Select Submit Request to continue.'
+          : 'Phone verified. Select Reserve & Pay Onsite to continue.';
+        if (purpose === PHONE_VERIFICATION_PURPOSE_MANUAL_QUOTE) byId('manualQuoteSubmitBtn')?.focus();
+        else byId('leadPayOnsiteBtn')?.focus();
       }
       return;
     }
@@ -1240,7 +1490,7 @@ checkoutBindOnce(document, 'click', 'checkout-phone-verification-actions', async
     resendPhoneBtn.disabled = true;
     const data = await api('/api/phone-verification/start', {
       method: 'POST',
-      body: JSON.stringify({ phone, purpose: PHONE_VERIFICATION_PURPOSE_COD }),
+      body: JSON.stringify({ phone, purpose }),
     });
     checkoutPhoneVerificationState.resendLockedUntil = Date.now() + 60 * 1000;
     if (messageEl) messageEl.textContent = data.message || PHONE_VERIFICATION_CODE_SENT_MESSAGE;
@@ -1323,7 +1573,7 @@ async function bookQuoteAsJob(explicitBtn, options = {}) {
       ...state.lastQuote,
       ...currentCheckoutContactAliases(),
     });
-    if (!isLngLatInArkansas(checkoutArkansasValidationPoint(q))) {
+    if (!checkoutArkansasValidationAccepted(q)) {
       blockCheckoutOutsideArkansas('leadRequestResult');
       return;
     }

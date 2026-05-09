@@ -49,7 +49,8 @@ function showQuoteFlowStep(step, options = {}) {
   document.body.dataset.quoteFlowStep = nextStep;
   const manualPanel = byId('manualQuotePanel');
   if (manualPanel) {
-    manualPanel.classList.add('hidden');
+    manualPanel.classList.remove('is-active');
+    manualPanel.classList.add('hidden', 'is-hidden');
     manualPanel.hidden = true;
     manualPanel.setAttribute('aria-hidden', 'true');
   }
@@ -80,6 +81,10 @@ function showQuoteFlowStep(step, options = {}) {
   }
 
   updateQuoteStepper();
+  // Dynamic header — hide on draw/estimate/request (those screens own their heading)
+  const isConfirming = nextStep === 'property'
+    && Boolean(document.getElementById('quoteStartScreen')?.classList.contains('is-confirming'));
+  updateQuoteStepHeader(nextStep, isConfirming ? 'confirm' : 'search');
   updateQuoteFlowState({ skipStepper: true });
 
   if (nextStep === 'estimate') {
@@ -102,6 +107,41 @@ function showQuoteFlowStep(step, options = {}) {
     console.timeEnd(traceLabel);
   }
 }
+
+// Step-aware header content
+const _QUOTE_STEP_HEADS = {
+  'property-search': {
+    region: 'NORTHWEST ARKANSAS',
+    title: 'Find Your Property',
+    sub: 'Enter your address to begin your lawn quote.',
+  },
+  'property-confirm': {
+    region: 'NORTHWEST ARKANSAS',
+    title: 'Confirm Your Property',
+    sub: 'Verify we found the correct parcel.',
+  },
+};
+
+function updateQuoteStepHeader(step, subState) {
+  const header = byId('quoteStepDynamicHeader');
+  if (!header) return;
+  const key = step === 'property' ? `property-${subState || 'search'}` : step;
+  const head = _QUOTE_STEP_HEADS[key];
+  if (head) {
+    const regionEl = header.querySelector('.qsf-region');
+    const titleEl = byId('quoteStepTitle');
+    const subEl = byId('quoteStepSub');
+    if (regionEl) regionEl.textContent = head.region || '';
+    if (titleEl) titleEl.textContent = head.title;
+    if (subEl) subEl.textContent = head.sub;
+    header.hidden = false;
+    header.removeAttribute('aria-hidden');
+  } else {
+    header.hidden = true;
+    header.setAttribute('aria-hidden', 'true');
+  }
+}
+window.updateQuoteStepHeader = updateQuoteStepHeader;
 
 function updateQuoteStepper() {
   const stepper = byId('quoteStepper');
@@ -163,7 +203,7 @@ function updateQuoteFlowState(options = {}) {
         ? 'AI detected yard'
         : state.aiDetectMowableStatus === 'fallback'
           ? 'Use Lasso Yard'
-          : 'AI Detect Yard (Beta)';
+          : 'Auto Detect Lawn';
   }
 
   setElementVisible('useParcelShapeBtn', parcelLoaded && !mowSelected && !editing && !drawing);
@@ -291,6 +331,66 @@ function multiSelectValues(select) {
   return Array.from(select?.selectedOptions || []).map((option) => option.value);
 }
 
+// Restart the quote flow from the beginning — called by any "Get Lawn Quote" button.
+// options.fresh (default true): clears parcel/address state so property step shows
+// address input, not Confirm Your Property. Pass { fresh: false } only if the
+// caller wants to return to the property step without wiping address state.
+function restartQuoteFlow(source, options = {}) {
+  const fresh = options.fresh !== false;
+  console.log('[QuoteFlow] quote restart requested', { source: source || 'button', fresh });
+
+  if (typeof stopToolModes === 'function') stopToolModes();
+
+  if (fresh) {
+    // Clear parcel layer, mow layer, form parcel fields, estimate state, service address
+    if (typeof resetParcelQuoteStateForNewAddress === 'function') {
+      resetParcelQuoteStateForNewAddress();
+    } else {
+      // Fallback if app.js hasn't loaded yet
+      state.parcelLayer = null;
+      state.parcelFeature = null;
+      state.parcelProperties = null;
+      state.selectedParcel = null;
+      state.selectedParcelProperties = null;
+      state.parcelGeometry = null;
+      state.mowableEstimate = null;
+    }
+
+    // Clear pending parcel preview/selection state
+    state.pendingParcelFeature = null;
+    state.pendingParcelPreviewLayer = null;
+    state.pendingParcelPreviewFeature = null;
+    state.selectedServiceLocation = null;
+
+    // Clear address form inputs so user starts from a blank search
+    const form = byId('quoteForm');
+    if (form) {
+      ['address', 'city', 'state', 'zip', 'lat', 'lng'].forEach((field) => {
+        if (form.elements[field]) form.elements[field].value = '';
+      });
+    }
+
+    // Hide parcel confirmation panel → show address input screen
+    if (typeof showPropertyConfirmationPanel === 'function') showPropertyConfirmationPanel(false);
+
+    // Hide GPS confirm bar
+    byId('gpsConfirmBar')?.classList.add('hidden');
+
+    // Clear parcel info result panel
+    const parcelInfo = byId('parcelInfo');
+    if (parcelInfo) {
+      parcelInfo.innerHTML = '';
+      parcelInfo.classList.add('hidden');
+    }
+
+    console.log('[QuoteFlow] fresh quote state cleared');
+  }
+
+  showQuoteFlowStep('property');
+  console.log('[QuoteFlow] showing address input');
+}
+window.restartQuoteFlow = restartQuoteFlow;
+
 if (!window.__turflynkQuoteFlowListenersInstalled) {
   window.__turflynkQuoteFlowListenersInstalled = true;
 
@@ -323,3 +423,4 @@ window.quoteStepNumber = quoteStepNumber;
 window.showQuoteFlowStep = showQuoteFlowStep;
 window.updateQuoteStepper = updateQuoteStepper;
 window.updateQuoteFlowState = updateQuoteFlowState;
+window.restartQuoteFlow = restartQuoteFlow;

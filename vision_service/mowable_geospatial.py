@@ -78,36 +78,45 @@ DETECTION_PRESET_THRESHOLDS: Dict[str, Dict[str, Any]] = {
         "ndviSweep": [0.28, 0.30, 0.33],
         "visibleSweep": [6.0, 8.0, 10.0],
         "brightnessSweep": [40.0, 48.0, 56.0],
-        "maxDetectedRatio": 0.75,
-        "hardDetectedRatio": 0.93,
+        # Stricter caps: residential lots with visible houses should not return 70%+
+        "maxDetectedRatio": 0.68,
+        "hardDetectedRatio": 0.85,
         "strongExclusionRatio": 0.04,
         "minComponentAreaSqft": 100.0,
         "maxComponents": MAX_COMPONENTS_TO_KEEP,
-        "maxComponentRatio": 0.75,
-        "gsdCloseCap": 10,
+        "maxComponentRatio": 0.65,
+        # Reduced from 10: fewer close-iters prevents bridging across house-width gaps
+        "gsdCloseCap": 7,
         "softFallback": True,
         "lowConfidenceCandidate": False,
-        "hardscapeGrow": 1,
+        # Grow 3px so roof edges + shadow pixels are fully covered by the barrier
+        "hardscapeGrow": 3,
         "hardscapeRules": {
-            "paleBrightnessMin": 140.0,
-            "paleSaturationMax": 46.0,
-            "neutralSaturationMax": 26.0,
-            "graySaturationMax": 26.0,
-            "darkShadowBrightnessMax": 34.0,
-            "whiteBrightnessMin": 192.0,
+            # Lower brightness floor: catches medium-dark asphalt shingles (~108 lum)
+            "paleBrightnessMin": 108.0,
+            # Higher sat ceiling: catches tan/terracotta roofs and warm concrete
+            "paleSaturationMax": 60.0,
+            "neutralSaturationMax": 38.0,
+            "graySaturationMax": 38.0,
+            # Raised: catches dark roof-overhang shadow bands
+            "darkShadowBrightnessMax": 52.0,
+            # Lowered: catches more bright concrete/metal surfaces
+            "whiteBrightnessMin": 162.0,
         },
         "vegetation": {
-            "saturationFloor": 5.0,
-            "excessGreenFloor": 1.5,
-            "greenRatioMin": 0.32,
-            "variMin": 0.0,
-            "brightnessMax": 216.0,
-            "greenSlack": 8.0,
-            "ndviDrop": 0.04,
-            "ndviSoftDrop": 0.08,
-            "ndviQuantile": 0.50,
-            "ndviCap": 0.30,
-            "townLawnDrop": 0.055,
+            # Require more colour signal to qualify as lawn; reduces roof/concrete bleed-through
+            "saturationFloor": 7.0,
+            "excessGreenFloor": 3.5,
+            "greenRatioMin": 0.335,
+            "variMin": 0.01,
+            # Lower ceiling: very bright surfaces are more likely hardscape
+            "brightnessMax": 206.0,
+            "greenSlack": 6.0,
+            "ndviDrop": 0.02,
+            "ndviSoftDrop": 0.06,
+            "ndviQuantile": 0.52,
+            "ndviCap": 0.32,
+            "townLawnDrop": 0.045,
         },
     },
     "large_rural": {
@@ -745,13 +754,16 @@ def build_hardscape_subtract_mask(
     rules = preset["hardscapeRules"]
 
     small = detection_preset == "small_residential"
-    roof_brightness_min = (150.0 if small else 142.0) if relaxed else (125.0 if small else 135.0)
-    asphalt_brightness_min = (58.0 if small else 62.0) if relaxed else (45.0 if small else 58.0)
-    tan_brightness_min = (90.0 if small else 88.0) if relaxed else (65.0 if small else 80.0)
+    is_medium = detection_preset == "medium_residential"
+    # medium_residential: lower brightness floor to catch dark asphalt shingles (~100 lum);
+    # lower asphalt/tan floors to catch shadowed driveways and dark gravel.
+    roof_brightness_min = (150.0 if small else 142.0) if relaxed else (125.0 if small else (98.0 if is_medium else 135.0))
+    asphalt_brightness_min = (58.0 if small else 62.0) if relaxed else (45.0 if small else (36.0 if is_medium else 58.0))
+    tan_brightness_min = (90.0 if small else 88.0) if relaxed else (65.0 if small else (60.0 if is_medium else 80.0))
     pale_sat_limit = max(36.0 if relaxed else 44.0, float(rules["paleSaturationMax"]) - (12.0 if relaxed else 0.0))
     gray_sat_limit = max(20.0 if relaxed else 26.0, float(rules["graySaturationMax"]) - (8.0 if relaxed else 0.0))
     tan_sat_limit = max(34.0 if relaxed else 50.0, float(rules["paleSaturationMax"]) - (10.0 if relaxed else 0.0))
-    excess_green_limit = 8.0 if relaxed and small else (16.0 if small else 10.0)
+    excess_green_limit = 8.0 if relaxed and small else (16.0 if small else (5.0 if is_medium else 10.0))
 
     roof = (brightness > roof_brightness_min) & (saturation < pale_sat_limit) & valid_pixels
     asphalt = (
@@ -784,26 +796,504 @@ def build_hardscape_subtract_mask(
             & (saturation < max(18.0, gray_sat_limit))
         )
 
-    hardscape = (roof | asphalt | tan | extreme | context_hard_surface) & valid_pixels
+    # medium_residential only: dedicated dark-shingle / compact structure detector.
+    # Fills the brightness gap (42–170) between the pale_hard_surface ceiling and
+    # very-dark shadow detection, targeting asphalt shingles, dark tile roofs, and
+    # shadowed masonry that slip through the standard bright-surface rules.
+    # Gated on excess_green < 4 so actively green surfaces (lawn, moss) are not caught.
+    medium_res_dark_structure = np.zeros_like(valid_pixels, dtype=bool)
+    if is_medium and not relaxed:
+        medium_res_dark_structure = (
+            (brightness > 42.0)
+            & (brightness < 170.0)
+            & (saturation < 58.0)
+            & (excess_green < 4.0)
+        ) & valid_pixels
+
+    hardscape = (roof | asphalt | tan | extreme | context_hard_surface | medium_res_dark_structure) & valid_pixels
     if nir_band:
         nir = np.asarray(data[band_lookup[nir_band]].filled(0), dtype=np.float32)
         denominator = nir + red
         ndvi = np.zeros_like(red, dtype=np.float32)
         np.divide(nir - red, denominator, out=ndvi, where=np.abs(denominator) > 1e-6)
-        hardscape = (
-            hardscape
-            | ((ndvi < (0.06 if relaxed else 0.10)) & (brightness > (145.0 if relaxed else 125.0)) & (saturation < (30.0 if relaxed else 38.0)) & valid_pixels)
-            | ((ndvi < (0.08 if relaxed else 0.12)) & (brightness > (66.0 if relaxed else 52.0)) & (saturation < (22.0 if relaxed else 30.0)) & valid_pixels)
-        ) & valid_pixels
+        if is_medium and not relaxed:
+            # Stronger NIR-based structure exclusion: catches darker roofing with low NDVI.
+            # NDVI < 0.12 safely excludes healthy lawn (NDVI > 0.20) and most stressed
+            # lawn (NDVI > 0.10) while catching asphalt/tile/concrete (NDVI < 0.05–0.10).
+            hardscape = (
+                hardscape
+                | ((ndvi < 0.12) & (brightness > 72.0) & (saturation < 68.0) & (excess_green < 8.0) & valid_pixels)
+                | ((ndvi < 0.08) & (brightness > 38.0) & (saturation < 88.0) & (excess_green < 4.0) & valid_pixels)
+            ) & valid_pixels
+        else:
+            hardscape = (
+                hardscape
+                | ((ndvi < (0.06 if relaxed else 0.10)) & (brightness > (145.0 if relaxed else 125.0)) & (saturation < (30.0 if relaxed else 38.0)) & valid_pixels)
+                | ((ndvi < (0.08 if relaxed else 0.12)) & (brightness > (66.0 if relaxed else 52.0)) & (saturation < (22.0 if relaxed else 30.0)) & valid_pixels)
+            ) & valid_pixels
 
-    hardscape = binary_close(hardscape, 1 if relaxed else 2) & valid_pixels
+    # medium_residential: close with 4 iterations to fill within-roof spectral gaps
+    _hs_close_iters = (1 if relaxed else (4 if is_medium else 2))
+    hardscape = binary_close(hardscape, _hs_close_iters) & valid_pixels
     hardscape = grow_mask(hardscape, max(0, int(preset["hardscapeGrow"]) - (1 if relaxed else 0))) & valid_pixels
     return hardscape, {
         "relaxed": bool(relaxed),
         "roofPixels": int(np.count_nonzero(roof)),
         "drivewaySidewalkPatioPixels": int(np.count_nonzero(asphalt | tan | context_hard_surface)),
         "extremeNeutralPixels": int(np.count_nonzero(extreme)),
+        "darkStructurePixels": int(np.count_nonzero(medium_res_dark_structure)),
         "hardscapeRules": rules,
+    }
+
+
+def build_morphology_barrier_mask(
+    data: np.ma.MaskedArray,
+    band_lookup: Dict[int, int],
+    *,
+    red_band: int,
+    green_band: int,
+    blue_band: int,
+    nir_band: Optional[int],
+    valid_pixels: np.ndarray,
+    analysis_context: Dict[str, Any],
+    hardscape_subtract_mask: np.ndarray,
+    parcel_area_sqft: float = 0.0,
+    constrained_boundary_mode: bool = False,
+    detection_preset: str = "",
+) -> Tuple[np.ndarray, np.ndarray, Dict[str, Any]]:
+    """Hard-barrier mask frozen during morphological close/merge operations.
+
+    Prevents binary_close from bridging lawn regions across trailers, gravel,
+    metal roofs, sheds, and other non-mowable objects.  Starts from the
+    already-computed hardscape_subtract_mask and adds high-confidence-only rules
+    for objects not fully caught by the standard hardscape rules.
+
+    Returns a 3-tuple: (morphology_barrier_mask, hard_exclusion_mask, details).
+    For medium_residential + constrained_boundary_mode:
+      - morphology_barrier_mask: broader, used only during close to prevent bridging.
+      - hard_exclusion_mask: tight high-confidence gate with green rescue applied;
+        used for initial and final subtraction from mowable.
+    For all other modes: both masks are identical (existing behaviour).
+
+    Rules are conservative to avoid misclassifying valid lawn as barrier.
+    Added barrier pixels (beyond hardscape_subtract_mask) are capped at 20% of
+    valid pixels; if exceeded, the function falls back to hardscape-only and
+    sets barrierRejectedAsTooBroad=True.
+    """
+    valid_pixels = np.asarray(valid_pixels, dtype=bool)
+    hardscape_subtract_mask = np.asarray(hardscape_subtract_mask, dtype=bool)
+    red   = np.asarray(data[band_lookup[red_band]].filled(0),   dtype=np.float32)
+    green = np.asarray(data[band_lookup[green_band]].filled(0), dtype=np.float32)
+    blue  = np.asarray(data[band_lookup[blue_band]].filled(0),  dtype=np.float32)
+    brightness   = (red + green + blue) / 3.0
+    saturation   = np.maximum.reduce([red, green, blue]) - np.minimum.reduce([red, green, blue])
+    excess_green = 2.0 * green - red - blue
+    abs_rg = np.abs(red - green)
+    abs_gb = np.abs(green - blue)
+    green_sum = red + green + blue
+    green_ratio = np.zeros_like(green, dtype=np.float32)
+    np.divide(green, green_sum, out=green_ratio, where=green_sum > 1e-6)
+
+    texture_map: Optional[np.ndarray] = analysis_context.get("textureMap")
+    texture_threshold = float(analysis_context.get("textureThreshold") or 18.0)
+
+    # --- Gravel / crushed stone (high-confidence, tight gate) ---
+    # Must be clearly neutral/low-saturation with no green character.
+    gravel_base = (
+        (brightness > 55.0)
+        & (brightness < 200.0)
+        & (saturation < 28.0)
+        & (excess_green < 3.0)
+        & (abs_rg < 18.0)
+        & (abs_gb < 20.0)
+    ) & valid_pixels
+    if texture_map is not None:
+        gravel_seed = gravel_base & (texture_map > texture_threshold * 0.50)
+    else:
+        # Without texture, require very tight spectral gate to stay conservative.
+        gravel_seed = gravel_base & (saturation < 18.0) & (excess_green < 1.0)
+
+    # --- Neutral gray surfaces (concrete, galvanized metal) ---
+    # Must be nearly achromatic — tighter than before to avoid misclassifying
+    # overcast-lit lawn or light green turf as barrier.
+    neutral_gray = (
+        (brightness > 70.0)
+        & (brightness < 230.0)
+        & (saturation < 14.0)
+        & (abs_rg < 10.0)
+        & (abs_gb < 12.0)
+    ) & valid_pixels
+
+    # --- Metal / rust / large objects (constrained mode, high-confidence only) ---
+    # Must show clear red dominance and strictly non-positive excess green.
+    # Avoids flagging dormant or dry green grass which can appear reddish.
+    if constrained_boundary_mode:
+        metal_or_rust = (
+            (brightness > 50.0)
+            & (brightness < 210.0)
+            & (saturation < 50.0)
+            & (excess_green < 0.0)        # strictly not green-dominant
+            & (red >= green + 12.0)       # clear red dominance
+            & (green_ratio < 0.33)        # well below vegetation range
+        ) & valid_pixels
+    else:
+        metal_or_rust = np.zeros(valid_pixels.shape, dtype=bool)
+
+    # --- Bare soil / dirt roads (constrained mode, high-confidence only) ---
+    # Requires clearly negative excess_green and strong red dominance.
+    if constrained_boundary_mode:
+        bare_soil = (
+            (brightness > 55.0)
+            & (brightness < 185.0)
+            & (saturation < 45.0)
+            & (excess_green < -2.0)       # strictly negative
+            & (red >= green + 8.0)        # clear red dominance
+        ) & valid_pixels
+    else:
+        bare_soil = np.zeros(valid_pixels.shape, dtype=bool)
+
+    # Build barrier seed from hardscape + high-confidence spectral additions.
+    barrier_seed = (hardscape_subtract_mask | gravel_seed | neutral_gray) & valid_pixels
+    if constrained_boundary_mode:
+        barrier_seed = (barrier_seed | metal_or_rust | bare_soil) & valid_pixels
+
+    # NIR: add barrier only for pixels with very clearly non-vegetation NDVI
+    # combined with strongly non-green color. Low NDVI alone must NOT create a
+    # broad barrier — dormant/dry grass has low NDVI but is still mowable lawn.
+    if nir_band is not None and nir_band in band_lookup:
+        nir = np.asarray(data[band_lookup[nir_band]].filled(0), dtype=np.float32)
+        denom = nir + red
+        ndvi_b = np.zeros_like(red, dtype=np.float32)
+        np.divide(nir - red, denom, out=ndvi_b, where=np.abs(denom) > 1e-6)
+        low_ndvi_nonveg = (
+            (ndvi_b < 0.05)            # much stricter than 0.14
+            & (brightness > 80.0)      # exclude shadows
+            & (excess_green < -3.0)    # must be clearly non-green
+        ) & valid_pixels
+        barrier_seed = (barrier_seed | low_ndvi_nonveg) & valid_pixels
+
+    is_medium_constrained = (detection_preset == "medium_residential" and constrained_boundary_mode)
+
+    # --- Cap: added barrier beyond hardscape may not exceed 20% of valid pixels ---
+    _ADD_CAP = 0.20
+    valid_px = int(np.count_nonzero(valid_pixels))
+    hardscape_px_count = int(np.count_nonzero(hardscape_subtract_mask & valid_pixels))
+    added_barrier_mask = barrier_seed & ~hardscape_subtract_mask & valid_pixels
+    added_barrier_px = int(np.count_nonzero(added_barrier_mask))
+    added_barrier_ratio = added_barrier_px / valid_px if valid_px > 0 else 0.0
+
+    barrier_rejected_as_too_broad = False
+    barrier_capped = False
+    if added_barrier_ratio > _ADD_CAP:
+        # Too many pixels added beyond hardscape — fall back to hardscape-only
+        # to avoid erasing most of the yard.
+        barrier_seed = hardscape_subtract_mask & valid_pixels
+        barrier_rejected_as_too_broad = True
+        added_barrier_px = 0
+        added_barrier_ratio = 0.0
+        print(
+            f"[Vision] morphology_barrier: barrierRejectedAsTooBroad=True"
+            f" added_ratio={round(added_barrier_ratio, 3)} cap={_ADD_CAP}"
+            f" — reverting to hardscape_subtract_mask only",
+            flush=True,
+        )
+
+    if is_medium_constrained:
+        # --- medium_residential + constrained: split barrier into two concepts ---
+        #
+        # morphology_barrier_mask (broad): used only during binary_close/open to
+        #   prevent closing from bridging across gravel/trailer/hardscape. No moat
+        #   so that adjacent real grass pixels are not eroded.
+        #
+        # hard_exclusion_mask (tight): high-confidence non-mowable pixels that are
+        #   permanently removed from the final mowable output.  Green-dominant and
+        #   high-NDVI pixels are rescued from this mask even if they matched barrier
+        #   spectral rules.
+
+        # Morphology barrier: existing barrier_seed, no moat.
+        morphology_barrier = barrier_seed & valid_pixels
+
+        # Strong green / vegetation evidence — these pixels must NOT be hard-excluded.
+        # Grass-positive thresholds: include mixed grass/dirt/shadow when any
+        # vegetation signal is present (lower than standard to bias toward inclusion).
+        _eg = 2.0 * green - red - blue
+        _gs = red + green + blue
+        _gr = np.zeros_like(green, dtype=np.float32)
+        np.divide(green, _gs, out=_gr, where=_gs > 1e-6)
+        strong_green_evidence = np.asarray(((_eg > 2.0) | (_gr > 0.34)) & valid_pixels, dtype=bool)
+        if nir_band is not None and nir_band in band_lookup:
+            _nir = np.asarray(data[band_lookup[nir_band]].filled(0), dtype=np.float32)
+            _nd_d = _nir + red
+            _ndvi_he = np.zeros_like(red, dtype=np.float32)
+            np.divide(_nir - red, _nd_d, out=_ndvi_he, where=np.abs(_nd_d) > 1e-6)
+            strong_green_evidence = strong_green_evidence | ((_ndvi_he > 0.10) & valid_pixels)
+        strong_green_evidence = np.asarray(strong_green_evidence, dtype=bool)
+
+        # Hard exclusion: conservative spectral gate — only very high-confidence
+        # non-mowable pixels are permanently removed.  Ambiguous gravel/neutral
+        # pixels that might be mixed lawn are left for the morphology-barrier-only
+        # zone so green rescue can recover them.
+        tight_gravel = (
+            (brightness > 70.0)
+            & (brightness < 190.0)
+            & (saturation < 12.0)
+            & (excess_green < -5.0)
+            & (abs_rg < 8.0)
+            & (abs_gb < 10.0)
+        ) & valid_pixels
+        tight_neutral_gray = (
+            (brightness > 80.0)
+            & (brightness < 220.0)
+            & (saturation < 6.0)
+            & (abs_rg < 4.0)
+            & (abs_gb < 6.0)
+        ) & valid_pixels
+        tight_metal = (
+            (brightness > 50.0)
+            & (brightness < 210.0)
+            & (saturation < 40.0)
+            & (excess_green < -8.0)
+            & (red >= green + 25.0)
+            & (_gr < 0.27)
+        ) & valid_pixels
+        hard_exclusion_seed = (
+            hardscape_subtract_mask
+            | tight_gravel
+            | tight_neutral_gray
+            | tight_metal
+        ) & valid_pixels
+        # Rescue: green-dominant pixels override all broad barrier rules.
+        hard_exclusion_seed = hard_exclusion_seed & ~strong_green_evidence
+
+        morphology_barrier = np.asarray(morphology_barrier, dtype=bool)
+        hard_exclusion_seed = np.asarray(hard_exclusion_seed, dtype=bool)
+        hard_excl_px = int(np.count_nonzero(hard_exclusion_seed))
+        morph_only_px = int(np.count_nonzero(morphology_barrier & ~hard_exclusion_seed))
+        gravel_px = int(np.count_nonzero(gravel_seed))
+        large_obj_px = int(np.count_nonzero((metal_or_rust | bare_soil) & valid_pixels))
+        area_per_px = parcel_area_sqft / valid_px if valid_px > 0 else 0.0
+
+        return morphology_barrier, hard_exclusion_seed, {
+            "gravelExcludedPixels": gravel_px,
+            "gravelExcludedAreaSqft": round(gravel_px * area_per_px, 1),
+            "largeObjectExcludedPixels": large_obj_px,
+            "largeObjectExcludedAreaSqft": round(large_obj_px * area_per_px, 1),
+            "frozenExclusionPixels": int(np.count_nonzero(morphology_barrier)),
+            "morphologyBarrierPixels": int(np.count_nonzero(morphology_barrier)),
+            "hardscapeBarrierPixels": hardscape_px_count,
+            "addedBarrierPixels": added_barrier_px,
+            "addedBarrierRatio": round(added_barrier_ratio, 4),
+            "barrierCapped": barrier_capped,
+            "barrierRejectedAsTooBroad": barrier_rejected_as_too_broad,
+            "exclusionBarrierApplied": True,
+            "hardExclusionPixels": hard_excl_px,
+            "hardExclusionAreaSqft": round(hard_excl_px * area_per_px, 1),
+            "morphologyOnlyBarrierPixels": morph_only_px,
+            "morphologyOnlyBarrierAreaSqft": round(morph_only_px * area_per_px, 1),
+            "mediumConstrainedBarrierMode": True,
+            "grassPositiveMode": True,
+            "objectExclusionConservative": True,
+            "exclusionRules": {
+                "gravelSatMax": 28.0,
+                "gravelExcessGreenMax": 3.0,
+                "gravelTextureThresholdFactor": 0.50,
+                "neutralGraySatMax": 14.0,
+                "metalRustConstrained": True,
+                "bareSoilConstrained": True,
+                "hardExclusionTightGravelSatMax": 12.0,
+                "hardExclusionTightGravelExcessGreenMax": -5.0,
+                "hardExclusionNeutralGraySatMax": 6.0,
+                "hardExclusionMetalExcessGreenMax": -8.0,
+                "greenRescueExcessGreenMin": 2.0,
+                "greenRescueGreenRatioMin": 0.34,
+                "greenRescueNdviMin": 0.10,
+                "lowNdviBarrier": nir_band is not None,
+                "lowNdviThreshold": 0.05,
+                "barrierGrowPixels": 0,
+                "addedBarrierCapRatio": _ADD_CAP,
+            },
+        }
+
+    # --- Standard path (all other presets): single combined barrier with moat ---
+    # medium_residential (non-constrained): grow 3px so the binary_close during
+    # vegetation morphology cannot bridge across roof-width gaps next to structures.
+    # All other presets keep the 1-px moat to avoid eroding narrow lawn strips.
+    _barrier_grow_px = 3 if (detection_preset == "medium_residential" and not constrained_boundary_mode) else 1
+    barrier = grow_mask(barrier_seed, _barrier_grow_px) & valid_pixels
+
+    area_per_px = parcel_area_sqft / valid_px if valid_px > 0 else 0.0
+    gravel_px = int(np.count_nonzero(gravel_seed))
+    large_obj_px = int(np.count_nonzero((metal_or_rust | bare_soil) & valid_pixels)) if constrained_boundary_mode else 0
+    frozen_px = int(np.count_nonzero(barrier))
+
+    return barrier, barrier, {
+        "gravelExcludedPixels": gravel_px,
+        "gravelExcludedAreaSqft": round(gravel_px * area_per_px, 1),
+        "largeObjectExcludedPixels": large_obj_px,
+        "largeObjectExcludedAreaSqft": round(large_obj_px * area_per_px, 1),
+        "frozenExclusionPixels": frozen_px,
+        "morphologyBarrierPixels": frozen_px,
+        "hardscapeBarrierPixels": hardscape_px_count,
+        "addedBarrierPixels": added_barrier_px,
+        "addedBarrierRatio": round(added_barrier_ratio, 4),
+        "barrierCapped": barrier_capped,
+        "barrierRejectedAsTooBroad": barrier_rejected_as_too_broad,
+        "exclusionBarrierApplied": True,
+        "hardExclusionPixels": frozen_px,
+        "hardExclusionAreaSqft": round(frozen_px * area_per_px, 1),
+        "morphologyOnlyBarrierPixels": 0,
+        "morphologyOnlyBarrierAreaSqft": 0.0,
+        "mediumConstrainedBarrierMode": False,
+        "exclusionRules": {
+            "gravelSatMax": 28.0,
+            "gravelExcessGreenMax": 3.0,
+            "gravelTextureThresholdFactor": 0.50,
+            "neutralGraySatMax": 14.0,
+            "metalRustConstrained": bool(constrained_boundary_mode),
+            "bareSoilConstrained": bool(constrained_boundary_mode),
+            "lowNdviBarrier": nir_band is not None,
+            "lowNdviThreshold": 0.05,
+            "barrierGrowPixels": _barrier_grow_px,
+            "addedBarrierCapRatio": _ADD_CAP,
+        },
+    }
+
+
+def detect_trailer_components_for_exclusion(
+    data: np.ma.MaskedArray,
+    band_lookup: Dict[int, int],
+    *,
+    red_band: int,
+    green_band: int,
+    blue_band: int,
+    nir_band: Optional[int],
+    valid_pixels: np.ndarray,
+    strong_green_mask: np.ndarray,
+    hard_exclusion_mask: np.ndarray,
+    parcel_area_sqft: float,
+    transform: Any,
+    raster_crs: Any,
+    parcel_raster: BaseGeometry,
+    min_trailer_sqft: float = 30.0,
+    max_trailer_sqft: float = 12000.0,
+    max_green_fraction: float = 0.25,
+) -> Tuple[np.ndarray, Dict[str, Any]]:
+    """Component-level trailer/RV/metal object detector for medium_residential constrained mode.
+
+    Finds cohesive non-green objects (gray/silver trailers, RVs, rust-metal) in the size
+    range typical of vehicles/equipment and adds them to hard_exclusion_mask.  Operates at
+    the connected-component level so scattered non-green pixels don't trigger exclusion.
+
+    Returns (trailer_exclusion_mask, diagnostics).
+    Guard: only call when detection_preset=='medium_residential' and constrained_boundary_mode.
+    """
+    valid_pixels = np.asarray(valid_pixels, dtype=bool)
+    strong_green_mask = np.asarray(strong_green_mask, dtype=bool)
+    hard_exclusion_mask = np.asarray(hard_exclusion_mask, dtype=bool)
+
+    red   = np.asarray(data[band_lookup[red_band]].filled(0),   dtype=np.float32)
+    green = np.asarray(data[band_lookup[green_band]].filled(0), dtype=np.float32)
+    blue  = np.asarray(data[band_lookup[blue_band]].filled(0),  dtype=np.float32)
+    brightness   = (red + green + blue) / 3.0
+    saturation   = np.maximum.reduce([red, green, blue]) - np.minimum.reduce([red, green, blue])
+    excess_green = 2.0 * green - red - blue
+    abs_rg = np.abs(red - green)
+    abs_gb = np.abs(green - blue)
+    green_sum = red + green + blue
+    green_ratio = np.zeros_like(green, dtype=np.float32)
+    np.divide(green, green_sum, out=green_ratio, where=green_sum > 1e-6)
+
+    # NDVI array if NIR available (used for component-level verification)
+    ndvi_arr: Optional[np.ndarray] = None
+    if nir_band is not None and nir_band in band_lookup:
+        nir = np.asarray(data[band_lookup[nir_band]].filled(0), dtype=np.float32)
+        nd_denom = nir + red
+        ndvi_arr = np.zeros_like(red, dtype=np.float32)
+        np.divide(nir - red, nd_denom, out=ndvi_arr, where=np.abs(nd_denom) > 1e-6)
+
+    # Gray/silver/white trailers and metal roofs — achromatic to near-achromatic
+    trailer_gray = (
+        (brightness > 70.0)
+        & (brightness < 232.0)
+        & (saturation < 38.0)
+        & (excess_green < 3.0)
+        & (abs_rg < 26.0)
+        & (abs_gb < 26.0)
+    ) & valid_pixels
+
+    # Rust/orange/faded-red trailers and RV panels
+    trailer_rust = (
+        (brightness > 40.0)
+        & (brightness < 200.0)
+        & (saturation < 62.0)
+        & (excess_green < -2.0)
+        & (red >= green + 12.0)
+        & (green_ratio < 0.32)
+    ) & valid_pixels
+
+    # Combined candidate: not strongly green, not already hard-excluded (avoids re-labeling driveways)
+    trailer_candidate = (trailer_gray | trailer_rust) & ~strong_green_mask & ~hard_exclusion_mask & valid_pixels
+    if ndvi_arr is not None:
+        trailer_candidate = trailer_candidate & ~((ndvi_arr > 0.18) & valid_pixels)
+
+    _empty_result: Dict[str, Any] = {
+        "trailerExcludedPixels": 0,
+        "trailerExcludedAreaSqft": 0.0,
+        "trailerComponentCount": 0,
+        "trailerExclusionApplied": False,
+    }
+
+    if not np.any(trailer_candidate):
+        return np.zeros(valid_pixels.shape, dtype=bool), _empty_result
+
+    raw_geoms = vectorize_mask(
+        trailer_candidate,
+        transform=transform,
+        crs=raster_crs,
+        parcel_geom=parcel_raster,
+        min_area_sqft=max(5.0, min_trailer_sqft * 0.3),
+    )
+
+    if not raw_geoms:
+        return np.zeros(valid_pixels.shape, dtype=bool), _empty_result
+
+    valid_px_count = int(np.count_nonzero(valid_pixels))
+    area_per_px = parcel_area_sqft / valid_px_count if valid_px_count > 0 else 0.0
+    high_confidence_geoms: List[BaseGeometry] = []
+
+    for geom in raw_geoms:
+        comp_area = area_sqft(geom, raster_crs)
+        if comp_area < min_trailer_sqft or comp_area > max_trailer_sqft:
+            continue
+        comp_mask = rasterize_geometries([geom], out_shape=valid_pixels.shape, transform=transform)
+        comp_valid = comp_mask & valid_pixels
+        comp_px = int(np.count_nonzero(comp_valid))
+        if comp_px < 3:
+            continue
+        green_frac = float(np.count_nonzero(comp_valid & strong_green_mask)) / comp_px
+        if green_frac > max_green_fraction:
+            continue
+        mean_eg = float(np.mean(excess_green[comp_valid]))
+        mean_gr = float(np.mean(green_ratio[comp_valid]))
+        if mean_eg > 2.0 or mean_gr > 0.36:
+            continue
+        if ndvi_arr is not None:
+            mean_ndvi = float(np.mean(ndvi_arr[comp_valid]))
+            if mean_ndvi > 0.12:
+                continue
+        high_confidence_geoms.append(geom)
+
+    if not high_confidence_geoms:
+        return np.zeros(valid_pixels.shape, dtype=bool), _empty_result
+
+    trailer_mask = rasterize_geometries(high_confidence_geoms, out_shape=valid_pixels.shape, transform=transform)
+    trailer_mask = np.asarray(trailer_mask & valid_pixels & ~strong_green_mask, dtype=bool)
+    trailer_px = int(np.count_nonzero(trailer_mask))
+    return trailer_mask, {
+        "trailerExcludedPixels": trailer_px,
+        "trailerExcludedAreaSqft": round(trailer_px * area_per_px, 1),
+        "trailerComponentCount": len(high_confidence_geoms),
+        "trailerExclusionApplied": trailer_px > 0,
     }
 
 
@@ -1613,6 +2103,12 @@ def detect_mowable(args: argparse.Namespace) -> Dict[str, Any]:
             hardscape_excluded_ratio = (int(np.count_nonzero(hardscape_subtract_mask)) / valid_pixel_count) if valid_pixel_count > 0 else 0.0
         _hs_total_px = int(np.count_nonzero(hardscape_subtract_mask))
         print(f"[Vision] hardscape_subtract_mask total_px={_hs_total_px} of {valid_pixel_count} valid ratio={round(hardscape_excluded_ratio, 4)} retryReason={hardscape_retry_reason or 'none'}", flush=True)
+        if detection_preset == "medium_residential" and hardscape_excluded_ratio < 0.025 and valid_pixel_count > 0:
+            print(
+                f"[Vision] medium_residential WARNING: very low hardscapeExcludedRatio={round(hardscape_excluded_ratio, 4)}"
+                " — expected ≥ 0.025 for suburban lot; structure detection may be under-performing.",
+                flush=True,
+            )
         if detection_preset == "large_rural":
             ndvi_values = unique_float_sequence(args.ndvi_threshold, preset["ndviSweep"])
             visible_values = unique_float_sequence(args.visible_threshold, preset["visibleSweep"])
@@ -1633,7 +2129,23 @@ def detect_mowable(args: argparse.Namespace) -> Dict[str, Any]:
             min(500.0 if is_large_parcel else 250.0, parcel_area_sqft * 0.001),
         )
         effective_max_components = int(preset["maxComponents"])
-        effective_max_component_ratio = min(float(args.max_component_ratio), float(preset["maxComponentRatio"]))
+        constrained_boundary_mode = bool(getattr(args, "constrained_boundary_mode", False))
+        # medium_residential: preserve holes ≥ 200 sqft so small garages/sheds remain
+        # as cutouts rather than being filled back in by fill_polygon_holes.
+        # All other presets keep the 500-sqft default.
+        _min_hole_sqft = 200.0 if detection_preset == "medium_residential" else 500.0
+        if constrained_boundary_mode:
+            # Inside a user-selected mowable boundary, vegetation legitimately covers 80-95%
+            # of the remaining non-hardscape area after house/driveway removal. The preset's
+            # maxComponentRatio and maxDetectedRatio are calibrated for whole-parcel detection
+            # and would falsely reject valid lawn polygons inside the selected boundary.
+            effective_max_component_ratio = 0.97
+            max_detected_ratio = 0.97
+            hard_detected_ratio = 0.995
+        else:
+            effective_max_component_ratio = min(float(args.max_component_ratio), float(preset["maxComponentRatio"]))
+            max_detected_ratio = float(preset["maxDetectedRatio"])
+            hard_detected_ratio = float(preset["hardDetectedRatio"])
         # Adaptive morphological closing based on ground sample distance (GSD).
         # For 1m NAIP: ~6 px filling (~6m gaps); caps at 10 px to avoid over-merging.
         try:
@@ -1644,9 +2156,134 @@ def detect_mowable(args: argparse.Namespace) -> Dict[str, Any]:
             pixel_size_m = 1.0
         gsd_close_iters = max(6, min(int(preset["gsdCloseCap"]), int(round(8.0 / max(pixel_size_m, 0.3)))))
         merge_distance_m = max(5.0, min(10.0, pixel_size_m * 10.0))
-        max_detected_ratio = float(preset["maxDetectedRatio"])
-        hard_detected_ratio = float(preset["hardDetectedRatio"])
-        print(f"[Vision] parcel_area_sqft={round(parcel_area_sqft, 1)} detectionPreset={detection_preset} is_large_parcel={is_large_parcel} min_component_area_sqft={round(min_component_area_sqft, 1)} max_components={effective_max_components} max_component_ratio={effective_max_component_ratio} pixel_size_m={round(pixel_size_m, 3)} gsd_close_iters={gsd_close_iters} merge_distance_m={round(merge_distance_m, 1)}", flush=True)
+        print(f"[Vision] parcel_area_sqft={round(parcel_area_sqft, 1)} detectionPreset={detection_preset} constrained_boundary_mode={constrained_boundary_mode} is_large_parcel={is_large_parcel} min_component_area_sqft={round(min_component_area_sqft, 1)} max_components={effective_max_components} max_component_ratio={effective_max_component_ratio} max_detected_ratio={max_detected_ratio} pixel_size_m={round(pixel_size_m, 3)} gsd_close_iters={gsd_close_iters} merge_distance_m={round(merge_distance_m, 1)}", flush=True)
+
+        # Build morphology barrier mask: frozen during every binary_close so that
+        # trailers, gravel, metal roofs, and sheds cannot act as bridges between
+        # separate lawn components.  Computed once; reused across the threshold sweep.
+        # Returns (morphology_barrier_mask, hard_exclusion_mask, details).
+        # For medium_residential+constrained the two masks differ; otherwise identical.
+        morphology_barrier_mask, hard_exclusion_mask, morphology_barrier_details = build_morphology_barrier_mask(
+            data,
+            band_lookup,
+            red_band=args.red_band,
+            green_band=args.green_band,
+            blue_band=args.blue_band,
+            nir_band=nir_band,
+            valid_pixels=valid_pixels,
+            analysis_context=analysis_context,
+            hardscape_subtract_mask=hardscape_subtract_mask,
+            parcel_area_sqft=parcel_area_sqft,
+            constrained_boundary_mode=constrained_boundary_mode,
+            detection_preset=detection_preset,
+        )
+        morphology_barrier_mask = np.asarray(morphology_barrier_mask, dtype=bool)
+        hard_exclusion_mask = np.asarray(hard_exclusion_mask, dtype=bool)
+        _barrier_px   = morphology_barrier_details["morphologyBarrierPixels"]
+        _hs_px        = morphology_barrier_details["hardscapeBarrierPixels"]
+        _added_px     = morphology_barrier_details["addedBarrierPixels"]
+        _added_ratio  = morphology_barrier_details["addedBarrierRatio"]
+        _gravel_px    = morphology_barrier_details["gravelExcludedPixels"]
+        _obj_px       = morphology_barrier_details["largeObjectExcludedPixels"]
+        _too_broad    = morphology_barrier_details["barrierRejectedAsTooBroad"]
+        _capped       = morphology_barrier_details["barrierCapped"]
+        _hard_excl_px = morphology_barrier_details.get("hardExclusionPixels", _barrier_px)
+        _morph_only_px = morphology_barrier_details.get("morphologyOnlyBarrierPixels", 0)
+        _med_constrained_mode = morphology_barrier_details.get("mediumConstrainedBarrierMode", False)
+        print(
+            f"[Vision] morphology_barrier: frozen_px={_barrier_px} of {valid_pixel_count}"
+            f" hardscapeBarrierPixels={_hs_px}"
+            f" addedBarrierPixels={_added_px} addedBarrierRatio={_added_ratio}"
+            f" barrierCapped={_capped} barrierRejectedAsTooBroad={_too_broad}"
+            f" gravel_px={_gravel_px} large_obj_px={_obj_px}"
+            f" constrained={constrained_boundary_mode}"
+            f" medConstrainedBarrierMode={_med_constrained_mode}"
+            f" hardExcl_px={_hard_excl_px} morphOnlyBarrier_px={_morph_only_px}",
+            flush=True,
+        )
+        # DEBUG: dtype/shape/sample audit before boolean operations
+        _dbg_sample = morphology_barrier_mask[:10, :10] if morphology_barrier_mask.size >= 100 else morphology_barrier_mask
+        print(f"[Vision] DEBUG morphology_barrier_mask dtype={morphology_barrier_mask.dtype} shape={morphology_barrier_mask.shape} unique_sample={np.unique(_dbg_sample).tolist()}", flush=True)
+        _dbg_sample = hard_exclusion_mask[:10, :10] if hard_exclusion_mask.size >= 100 else hard_exclusion_mask
+        print(f"[Vision] DEBUG hard_exclusion_mask dtype={hard_exclusion_mask.dtype} shape={hard_exclusion_mask.shape} unique_sample={np.unique(_dbg_sample).tolist()}", flush=True)
+
+        # For medium_residential + constrained: compute strong-green mask used to
+        # rescue barrier-zone pixels that have clear vegetation evidence back into
+        # the final mowable output after morphology is complete.
+        _med_constrained = (detection_preset == "medium_residential" and constrained_boundary_mode)
+        if _med_constrained:
+            _sg_red = np.asarray(data[band_lookup[args.red_band]].filled(0), dtype=np.float32)
+            _sg_grn = np.asarray(data[band_lookup[args.green_band]].filled(0), dtype=np.float32)
+            _sg_blu = np.asarray(data[band_lookup[args.blue_band]].filled(0), dtype=np.float32)
+            _sg_eg  = 2.0 * _sg_grn - _sg_red - _sg_blu
+            _sg_sum = _sg_red + _sg_grn + _sg_blu
+            _sg_gr  = np.zeros_like(_sg_grn, dtype=np.float32)
+            np.divide(_sg_grn, _sg_sum, out=_sg_gr, where=_sg_sum > 1e-6)
+            # Grass-positive: lower thresholds so mixed grass/dirt/shadow pixels
+            # qualify for rescue — matches strong_green_evidence in barrier mask.
+            _strong_green = (_sg_eg > 2.0) | (_sg_gr > 0.34)
+            if nir_band is not None and nir_band in band_lookup:
+                _sg_nir = np.asarray(data[band_lookup[nir_band]].filled(0), dtype=np.float32)
+                _sg_nd_d = _sg_nir + _sg_red
+                _sg_ndvi = np.zeros_like(_sg_red, dtype=np.float32)
+                np.divide(_sg_nir - _sg_red, _sg_nd_d, out=_sg_ndvi, where=np.abs(_sg_nd_d) > 1e-6)
+                _strong_green = _strong_green | (_sg_ndvi > 0.10)
+            _strong_green = _strong_green & valid_pixels
+        else:
+            _strong_green = np.zeros(valid_pixels.shape, dtype=bool)
+        _strong_green = np.asarray(_strong_green, dtype=bool)
+        _dbg_sg = _strong_green[:10, :10] if _strong_green.size >= 100 else _strong_green
+        print(f"[Vision] DEBUG _strong_green dtype={_strong_green.dtype} shape={_strong_green.shape} unique_sample={np.unique(_dbg_sg).tolist()}", flush=True)
+
+        # Trailer/RV/metal component exclusion — medium_residential constrained only.
+        # grassPositiveMode: detection runs for diagnostics but result is NOT applied
+        # to hard_exclusion_mask.  Under-detecting grass is worse than over-detecting
+        # for launch; users can manually cut out trailers/gravel via Edit Area.
+        _trailer_excl_px = 0
+        _trailer_excl_area = 0.0
+        _trailer_comp_count = 0
+        _trailer_excl_applied = False
+        _trailer_diagnostic_only = False
+        if _med_constrained:
+            _trailer_mask_exc, _trailer_diag = detect_trailer_components_for_exclusion(
+                data, band_lookup,
+                red_band=args.red_band,
+                green_band=args.green_band,
+                blue_band=args.blue_band,
+                nir_band=nir_band,
+                valid_pixels=valid_pixels,
+                strong_green_mask=_strong_green,
+                hard_exclusion_mask=hard_exclusion_mask,
+                parcel_area_sqft=parcel_area_sqft,
+                transform=transform,
+                raster_crs=raster_crs,
+                parcel_raster=parcel_raster,
+            )
+            _trailer_excl_px = _trailer_diag["trailerExcludedPixels"]
+            _trailer_excl_area = _trailer_diag["trailerExcludedAreaSqft"]
+            _trailer_comp_count = _trailer_diag["trailerComponentCount"]
+            _trailer_excl_applied = _trailer_diag["trailerExclusionApplied"]
+            if _trailer_excl_applied:
+                # Diagnostic-only: do not subtract from hard_exclusion_mask.
+                _trailer_diagnostic_only = True
+                print(
+                    f"[Vision] trailerExclusion (diagnostic-only, grassPositiveMode):"
+                    f" components={_trailer_comp_count}"
+                    f" detected_px={_trailer_excl_px} detected_area_sqft={_trailer_excl_area}"
+                    f" — not applied to hard_exclusion_mask",
+                    flush=True,
+                )
+            else:
+                print("[Vision] trailerExclusion: no trailer components detected", flush=True)
+
+        # Accumulated rescue diagnostics (updated in each threshold iteration;
+        # final values reflect the last-evaluated candidate — good enough for logging).
+        _rescued_px_last = 0
+        _grass_before_he_last = 0
+        _grass_after_he_last = 0
+        _green_narrow_rescued_px_last = 0
+        _green_narrow_count_last = 0
+
         threshold_summary = {
             "detectionMode": thresholds_used["detectionMode"],
             "maxDetectedRatio": thresholds_used["maxDetectedRatio"],
@@ -1753,28 +2390,116 @@ def detect_mowable(args: argparse.Namespace) -> Dict[str, Any]:
                         diagnostics["detectionMode"] = preset["detectionMode"]
                         diagnostics["vegetationFilterApplied"] = True
                         diagnostics["retryReason"] = hardscape_retry_reason
-                        mowable = vegetation
+                        # Apply barrier BEFORE morphology so excluded zones are frozen
+                        # and binary_close cannot bridge lawn across them.
+                        # medium_residential+constrained: use hard_exclusion_mask for
+                        # initial subtraction (tight gate); morphology_barrier_mask
+                        # (broader) is still used during close to prevent bridging.
+                        _initial_excl = hard_exclusion_mask if _med_constrained else morphology_barrier_mask
+                        mowable = vegetation & ~_initial_excl
                         if sam_mask is not None:
-                            mowable = vegetation & sam_mask if args.combine == "intersect" else vegetation | sam_mask
+                            mowable = (vegetation & sam_mask if args.combine == "intersect" else vegetation | sam_mask) & ~_initial_excl
 
                         pre_filter_mowable = mowable.copy()
                         raw_mask_pixel_count = int(np.count_nonzero(mowable))
                         if opening_iterations:
-                            mowable = binary_open(mowable, opening_iterations) & valid_pixels
-                        mowable = binary_close(mowable, gsd_close_iters) & valid_pixels
+                            mowable = binary_open(mowable, opening_iterations) & valid_pixels & ~morphology_barrier_mask
+                        # Barrier re-applied after close: removes any pixels that grew
+                        # into the barrier zone during the dilate phase.
+                        mowable = binary_close(mowable, gsd_close_iters) & valid_pixels & ~morphology_barrier_mask
 
                         if args.sieve_size > 0:
                             mowable = sieve(mowable.astype(np.uint8), size=args.sieve_size).astype(bool)
-                            mowable = binary_close(mowable, max(2, gsd_close_iters // 2)) & valid_pixels
+                            mowable = binary_close(mowable, max(2, gsd_close_iters // 2)) & valid_pixels & ~morphology_barrier_mask
                             background = (~mowable) & valid_pixels
                             cleaned_background = sieve(
                                 background.astype(np.uint8),
                                 size=max(int(args.sieve_size) * 6, 256),
                             ).astype(bool)
-                            mowable = (~cleaned_background) & valid_pixels
+                            mowable = (~cleaned_background) & valid_pixels & ~morphology_barrier_mask
+
+                        # medium_residential+constrained: rescue green pixels that were
+                        # in the morphology-only barrier zone (broader minus tight gate).
+                        # They were excluded during close to prevent bridging but should
+                        # appear in the final output if they have strong vegetation evidence.
+                        if _med_constrained:
+                            _morph_only = morphology_barrier_mask & ~hard_exclusion_mask & valid_pixels
+                            _rescued = _strong_green & _morph_only
+                            _rescued_px_last = int(np.count_nonzero(_rescued))
+                            _grass_before_he_last = int(np.count_nonzero(mowable))
+                            mowable = (mowable | _rescued) & ~hard_exclusion_mask & valid_pixels
+                            _grass_after_he_last = int(np.count_nonzero(mowable))
+                            _apx = parcel_area_sqft / valid_pixel_count if valid_pixel_count > 0 else 0.0
+                            print(
+                                f"[Vision] medConstrainedBarrier (primary):"
+                                f" hardExcl_px={_hard_excl_px}"
+                                f" morphOnlyBarrier_px={_morph_only_px}"
+                                f" rescued_px={_rescued_px_last}"
+                                f" grassBefore={_grass_before_he_last} ({round(_grass_before_he_last * _apx, 1)} sqft)"
+                                f" grassAfter={_grass_after_he_last} ({round(_grass_after_he_last * _apx, 1)} sqft)",
+                                flush=True,
+                            )
+
+                        # Green narrow/tip component rescue — medium_residential constrained only.
+                        # Finds strongly-green pixels eroded or sieved away during morphology
+                        # (they are in _strong_green but absent from mowable) and adds them back
+                        # as small components before final evaluation.  Keeps them inside the
+                        # selected boundary, away from hard-excluded zones.
+                        _green_narrow_rescued_px_iter = 0
+                        _green_narrow_count_iter = 0
+                        if _med_constrained:
+                            _narrow_pool = (
+                                _strong_green & ~hard_exclusion_mask & valid_pixels & ~mowable
+                            )
+                            if np.any(_narrow_pool):
+                                _narrow_raw_geoms = vectorize_mask(
+                                    _narrow_pool,
+                                    transform=transform,
+                                    crs=raster_crs,
+                                    parcel_geom=parcel_raster,
+                                    min_area_sqft=15.0,
+                                )
+                                _narrow_to_add: List[BaseGeometry] = []
+                                for _ng in _narrow_raw_geoms:
+                                    _ng_area = area_sqft(_ng, raster_crs)
+                                    if _ng_area < 15.0 or _ng_area > min_component_area_sqft * 4.0:
+                                        continue
+                                    _ng_m = rasterize_geometries(
+                                        [_ng], out_shape=mowable.shape, transform=transform
+                                    )
+                                    _ng_px = int(np.count_nonzero(_ng_m & valid_pixels))
+                                    if _ng_px < 2:
+                                        continue
+                                    _ng_gf = float(np.count_nonzero(_ng_m & _strong_green)) / max(_ng_px, 1)
+                                    if _ng_gf >= 0.40:
+                                        _narrow_to_add.append(_ng)
+                                if _narrow_to_add:
+                                    _nr_mask = rasterize_geometries(
+                                        _narrow_to_add, out_shape=mowable.shape, transform=transform
+                                    )
+                                    _nr_mask = np.asarray(
+                                        _nr_mask & ~hard_exclusion_mask & valid_pixels, dtype=bool
+                                    )
+                                    _green_narrow_rescued_px_iter = int(np.count_nonzero(_nr_mask))
+                                    _green_narrow_count_iter = len(_narrow_to_add)
+                                    mowable = (mowable | _nr_mask) & ~hard_exclusion_mask & valid_pixels
+                            _green_narrow_rescued_px_last = _green_narrow_rescued_px_iter
+                            _green_narrow_count_last = _green_narrow_count_iter
+                            _apx = parcel_area_sqft / valid_pixel_count if valid_pixel_count > 0 else 0.0
+                            print(
+                                f"[Vision] greenNarrowRescue (primary):"
+                                f" rescued_geoms={_green_narrow_count_last}"
+                                f" rescued_px={_green_narrow_rescued_px_last}"
+                                f" ({round(_green_narrow_rescued_px_last * _apx, 1)} sqft)",
+                                flush=True,
+                            )
 
                         _hs_px_before = int(np.count_nonzero(mowable & hardscape_subtract_mask))
                         mowable = mowable & ~hardscape_subtract_mask & valid_pixels
+                        _mc_min_area = (
+                            max(40.0, min_component_area_sqft * 0.40)
+                            if _med_constrained else min_component_area_sqft
+                        )
                         candidate = evaluate_mask_candidate(
                             mowable,
                             diagnostics,
@@ -1783,7 +2508,7 @@ def detect_mowable(args: argparse.Namespace) -> Dict[str, Any]:
                             parcel_raster=parcel_raster,
                             parcel_area_sqft=parcel_area_sqft,
                             context=analysis_context,
-                            min_component_area_sqft=min_component_area_sqft,
+                            min_component_area_sqft=_mc_min_area,
                             max_component_ratio=effective_max_component_ratio,
                             max_detected_ratio=max_detected_ratio,
                             hard_detected_ratio=hard_detected_ratio,
@@ -1793,6 +2518,7 @@ def detect_mowable(args: argparse.Namespace) -> Dict[str, Any]:
                             fallback_mode=False,
                             max_components=effective_max_components,
                             merge_distance_m=merge_distance_m,
+                            min_hole_sqft=_min_hole_sqft,
                         )
                         candidate["requestedNdviThreshold"] = round(float(ndvi_threshold), 3)
                         candidate["hardscapePixelsBeforeSubtract"] = _hs_px_before
@@ -1802,6 +2528,18 @@ def detect_mowable(args: argparse.Namespace) -> Dict[str, Any]:
                         candidate["remainderAreaSqft"] = candidate["detectedAreaSqft"]
                         candidate["vegetationFilterApplied"] = True
                         candidate["retryReason"] = hardscape_retry_reason
+                        if _med_constrained:
+                            _apx_c = parcel_area_sqft / valid_pixel_count if valid_pixel_count > 0 else 0.0
+                            candidate["trailerExcludedPixels"] = _trailer_excl_px
+                            candidate["trailerExcludedAreaSqft"] = _trailer_excl_area
+                            candidate["trailerComponentCount"] = _trailer_comp_count
+                            candidate["trailerExclusionApplied"] = _trailer_excl_applied
+                            candidate["greenNarrowComponentsRescued"] = _green_narrow_count_iter
+                            candidate["greenNarrowRescueAreaSqft"] = round(_green_narrow_rescued_px_iter * _apx_c, 1)
+                            candidate["edgeGrassRescueApplied"] = _green_narrow_rescued_px_iter > 0
+                            candidate["grassPositiveMode"] = True
+                            candidate["objectExclusionConservative"] = True
+                            candidate["objectDetectionDiagnosticOnly"] = _trailer_diagnostic_only
                         candidate_results.append(candidate)
 
         preferred = [
@@ -1845,22 +2583,96 @@ def detect_mowable(args: argparse.Namespace) -> Dict[str, Any]:
             soft_diagnostics["detectionMode"] = preset["detectionMode"]
             soft_diagnostics["vegetationFilterApplied"] = True
             soft_diagnostics["retryReason"] = hardscape_retry_reason
-            soft_mowable = soft_vegetation & ~analysis_context["hardSurface"]
+            # Barrier frozen during soft-fallback morphology too.
+            # medium_residential+constrained: same split-barrier approach as primary path.
+            _sf_initial_excl = hard_exclusion_mask if _med_constrained else morphology_barrier_mask
+            soft_mowable = soft_vegetation & ~analysis_context["hardSurface"] & ~_sf_initial_excl
             if sam_mask is not None:
-                soft_mowable = soft_mowable & sam_mask if args.combine == "intersect" else soft_mowable | sam_mask
+                soft_mowable = (soft_mowable & sam_mask if args.combine == "intersect" else soft_mowable | sam_mask) & ~_sf_initial_excl
             soft_pre_filter_mowable = soft_mowable.copy()
             soft_raw_mask_pixel_count = int(np.count_nonzero(soft_mowable))
             soft_close_iters = max(gsd_close_iters, gsd_close_iters + 2)
-            soft_mowable = binary_close(soft_mowable, soft_close_iters) & valid_pixels
+            soft_mowable = binary_close(soft_mowable, soft_close_iters) & valid_pixels & ~morphology_barrier_mask
             if args.sieve_size > 0:
                 soft_mowable = sieve(
                     soft_mowable.astype(np.uint8),
                     size=max(16, int(args.sieve_size) // 2),
                 ).astype(bool)
-                soft_mowable = binary_close(soft_mowable, max(3, gsd_close_iters // 2)) & valid_pixels
+                soft_mowable = binary_close(soft_mowable, max(3, gsd_close_iters // 2)) & valid_pixels & ~morphology_barrier_mask
+
+            # Rescue green pixels from morphology-only barrier zone (soft-fallback).
+            if _med_constrained:
+                _sf_morph_only = morphology_barrier_mask & ~hard_exclusion_mask & valid_pixels
+                _sf_rescued = _strong_green & _sf_morph_only
+                _rescued_px_last = int(np.count_nonzero(_sf_rescued))
+                _grass_before_he_last = int(np.count_nonzero(soft_mowable))
+                soft_mowable = (soft_mowable | _sf_rescued) & ~hard_exclusion_mask & valid_pixels
+                _grass_after_he_last = int(np.count_nonzero(soft_mowable))
+                _apx = parcel_area_sqft / valid_pixel_count if valid_pixel_count > 0 else 0.0
+                print(
+                    f"[Vision] medConstrainedBarrier (soft-fallback):"
+                    f" rescued_px={_rescued_px_last}"
+                    f" grassBefore={_grass_before_he_last} ({round(_grass_before_he_last * _apx, 1)} sqft)"
+                    f" grassAfter={_grass_after_he_last} ({round(_grass_after_he_last * _apx, 1)} sqft)",
+                    flush=True,
+                )
+
+            # Green narrow/tip rescue (soft-fallback path)
+            _sf_green_narrow_rescued_px = 0
+            _sf_green_narrow_count = 0
+            if _med_constrained:
+                _sf_narrow_pool = (
+                    _strong_green & ~hard_exclusion_mask & valid_pixels & ~soft_mowable
+                )
+                if np.any(_sf_narrow_pool):
+                    _sf_narrow_geoms = vectorize_mask(
+                        _sf_narrow_pool,
+                        transform=transform,
+                        crs=raster_crs,
+                        parcel_geom=parcel_raster,
+                        min_area_sqft=15.0,
+                    )
+                    _sf_narrow_to_add: List[BaseGeometry] = []
+                    for _sng in _sf_narrow_geoms:
+                        _sng_area = area_sqft(_sng, raster_crs)
+                        if _sng_area < 15.0 or _sng_area > min_component_area_sqft * 4.0:
+                            continue
+                        _sng_m = rasterize_geometries(
+                            [_sng], out_shape=soft_mowable.shape, transform=transform
+                        )
+                        _sng_px = int(np.count_nonzero(_sng_m & valid_pixels))
+                        if _sng_px < 2:
+                            continue
+                        _sng_gf = float(np.count_nonzero(_sng_m & _strong_green)) / max(_sng_px, 1)
+                        if _sng_gf >= 0.40:
+                            _sf_narrow_to_add.append(_sng)
+                    if _sf_narrow_to_add:
+                        _sf_nr_mask = rasterize_geometries(
+                            _sf_narrow_to_add, out_shape=soft_mowable.shape, transform=transform
+                        )
+                        _sf_nr_mask = np.asarray(
+                            _sf_nr_mask & ~hard_exclusion_mask & valid_pixels, dtype=bool
+                        )
+                        _sf_green_narrow_rescued_px = int(np.count_nonzero(_sf_nr_mask))
+                        _sf_green_narrow_count = len(_sf_narrow_to_add)
+                        soft_mowable = (soft_mowable | _sf_nr_mask) & ~hard_exclusion_mask & valid_pixels
+                _green_narrow_rescued_px_last = _sf_green_narrow_rescued_px
+                _green_narrow_count_last = _sf_green_narrow_count
+                _apx = parcel_area_sqft / valid_pixel_count if valid_pixel_count > 0 else 0.0
+                print(
+                    f"[Vision] greenNarrowRescue (soft-fallback):"
+                    f" rescued_geoms={_sf_green_narrow_count}"
+                    f" rescued_px={_sf_green_narrow_rescued_px}"
+                    f" ({round(_sf_green_narrow_rescued_px * _apx, 1)} sqft)",
+                    flush=True,
+                )
 
             _hs_sf_before = int(np.count_nonzero(soft_mowable & hardscape_subtract_mask))
             soft_mowable = soft_mowable & ~hardscape_subtract_mask & valid_pixels
+            _mc_min_area_sf = (
+                max(40.0, min_component_area_sqft * 0.40)
+                if _med_constrained else min_component_area_sqft
+            )
             soft_candidate = evaluate_mask_candidate(
                 soft_mowable,
                 soft_diagnostics,
@@ -1869,7 +2681,7 @@ def detect_mowable(args: argparse.Namespace) -> Dict[str, Any]:
                 parcel_raster=parcel_raster,
                 parcel_area_sqft=parcel_area_sqft,
                 context=analysis_context,
-                min_component_area_sqft=min_component_area_sqft,
+                min_component_area_sqft=_mc_min_area_sf,
                 max_component_ratio=effective_max_component_ratio,
                 max_detected_ratio=max_detected_ratio,
                 hard_detected_ratio=hard_detected_ratio,
@@ -1879,11 +2691,24 @@ def detect_mowable(args: argparse.Namespace) -> Dict[str, Any]:
                 fallback_mode=True,
                 max_components=3,
                 merge_distance_m=merge_distance_m,
+                min_hole_sqft=_min_hole_sqft,
             )
             soft_candidate["requestedNdviThreshold"] = round(float(args.ndvi_threshold), 3)
             soft_candidate["hardscapePixelsBeforeSubtract"] = _hs_sf_before
             soft_candidate["hardscapePixelsSubtracted"] = _hs_sf_before
             soft_candidate["finalPixelsAfterHardscapeSubtract"] = int(np.count_nonzero(soft_mowable))
+            if _med_constrained:
+                _apx_csf = parcel_area_sqft / valid_pixel_count if valid_pixel_count > 0 else 0.0
+                soft_candidate["trailerExcludedPixels"] = _trailer_excl_px
+                soft_candidate["trailerExcludedAreaSqft"] = _trailer_excl_area
+                soft_candidate["trailerComponentCount"] = _trailer_comp_count
+                soft_candidate["trailerExclusionApplied"] = _trailer_excl_applied
+                soft_candidate["greenNarrowComponentsRescued"] = _sf_green_narrow_count
+                soft_candidate["greenNarrowRescueAreaSqft"] = round(_sf_green_narrow_rescued_px * _apx_csf, 1)
+                soft_candidate["edgeGrassRescueApplied"] = _sf_green_narrow_rescued_px > 0
+                soft_candidate["grassPositiveMode"] = True
+                soft_candidate["objectExclusionConservative"] = True
+                soft_candidate["objectDetectionDiagnosticOnly"] = _trailer_diagnostic_only
             candidate_results.append(soft_candidate)
             if not soft_candidate["rejectReason"] and (
                 selected is None
@@ -1922,6 +2747,43 @@ def detect_mowable(args: argparse.Namespace) -> Dict[str, Any]:
             component_areas = [round(area_sqft(geom, raster_crs), 2) for geom in geoms] if rough_candidate_geoms else selected["componentAreas"]
             rejected_components = selected["rejectedComponents"]
             vegetation_pixels = int(np.count_nonzero(rasterize_geometries(geoms, out_shape=data.shape[1:], transform=transform))) if rough_candidate_geoms else int(selected["vegetationPixels"])
+            mask_diagnostics = selected["diagnostics"]
+            mowable = rasterize_geometries(geoms, out_shape=data.shape[1:], transform=transform) & valid_pixels if low_confidence_candidate_returned else np.zeros(data.shape[1:], dtype=bool)
+        elif constrained_boundary_mode and selected and selected.get("rejectReason"):
+            # Constrained-boundary safety net: accept the best available candidate as an
+            # editable low-confidence result when hardscape exclusion evidence is present.
+            # Primary path: the threshold relaxation above (0.97) already prevents rejection
+            # for typical cases; this fires only for remaining edge cases (e.g. ratio >=0.97).
+            _cand_ratio = float(selected.get("detectedRatio", 0))
+            _has_excl = bool(selected.get("hasExclusionEvidence", False)) or bool(selected.get("hasStrongExclusionEvidence", False))
+            _cand_px = int(selected.get("vegetationCandidatePixels") or selected.get("rawVegetationPixels") or 0)
+            constrained_fallback_geoms: List[BaseGeometry] = selected.get("geoms") or []
+            if not constrained_fallback_geoms and _has_excl and _cand_ratio > 0 and _cand_ratio < 0.995 and _cand_px > 0:
+                _raw_mask = selected.get("maskBeforeFilter")
+                if _raw_mask is None or not isinstance(_raw_mask, np.ndarray):
+                    _raw_mask = selected.get("mask")
+                if isinstance(_raw_mask, np.ndarray):
+                    _raw_mask = binary_close(_raw_mask.astype(bool), 3) & valid_pixels & ~hardscape_subtract_mask
+                    constrained_fallback_geoms = vectorize_mask(
+                        _raw_mask,
+                        transform=transform,
+                        crs=raster_crs,
+                        parcel_geom=parcel_raster,
+                        min_area_sqft=max(50.0, min_component_area_sqft * 0.5),
+                    )
+                    constrained_fallback_geoms.sort(key=lambda geom: area_sqft(geom, raster_crs), reverse=True)
+                    constrained_fallback_geoms = constrained_fallback_geoms[:MAX_COMPONENTS_TO_KEEP]
+            if constrained_fallback_geoms and (_has_excl or _cand_ratio < 0.995):
+                geoms = constrained_fallback_geoms
+                low_confidence_candidate_returned = True
+                selected["finalAcceptReason"] = "constrained boundary accepted with hardscape exclusion evidence"
+                print(f"[Vision] constrained fallback: rejectReason={selected.get('rejectReason')} ratio={_cand_ratio} hasExclEvidence={_has_excl} geomCount={len(geoms)}", flush=True)
+            else:
+                geoms = []
+                print(f"[Vision] constrained fallback skipped: rejectReason={selected.get('rejectReason')} ratio={_cand_ratio} hasExclEvidence={_has_excl} cand_px={_cand_px}", flush=True)
+            component_areas = [round(area_sqft(geom, raster_crs), 2) for geom in geoms] if constrained_fallback_geoms else selected["componentAreas"]
+            rejected_components = selected["rejectedComponents"]
+            vegetation_pixels = int(np.count_nonzero(rasterize_geometries(geoms, out_shape=data.shape[1:], transform=transform))) if constrained_fallback_geoms else int(selected.get("vegetationPixels", 0))
             mask_diagnostics = selected["diagnostics"]
             mowable = rasterize_geometries(geoms, out_shape=data.shape[1:], transform=transform) & valid_pixels if low_confidence_candidate_returned else np.zeros(data.shape[1:], dtype=bool)
         elif selected and not selected["rejectReason"]:
@@ -2053,6 +2915,17 @@ def detect_mowable(args: argparse.Namespace) -> Dict[str, Any]:
         }
         for candidate in sorted(candidate_results, key=lambda item: float(item["score"]), reverse=True)
     ]
+    if _med_constrained:
+        print(
+            f"[Vision] medConstrained_summary:"
+            f" trailerExcluded_sqft={_trailer_excl_area} trailerComponents={_trailer_comp_count}"
+            f" greenNarrowRescued_sqft={round(_green_narrow_rescued_px_last * (parcel_area_sqft / valid_pixel_count if valid_pixel_count > 0 else 0.0), 1)}"
+            f" greenNarrowComponents={_green_narrow_count_last}"
+            f" finalDetected_sqft={round(detected_area_sqft, 1)}"
+            f" features={len(geoms)}"
+            f" rejectReason={selected.get('rejectReason', '') if selected else 'no candidates'}",
+            flush=True,
+        )
     print(
         "[Vision] geospatial_summary "
         f"preset={detection_preset} mode={mask_diagnostics.get('detectionMode', mode)} "
@@ -2155,6 +3028,48 @@ def detect_mowable(args: argparse.Namespace) -> Dict[str, Any]:
             "averageComponentScore": selected.get("averageComponentScore") if selected else None,
             "fallbackMode": selected.get("fallbackMode") if selected else False,
         },
+        "constrainedBoundaryMode": constrained_boundary_mode,
+        "finalAcceptReason": selected.get("finalAcceptReason", "") if selected else "",
+        "gravelExcludedPixels": morphology_barrier_details.get("gravelExcludedPixels", 0),
+        "gravelExcludedAreaSqft": morphology_barrier_details.get("gravelExcludedAreaSqft", 0.0),
+        "largeObjectExcludedPixels": morphology_barrier_details.get("largeObjectExcludedPixels", 0),
+        "largeObjectExcludedAreaSqft": morphology_barrier_details.get("largeObjectExcludedAreaSqft", 0.0),
+        "frozenExclusionPixels": morphology_barrier_details.get("frozenExclusionPixels", 0),
+        "morphologyBarrierPixels": morphology_barrier_details.get("morphologyBarrierPixels", 0),
+        "hardscapeBarrierPixels": morphology_barrier_details.get("hardscapeBarrierPixels", 0),
+        "addedBarrierPixels": morphology_barrier_details.get("addedBarrierPixels", 0),
+        "addedBarrierRatio": morphology_barrier_details.get("addedBarrierRatio", 0.0),
+        "barrierCapped": morphology_barrier_details.get("barrierCapped", False),
+        "barrierRejectedAsTooBroad": morphology_barrier_details.get("barrierRejectedAsTooBroad", False),
+        "exclusionBarrierApplied": True,
+        "hardExclusionPixels": morphology_barrier_details.get("hardExclusionPixels", 0),
+        "hardExclusionAreaSqft": morphology_barrier_details.get("hardExclusionAreaSqft", 0.0),
+        "morphologyOnlyBarrierPixels": morphology_barrier_details.get("morphologyOnlyBarrierPixels", 0),
+        "morphologyOnlyBarrierAreaSqft": morphology_barrier_details.get("morphologyOnlyBarrierAreaSqft", 0.0),
+        "mediumConstrainedBarrierMode": _med_constrained_mode,
+        "greenPixelsRescuedFromBarrier": _rescued_px_last,
+        "finalGrassPixelsBeforeHardExclusion": _grass_before_he_last,
+        "finalGrassPixelsAfterHardExclusion": _grass_after_he_last,
+        "exclusionRules": morphology_barrier_details.get("exclusionRules", {}),
+        # structureExcludedPixels: total pixels frozen as non-mowable structures
+        # (hardscape subtract mask + barrier-only additions).  Useful for confirming
+        # that roofs/driveways are being detected before vegetation analysis.
+        "structureExcludedPixels": _hs_total_px + morphology_barrier_details.get("addedBarrierPixels", 0),
+        "structureExcludedAreaSqft": round(
+            (_hs_total_px + morphology_barrier_details.get("addedBarrierPixels", 0))
+            * (parcel_area_sqft / valid_pixel_count if valid_pixel_count > 0 else 0.0),
+            1,
+        ),
+        "grassPositiveMode": _med_constrained,
+        "objectExclusionConservative": _med_constrained,
+        "objectDetectionDiagnosticOnly": _trailer_diagnostic_only if _med_constrained else False,
+        "rescuedGrassAreaSqft": round(
+            (_rescued_px_last + _green_narrow_rescued_px_last)
+            * (parcel_area_sqft / valid_pixel_count if valid_pixel_count > 0 else 0.0),
+            1,
+        ),
+        "rescuedGrassComponentCount": _green_narrow_count_last,
+        "finalDetectedAreaSqft": round(detected_area_sqft, 2),
         "output": args.output,
         "maskOutput": args.mask_output,
     }

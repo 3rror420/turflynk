@@ -16,7 +16,9 @@
       <input name="fullName" placeholder="Full Name" required />
       <input name="email" type="email" placeholder="Email" autocomplete="email" required />
       <input name="phone" type="tel" inputmode="tel" placeholder="Phone" autocomplete="tel" required />
-      <input name="password" type="password" placeholder="Password" autocomplete="new-password" required />
+      <input name="password" type="password" placeholder="Password" autocomplete="new-password" minlength="8" required />
+      <input name="confirmPassword" type="password" placeholder="Confirm Password" autocomplete="new-password" minlength="8" required />
+      <p style="color:var(--muted);font-size:0.85em;margin:0">Use at least 8 characters.</p>
       <button class="btn primary ui-icon-btn" type="submit"><img src="/assets/icons/lucide/user.svg" alt="" class="ui-icon"><span class="ui-label">Create Account &amp; Book</span></button>
     </form>
     <button class="btn ghost ui-icon-btn" type="button" id="closeAuthGateBtn" style="width:100%"><img src="/assets/icons/lucide/x.svg" alt="" class="ui-icon"><span class="ui-label">Cancel</span></button>
@@ -57,7 +59,9 @@
     <input name="fullName" placeholder="Full Name" autocomplete="name" required />
     <input name="email" type="email" placeholder="Email" autocomplete="email" required />
     <input name="phone" type="tel" inputmode="tel" placeholder="Phone" autocomplete="tel" required />
-    <input name="password" type="password" placeholder="Password" autocomplete="new-password" required />
+    <input name="password" type="password" placeholder="Password" autocomplete="new-password" minlength="8" required />
+    <input name="confirmPassword" type="password" placeholder="Confirm Password" autocomplete="new-password" minlength="8" required />
+    <p style="color:var(--muted);font-size:0.85em;margin:0">Use at least 8 characters.</p>
 
     <select name="role">
       <option value="customer">Customer</option>

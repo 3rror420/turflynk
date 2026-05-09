@@ -580,15 +580,12 @@
   }
 
   function weatherSchedulerPanelIsActive() {
-    const panel = document.getElementById("leadRequestPanel");
     const quoteStep = document.body?.dataset?.quoteFlowStep || getAppState()?.quoteFlowStep || "";
-    const visiblePanel = Boolean(
-      panel
-      && !panel.hidden
-      && !panel.classList.contains("hidden")
-      && panel.getAttribute("aria-hidden") !== "true"
-    );
-    return visiblePanel || quoteStep === "request";
+    const panelVisible = (id) => {
+      const el = document.getElementById(id);
+      return Boolean(el && !el.hidden && !el.classList.contains("hidden") && el.getAttribute("aria-hidden") !== "true");
+    };
+    return panelVisible("leadRequestPanel") || panelVisible("manualQuotePanel") || quoteStep === "request";
   }
 
   function findScheduleAnchor() {
@@ -596,6 +593,11 @@
       "#leadRequestPanel:not(.hidden) #leadRequestForm .preferred-days-grid, #leadRequestPanel[aria-hidden='false'] #leadRequestForm .preferred-days-grid"
     );
     if (checkoutPreferred) return checkoutPreferred;
+
+    const manualPreferred = document.querySelector(
+      "#manualQuotePanel:not(.hidden) #manualQuoteForm .preferred-days-grid, #manualQuotePanel[aria-hidden='false'] #manualQuoteForm .preferred-days-grid"
+    );
+    if (manualPreferred) return manualPreferred;
 
     const preferred = document.querySelector(
       "#preferredDays, #preferred-days, [data-preferred-days], .preferred-days-grid, .preferred-days, .service-days, .schedule-days"
@@ -822,13 +824,14 @@
           return false;
         }
         if (target === document.body) return true;
-        if (target?.id === "leadRequestPanel") return true;
+        if (target?.id === "leadRequestPanel" || target?.id === "manualQuotePanel") return true;
         if (target?.classList?.contains("preferred-days-grid")) return true;
         return Array.from(mutation.addedNodes || []).some((node) => (
           node.nodeType === 1
           && !node.closest?.("#mownwaWeatherScheduler")
           && (
             node.id === "leadRequestPanel"
+            || node.id === "manualQuotePanel"
             || node.matches?.(".preferred-days-grid, [data-preferred-days]")
             || node.querySelector?.(".preferred-days-grid, [data-preferred-days], input[name='available_days_json']")
           )
