@@ -134,3 +134,12 @@ playwright-report/
 test-results/
 coverage/
 
+
+# local backups / generated
+*.tar.gz
+*.zip
+*.original.*
+__pycache__/
+*.pyc
+REFRESH-NOTES.md
+MowNWA Premium Refresh Preview.html

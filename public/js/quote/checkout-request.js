@@ -213,7 +213,8 @@ setTimeout(() => {
   const submitBtn = byId('leadSubmitBtn');
   if (submitBtn) {
     submitBtn.disabled = false;
-    submitBtn.textContent = 'Book & Pay Securely';
+    const submitLabel = submitBtn.querySelector('.ui-label');
+    if (submitLabel) submitLabel.textContent = 'Book & Pay Securely';
   }
   const scopeGrid = byId('leadScopeGrid');
   if (scopeGrid) {
@@ -236,6 +237,11 @@ setTimeout(() => {
   checkoutRefreshMapPreview('checkout-request-visible');
   window.turflynkCanvasDiagnostics?.('checkout open');
   updateQuoteStepper();
+
+  // Scroll panel into view so users on desktop (where the button is below the fold) see the form
+  requestAnimationFrame(() => {
+    panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
 
   // Fill blank customer fields from logged-in user profile (does not overwrite typed values)
   hydrateLeadFormFromUser(state.currentUser);
@@ -646,8 +652,9 @@ checkoutBindOnce(byId('manualQuoteForm'), 'submit', 'manual-quote-form-submit', 
     const missing = [];
     if (!payload.name) missing.push('name');
     if (!isValidLookingPhone(payload.phone)) missing.push('phone');
+    const manualEmail = String(payload.email || '').trim();
+    if (!manualEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(manualEmail)) missing.push('a valid email address');
     if (!payload.preferredContactMethod) missing.push('preferred contact method');
-    if (!String(payload.notes || '').trim()) missing.push('notes');
     if (missing.length) {
       if (missing.includes('phone')) showPhoneRequiredError('manualQuoteResult');
       else showError(`Add ${missing.join(', ')} to request an in-person quote.`);
@@ -819,13 +826,17 @@ checkoutBindOnce(byId('leadRequestForm'), 'submit', 'lead-request-form-submit', 
       else showError(`Add ${missing.join(', ')} to ${isPayOnsite ? 'reserve and pay onsite' : 'continue to secure checkout'}.`);
       return;
     }
-    if (!smsConsentAccepted(bookingQuote)) {
+    if (isPayOnsite && !smsConsentAccepted(bookingQuote)) {
       showSmsConsentRequiredError('leadRequestResult', form);
       return;
     }
 
     // Validation passed — disable button now
-    if (btn) { btn.disabled = true; btn.textContent = isPayOnsite ? 'Reserving...' : 'Opening checkout...'; }
+    if (btn) {
+      btn.disabled = true;
+      const btnLabel = btn.querySelector('.ui-label') || btn;
+      btnLabel.textContent = isPayOnsite ? 'Reserving...' : 'Opening checkout...';
+    }
 
     state.lastQuote = bookingQuote;
     state.pendingQuote = bookingQuote;
@@ -838,7 +849,11 @@ checkoutBindOnce(byId('leadRequestForm'), 'submit', 'lead-request-form-submit', 
       result.classList.remove('hidden');
     }
     showError(err.message);
-    if (btn) { btn.disabled = false; btn.textContent = isPayOnsite ? 'Reserve & Pay Onsite' : 'Book & Pay Securely'; }
+    if (btn) {
+      btn.disabled = false;
+      const btnLabel = btn.querySelector('.ui-label') || btn;
+      btnLabel.textContent = isPayOnsite ? 'Reserve & Pay Onsite' : 'Book & Pay Securely';
+    }
   }
 });
 
@@ -1379,12 +1394,14 @@ function clearCheckoutContactConflict() {
   const submitBtn = byId('leadSubmitBtn');
   if (submitBtn) {
     submitBtn.disabled = false;
-    submitBtn.textContent = 'Book & Pay Securely';
+    const submitLabel = submitBtn.querySelector('.ui-label');
+    if (submitLabel) submitLabel.textContent = 'Book & Pay Securely';
   }
   const payOnsiteBtn = byId('leadPayOnsiteBtn');
   if (payOnsiteBtn) {
     payOnsiteBtn.disabled = false;
-    payOnsiteBtn.textContent = 'Reserve & Pay Onsite';
+    const payOnsiteLabel = payOnsiteBtn.querySelector('.ui-label');
+    if (payOnsiteLabel) payOnsiteLabel.textContent = 'Reserve & Pay Onsite';
   }
 }
 
@@ -1551,6 +1568,131 @@ checkoutBindOnce(document, 'click', 'checkout-cod-verification-actions', async (
   }
 });
 
+/* ─────────────────────────────────────────────────────────────────────────
+   RESERVE & PAY ONSITE — separate consent + verification flow
+───────────────────────────────────────────────────────────────────────── */
+
+function onsiteConsentPanelHtml(quote) {
+  const estimate = Number(quote.estimate || quote.final_price || 0);
+  const address = quote.address || '';
+  return `
+    <div class="onsite-consent-panel stack" data-onsite-consent-panel style="gap:12px;padding:12px 0">
+      <strong style="font-size:1.05em">Reserve &amp; Pay Onsite</strong>
+      ${estimate > 0 ? `<div class="price-hero compact" style="margin:0"><span>Estimate</span><strong>${escapeHtml(money(estimate))}</strong></div>` : ''}
+      ${address ? `<p class="meta" style="margin:0">${escapeHtml(address)}</p>` : ''}
+      <p class="meta" style="margin:0">Cash or check is collected at time of service. Phone verification is required before your reservation is confirmed.</p>
+      <label class="sms-consent-control">
+        <input type="checkbox" id="onsiteSmsConsentCheck" data-onsite-sms-consent />
+        <span>${escapeHtml(SMS_CONSENT_TEXT)}</span>
+      </label>
+      <div id="onsiteConsentError" class="result hidden" style="margin-top:4px"></div>
+      <div class="checkout-action-bar" style="margin-top:4px">
+        <button class="btn primary small ui-icon-btn" type="button" id="onsiteConfirmReserveBtn" data-onsite-confirm-reserve>${checkoutUiIcon('circle-check', 'Confirm &amp; Verify Phone')}</button>
+        <button class="btn ghost small ui-icon-btn" type="button" data-onsite-cancel-consent>${checkoutUiIcon('x', 'Cancel')}</button>
+      </div>
+    </div>
+  `;
+}
+
+checkoutBindOnce(byId('leadPayOnsiteBtn'), 'click', 'lead-pay-onsite-btn-click', async () => {
+  const form = byId('leadRequestForm');
+  if (!form) return;
+  try {
+    const currentServiceAddress = syncServiceAddressFields();
+    const fd = new FormData(form);
+    const payload = Object.fromEntries(fd.entries());
+    Object.assign(payload, currentCheckoutContactAliases({ form, includeBlank: true, visibleOnly: false }));
+    const requestAvailableDays = checkedValues('available_days_json', form);
+
+    const quoteForm = byId('quoteForm');
+    if (quoteForm) {
+      const qd = buildQuotePayload(quoteForm);
+      if (Number(qd.mowAreaSqft || 0) <= 0) {
+        showMissingMowableAreaPrompt('quoteResult');
+        return;
+      }
+      payload.address = currentServiceAddress.address || payload.address || qd.address || '';
+      payload.city = currentServiceAddress.city || payload.city || qd.city || '';
+      payload.state = currentServiceAddress.state || payload.state || qd.state || 'AR';
+      payload.zip = currentServiceAddress.zip || payload.zip || qd.zip || '';
+      payload.regionId = payload.regionId || qd.regionId || '';
+      payload.serviceType = payload.serviceType || qd.serviceType || 'mowing';
+      payload.mowAreaSqft = qd.mowAreaSqft;
+      payload.lotAreaSqft = payload.lotAreaSqft || qd.lotAreaSqft || 0;
+      payload.quote_type = qd.quote_type || 'instant_mow';
+      payload.available_days_json = requestAvailableDays.length
+        ? requestAvailableDays
+        : checkedValues('available_days_json', quoteForm);
+      MOWABLE_ESTIMATE_FIELDS.forEach((name) => {
+        payload[name] = payload[name] || qd[name] || '';
+      });
+    }
+
+    const estimate = Number(payload.estimatedPrice || state.pendingQuote?.estimate || state.lastQuote?.estimate || 0);
+    const bookingQuote = normalizeBookingContact({
+      ...(state.pendingQuote || state.lastQuote || {}),
+      ...payload,
+      ...currentCheckoutContactAliases({ form, includeBlank: true, visibleOnly: false }),
+      estimate,
+      final_price: estimate,
+    });
+
+    const missing = bookingContactMissing(bookingQuote);
+    if (missing.length) {
+      if (missing.includes('phone')) showPhoneRequiredError('leadRequestResult');
+      else showError(`Add ${missing.join(', ')} to reserve onsite.`);
+      return;
+    }
+
+    state.lastQuote = bookingQuote;
+    state.pendingQuote = bookingQuote;
+
+    const resultEl = byId('leadRequestResult');
+    if (resultEl) {
+      resultEl.innerHTML = onsiteConsentPanelHtml(bookingQuote);
+      resultEl.classList.remove('hidden');
+      resultEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  } catch (err) {
+    showError(err.message || 'Could not open onsite reservation.');
+  }
+});
+
+checkoutBindOnce(document, 'click', 'onsite-confirm-reserve', async (event) => {
+  if (!event.target.closest('[data-onsite-confirm-reserve]')) return;
+  const panel = event.target.closest('[data-onsite-consent-panel]');
+  const consentCheck = panel?.querySelector('[data-onsite-sms-consent]') || byId('onsiteSmsConsentCheck');
+  const errorEl = panel?.querySelector('#onsiteConsentError') || byId('onsiteConsentError');
+  if (!consentCheck?.checked) {
+    if (errorEl) {
+      errorEl.textContent = SMS_CONSENT_REQUIRED_MESSAGE;
+      errorEl.classList.remove('hidden');
+    }
+    showError(SMS_CONSENT_REQUIRED_MESSAGE);
+    consentCheck?.focus();
+    return;
+  }
+  if (state.lastQuote) {
+    state.lastQuote.smsConsent = true;
+    state.lastQuote.sms_consent = true;
+    state.lastQuote.smsConsentText = SMS_CONSENT_TEXT;
+  }
+  if (state.pendingQuote) {
+    state.pendingQuote.smsConsent = true;
+    state.pendingQuote.sms_consent = true;
+    state.pendingQuote.smsConsentText = SMS_CONSENT_TEXT;
+  }
+  const confirmBtn = event.target.closest('[data-onsite-confirm-reserve]');
+  if (confirmBtn) { confirmBtn.disabled = true; confirmBtn.textContent = 'Reserving...'; }
+  await bookQuoteAsJob(byId('leadPayOnsiteBtn'), { payOnsite: true });
+});
+
+checkoutBindOnce(document, 'click', 'onsite-cancel-consent', (event) => {
+  if (!event.target.closest('[data-onsite-cancel-consent]')) return;
+  const resultEl = byId('leadRequestResult');
+  if (resultEl) { resultEl.innerHTML = ''; resultEl.classList.add('hidden'); }
+});
+
 async function bookQuoteAsJob(explicitBtn, options = {}) {
   if (!state.lastQuote && state.pendingQuote) {
     state.lastQuote = state.pendingQuote;
@@ -1563,9 +1705,10 @@ async function bookQuoteAsJob(explicitBtn, options = {}) {
 
   const btn = explicitBtn || byId('bookJobBtn') || byId('leadSubmitBtn') || byId('requestServiceBtn');
   const payOnsite = Boolean(options.payOnsite);
+  const btnLabel = btn?.querySelector?.('.ui-label');
   const originalText = payOnsite
     ? 'Reserve & Pay Onsite'
-    : btn?.id === 'leadSubmitBtn' ? 'Book & Pay Securely' : (btn?.textContent || 'Book & Pay Securely');
+    : btn?.id === 'leadSubmitBtn' ? 'Book & Pay Securely' : (btnLabel?.textContent || btn?.textContent || 'Continue to Secure Checkout');
   console.log('[MowNWA Checkout Debug] bookQuoteAsJob start | btn=' + (btn?.id || 'none'));
 
   try {
@@ -1586,17 +1729,17 @@ async function bookQuoteAsJob(explicitBtn, options = {}) {
       } else {
         showWarning(`Add ${missing.join(', ')} to continue to secure checkout.`);
       }
-      if (btn) { btn.disabled = false; btn.textContent = originalText; }
+      if (btn) { btn.disabled = false; (btnLabel || btn).textContent = originalText; }
       return;
     }
-    if (!smsConsentAccepted(q)) {
+    if (payOnsite && !smsConsentAccepted(q)) {
       showBookingContactPanel(q);
       showSmsConsentRequiredError('leadRequestResult', byId('leadRequestForm'));
-      if (btn) { btn.disabled = false; btn.textContent = originalText; }
+      if (btn) { btn.disabled = false; (btnLabel || btn).textContent = originalText; }
       return;
     }
     if (payOnsite && !checkoutPhoneVerificationMatches(q.phone || q.customerPhone || '')) {
-      if (btn) { btn.disabled = false; btn.textContent = originalText; }
+      if (btn) { btn.disabled = false; (btnLabel || btn).textContent = originalText; }
       rememberPendingCodBookingResume(btn);
       try {
         await showPhoneVerificationPanelForCod(q.phone || q.customerPhone || '');
@@ -1614,7 +1757,11 @@ async function bookQuoteAsJob(explicitBtn, options = {}) {
       return;
     }
 
-    if (btn) { btn.disabled = true; btn.textContent = payOnsite ? 'Reserving...' : 'Opening checkout...'; }
+    if (btn) {
+      btn.disabled = true;
+      const loadingLabel = btn.querySelector('.ui-label') || btn;
+      loadingLabel.textContent = payOnsite ? 'Reserving...' : 'Opening checkout...';
+    }
 
     const svcLabel = q.serviceType
       ? String(q.serviceType).replace(/_/g, ' ').replace(/\b\w/g, (m) => m.toUpperCase())
@@ -1735,7 +1882,7 @@ async function bookQuoteAsJob(explicitBtn, options = {}) {
       if (checkout.verification_required || checkout.verificationRequired) {
         showCodVerificationPanel(checkout);
         showSuccess('Verification code sent');
-        if (btn) { btn.disabled = false; btn.textContent = originalText; }
+        if (btn) { btn.disabled = false; (btnLabel || btn).textContent = originalText; }
         if (hasActiveSession() && typeof loadMyJobs === 'function') {
           loadMyJobs().catch(() => {});
         }
@@ -1746,7 +1893,7 @@ async function bookQuoteAsJob(explicitBtn, options = {}) {
           allowReloadFallback: false,
         });
         if (rendered) {
-          if (btn) { btn.disabled = false; btn.textContent = originalText; }
+          if (btn) { btn.disabled = false; (btnLabel || btn).textContent = originalText; }
           return;
         }
         const resultEl = byId('leadRequestResult');
@@ -1756,7 +1903,7 @@ async function bookQuoteAsJob(explicitBtn, options = {}) {
         }
         showSuccess('Reserved - pay onsite');
       }
-      if (btn) { btn.disabled = false; btn.textContent = originalText; }
+      if (btn) { btn.disabled = false; (btnLabel || btn).textContent = originalText; }
       if (hasActiveSession() && typeof showAccountPanel === 'function') {
         await loadMyJobs().catch(() => {});
         showAccountPanel('jobs');
@@ -1765,18 +1912,18 @@ async function bookQuoteAsJob(explicitBtn, options = {}) {
     }
     if (stripeUrl) {
       console.log('[Checkout Trace] redirecting to Stripe', stripeUrl);
-      if (btn) { btn.disabled = false; btn.textContent = btn.id === 'leadSubmitBtn' ? 'Book & Pay Securely' : (btn.textContent || 'Book & Pay Securely'); }
+      if (btn) { btn.disabled = false; (btnLabel || btn).textContent = originalText; }
       window.location.assign(stripeUrl);
       return;
     }
     // Stripe not configured or no URL returned — surface an explicit error
     if (checkout.ok && !stripeUrl) {
-      const resultEl = byId('leadRequestResult');
+      const resultEl = byId('quoteResult');
       if (resultEl) {
-        resultEl.innerHTML = '<strong>Checkout unavailable.</strong> Stripe is not configured. Contact support.';
+        resultEl.innerHTML = '<strong>Checkout unavailable.</strong> Online payment is not currently configured. Please request an in-person quote or contact us.';
         resultEl.classList.remove('hidden');
       }
-      if (btn) { btn.disabled = false; btn.textContent = btn.id === 'leadSubmitBtn' ? 'Book & Pay Securely' : (btn.textContent || 'Book & Pay Securely'); }
+      if (btn) { btn.disabled = false; (btnLabel || btn).textContent = originalText; }
       return;
     }
     payload.payment_status = checkout.paymentStatus || 'checkout_pending';
@@ -1835,7 +1982,7 @@ async function bookQuoteAsJob(explicitBtn, options = {}) {
     console.log('[Checkout Trace] checkout error', error.message);
     if (isCheckoutAccountContactConflict(error)) {
       showCheckoutAccountContactConflict(error);
-      if (btn) { btn.disabled = false; btn.textContent = originalText; }
+      if (btn) { btn.disabled = false; (btnLabel || btn).textContent = originalText; }
       return;
     }
     const resultEl = byId('leadRequestResult');
@@ -1845,7 +1992,7 @@ async function bookQuoteAsJob(explicitBtn, options = {}) {
     }
     showResult('quoteResult', `<strong>Booking failed:</strong> ${escapeHtml(errMsg)}`);
     showError(errMsg);
-    if (btn) { btn.disabled = false; btn.textContent = originalText; }
+    if (btn) { btn.disabled = false; (btnLabel || btn).textContent = originalText; }
   }
 }
 

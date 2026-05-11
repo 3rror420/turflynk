@@ -9,6 +9,8 @@
   <link rel="icon" href="/assets/brand/mownwa_logo.png">
   <link rel="stylesheet" href="/styles.css?v=20260507-quote-draw-layout-fix" />
   <link rel="stylesheet" href="/css/weather-scheduler.css?v=weather2">
+  <!-- Premium light theme override (customer surfaces only). Loads AFTER styles.css so it wins. -->
+  <link rel="stylesheet" href="/css/theme-premium.css?v=20260509-premium-1">
 <!-- Meta Pixel Code -->
 <script>
   !function(f,b,e,v,n,t,s)
@@ -246,24 +248,66 @@
                   <div id="mowEditorMode" class="status-chip">Mode: Ready</div>
                   <button class="app-icon-btn ui-icon-btn" type="button" id="closeMapTools" tabindex="-1"><img src="/assets/icons/lucide/x.svg" alt="" class="ui-icon"><span class="ui-label">Close</span></button>
                 </div>
-                <div class="tool-row major-tools">
+
+                <!-- Primary row: contextual action buttons always accessible when visible -->
+                <div class="tool-row toolbar-primary-row">
                   <button class="btn primary ui-icon-btn" type="button" id="lassoYardBtn" title="Outline the grass area"><img src="/assets/icons/lucide/pencil.svg" alt="" class="ui-icon"><span class="ui-label">Draw Area</span></button>
-                  <button class="btn secondary ui-icon-btn" type="button" id="drawMowableBtn"><img src="/assets/icons/lucide/pencil.svg" alt="" class="ui-icon"><span class="ui-label">Redraw</span></button>
-                  <button class="btn secondary ui-icon-btn" type="button" id="editMowableBtn" title="Adjust drawn boundaries"><img src="/assets/icons/lucide/ruler.svg" alt="" class="ui-icon"><span class="ui-label">Edit Area</span></button>
-                  <button class="btn secondary utility-only ui-icon-btn" type="button" id="cutMowableBtn" title="Remove pools, landscaping, etc."><img src="/assets/icons/lucide/scissors.svg" alt="" class="ui-icon"><span class="ui-label">Cut Out</span></button>
-                  <button class="btn secondary ui-icon-btn" type="button" id="deleteMowableBtn" title="Remove this drawn area"><img src="/assets/icons/lucide/trash.svg" alt="" class="ui-icon"><span class="ui-label">Delete Area</span></button>
-                  <button class="btn ghost ui-icon-btn" type="button" id="clearMowAreaBtn" title="Clear all drawn areas and start fresh"><img src="/assets/icons/lucide/rotate-ccw.svg" alt="" class="ui-icon"><span class="ui-label">Clear</span></button>
-                  <button class="btn ghost utility-only ui-icon-btn" type="button" id="undoCutBtn" title="Undo last cutout"><img src="/assets/icons/lucide/undo.svg" alt="" class="ui-icon"><span class="ui-label">Undo Cut</span></button>
-                  <button class="btn secondary hidden ui-icon-btn" type="button" id="aiDetectMowableBtn" title="Try automatic grass detection" disabled><img src="/assets/icons/lucide/crosshair.svg" alt="" class="ui-icon"><span class="ui-label">Auto Detect Lawn</span></button>
-                  <button class="btn secondary ui-icon-btn" type="button" id="finishLassoBtn"><img src="/assets/icons/lucide/check.svg" alt="" class="ui-icon"><span class="ui-label">Finish</span></button>
-                  <button class="btn secondary ui-icon-btn" type="button" id="useParcelShapeBtn"><img src="/assets/icons/lucide/map-pin.svg" alt="" class="ui-icon"><span class="ui-label">Use Parcel</span></button>
+                  <button class="btn secondary ui-icon-btn" type="button" id="aiDetectMowableBtn" title="Auto-detect grass area" disabled><img src="/assets/icons/lucide/crosshair.svg" alt="" class="ui-icon"><span class="ui-label">Auto Detect Lawn</span></button>
+                  <button class="btn primary ui-icon-btn" type="button" id="finishLassoBtn"><img src="/assets/icons/lucide/check.svg" alt="" class="ui-icon"><span class="ui-label">Finish</span></button>
                   <button class="btn primary ui-icon-btn" type="button" id="saveAreaBtn"><img src="/assets/icons/lucide/save.svg" alt="" class="ui-icon"><span class="ui-label">Save</span></button>
-                  <button class="btn secondary ui-icon-btn" type="button" id="cancelEditAreaBtn"><img src="/assets/icons/lucide/x.svg" alt="" class="ui-icon"><span class="ui-label">Cancel</span></button>
-                  <button class="btn secondary ui-icon-btn" type="button" id="aiRefineMowableBtn" style="display:none;"><img src="/assets/icons/lucide/crosshair.svg" alt="" class="ui-icon"><span class="ui-label">AI Refine Area</span></button>
-                  <button class="btn secondary ui-icon-btn" id="applyAiCutoutsBtn" style="display:none;"><img src="/assets/icons/lucide/check.svg" alt="" class="ui-icon"><span class="ui-label">Apply Cutouts</span></button>
-                  <button class="btn secondary ui-icon-btn" type="button" id="editAiCutoutsBtn" style="display:none;"><img src="/assets/icons/lucide/ruler.svg" alt="" class="ui-icon"><span class="ui-label">Edit AI Cutouts</span></button>
-                  <div id="aiDetectGrassStatus" style="display:none;"></div>
+                  <button class="btn ghost ui-icon-btn" type="button" id="cancelEditAreaBtn"><img src="/assets/icons/lucide/x.svg" alt="" class="ui-icon"><span class="ui-label">Cancel</span></button>
                 </div>
+
+                <!-- Expandable tool groups -->
+                <div class="toolbar-groups-row">
+
+                  <!-- Edit & Adjust — auto-opens when area exists -->
+                  <div class="tool-group" id="toolGroupEdit">
+                    <button class="tool-group-toggle btn ghost ui-icon-btn" type="button">
+                      <img src="/assets/icons/lucide/ruler.svg" alt="" class="ui-icon">
+                      <span class="ui-label">Edit</span>
+                      <span class="tool-group-chevron" aria-hidden="true">&#9662;</span>
+                    </button>
+                    <div class="tool-group-body">
+                      <button class="btn secondary ui-icon-btn" type="button" id="editMowableBtn" title="Adjust drawn boundaries"><img src="/assets/icons/lucide/ruler.svg" alt="" class="ui-icon"><span class="ui-label">Edit Area</span></button>
+                      <button class="btn secondary ui-icon-btn" type="button" id="deleteMowableBtn" title="Remove this drawn area"><img src="/assets/icons/lucide/trash.svg" alt="" class="ui-icon"><span class="ui-label">Delete Area</span></button>
+                      <button class="btn ghost ui-icon-btn" type="button" id="clearMowAreaBtn" title="Clear all drawn areas and start fresh"><img src="/assets/icons/lucide/rotate-ccw.svg" alt="" class="ui-icon"><span class="ui-label">Clear All</span></button>
+                      <button class="btn ghost ui-icon-btn" type="button" id="undoCutBtn" title="Undo last cutout"><img src="/assets/icons/lucide/undo.svg" alt="" class="ui-icon"><span class="ui-label">Undo Cut</span></button>
+                      <!-- drawMowableBtn kept hidden for JS compatibility -->
+                      <button class="btn secondary ui-icon-btn" type="button" id="drawMowableBtn" style="display:none!important"><img src="/assets/icons/lucide/pencil.svg" alt="" class="ui-icon"><span class="ui-label">Redraw</span></button>
+                    </div>
+                  </div>
+
+                  <!-- Cutouts — auto-opens when area exists and not in edit mode -->
+                  <div class="tool-group" id="toolGroupCutouts">
+                    <button class="tool-group-toggle btn ghost ui-icon-btn" type="button">
+                      <img src="/assets/icons/lucide/scissors.svg" alt="" class="ui-icon">
+                      <span class="ui-label">Cutouts</span>
+                      <span class="tool-group-chevron" aria-hidden="true">&#9662;</span>
+                    </button>
+                    <div class="tool-group-body">
+                      <button class="btn secondary utility-only ui-icon-btn" type="button" id="cutMowableBtn" title="Remove pools, landscaping, etc."><img src="/assets/icons/lucide/scissors.svg" alt="" class="ui-icon"><span class="ui-label">Cut Out</span></button>
+                      <button class="btn secondary ui-icon-btn" id="applyAiCutoutsBtn" style="display:none;"><img src="/assets/icons/lucide/check.svg" alt="" class="ui-icon"><span class="ui-label">Apply Cutouts</span></button>
+                      <button class="btn secondary ui-icon-btn" type="button" id="editAiCutoutsBtn" style="display:none;"><img src="/assets/icons/lucide/ruler.svg" alt="" class="ui-icon"><span class="ui-label">Edit AI Cutouts</span></button>
+                    </div>
+                  </div>
+
+                  <!-- Options — auto-opens initially, collapses after area drawn -->
+                  <div class="tool-group" id="toolGroupOptions">
+                    <button class="tool-group-toggle btn ghost ui-icon-btn" type="button">
+                      <img src="/assets/icons/lucide/map.svg" alt="" class="ui-icon">
+                      <span class="ui-label">Options</span>
+                      <span class="tool-group-chevron" aria-hidden="true">&#9662;</span>
+                    </button>
+                    <div class="tool-group-body">
+                      <button class="btn secondary ui-icon-btn" type="button" id="useParcelShapeBtn"><img src="/assets/icons/lucide/map-pin.svg" alt="" class="ui-icon"><span class="ui-label">Use Parcel Shape</span></button>
+                      <button class="btn secondary ui-icon-btn" type="button" id="aiRefineMowableBtn" style="display:none;"><img src="/assets/icons/lucide/crosshair.svg" alt="" class="ui-icon"><span class="ui-label">AI Refine Area</span></button>
+                    </div>
+                  </div>
+
+                </div>
+
+                <div id="aiDetectGrassStatus" style="display:none;"></div>
               </div>
 
               <!-- Helper / status text — below toolbar -->
@@ -562,10 +606,6 @@
                 <label><span>Your Name</span><input name="customerName" placeholder="Jane Smith" autocomplete="name" required /></label>
                 <label><span>Phone</span><input name="customerPhone" id="leadPhone" type="tel" inputmode="tel" placeholder="(479) 555-1234" autocomplete="tel" required /></label>
               </div>
-              <label class="sms-consent-control">
-                <input name="smsConsent" type="checkbox" value="true" required />
-                <span>I agree to receive SMS messages from MowNWA.com about my quote, booking, scheduling, job updates, payment/COD verification, and customer support. Message frequency may vary. Msg &amp; data rates may apply. Reply STOP to opt out or HELP for help. Consent is not a condition of purchase. View our <a href="/privacy.html">Privacy Policy</a> and <a href="/terms.html">Terms of Service</a>.</span>
-              </label>
               <label><span>Email</span><input name="customerEmail" type="email" placeholder="you@example.com" autocomplete="email" required /></label>
               <label><span>Service Address</span><input name="address" id="leadAddress" placeholder="123 Main St" autocomplete="street-address" required /></label>
               <div class="grid-3">
@@ -626,7 +666,7 @@
               <div class="checkout-action-bar">
                 <button class="btn primary ui-icon-btn" type="submit" id="leadSubmitBtn"><img src="/assets/icons/lucide/credit-card.svg" alt="" class="ui-icon"><span class="ui-label">Book &amp; Pay Securely</span></button>
                 <div class="checkout-onsite-action">
-                  <button class="btn secondary ui-icon-btn" type="submit" id="leadPayOnsiteBtn"><img src="/assets/icons/lucide/wallet.svg" alt="" class="ui-icon"><span class="ui-label">Reserve &amp; Pay Onsite</span></button>
+                  <button class="btn secondary ui-icon-btn" type="button" id="leadPayOnsiteBtn"><img src="/assets/icons/lucide/wallet.svg" alt="" class="ui-icon"><span class="ui-label">Reserve &amp; Pay Onsite</span></button>
                   <small>Cash or check collected at time of service.</small>
                 </div>
                 <button class="btn ghost ui-icon-btn" type="button" id="closeleadRequestPanel"><img src="/assets/icons/lucide/x.svg" alt="" class="ui-icon"><span class="ui-label">Cancel</span></button>
@@ -929,6 +969,9 @@
   <script src="/js/ai-detect-grass.js"></script>
   <script src="/js/lasso-yard.js?v=boundary-fix-v5-exit-enter-fat-thumb"></script>
   <script src="/js/ai/ai-detect.js"></script>
+
+  <!-- Grouped toolbar expand/collapse logic -->
+  <script src="/js/map/toolbar-groups.js"></script>
 
   <script src="/js/quote/weather-scheduler.js?v=weather2"></script>
 </body>

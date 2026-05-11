@@ -6069,3 +6069,99 @@ body[data-active-view="quote"] .manual-quote-panel .preferred-day-card:has(input
 }
 
 /* ─────────────────────────────────────────────────────────────────────────── */
+
+/* ==========================================================================
+   MOBILE UI REPAIR — 2026-05-11
+   Fixes: header overlap, tiny logo, duplicate desktop branding,
+          oversized step titles, wasted vertical space on map steps.
+   ========================================================================== */
+
+/* ── 1. Header separation
+   On mobile/tablet (≤1024px) the app-topbar handles brand + auth + menu.
+   The legacy auth-bar was fixed-position and sat on top of the sticky
+   app-topbar (z-index 120 > 90), covering the logo entirely.
+   Hide auth-bar so app-topbar is actually visible.
+
+   On desktop (≥1025px) the sidebar handles branding and auth-bar provides
+   the top-right login button — no need for the extra sticky topbar.
+   ────────────────────────────────────────────────────────────────────────── */
+@media (max-width: 1024px) {
+  .auth-bar { display: none !important; }
+}
+
+@media (min-width: 1025px) {
+  .app-topbar { display: none !important; }
+}
+
+/* ── 2. Logo: readable size inside the app-topbar mobile header ── */
+.app-brand-logo {
+  height: 48px !important;
+  width: auto !important;
+  max-width: 220px;
+}
+@media (min-width: 768px) {
+  .app-brand-logo { height: 52px !important; }
+}
+
+/* On small phones the "Get My Lawn Quote" button in the topbar is redundant
+   — the bottom nav has the same shortcut. Remove it to give the logo room. */
+@media (max-width: 640px) {
+  .app-topbar-quote-btn { display: none !important; }
+}
+
+/* ── 3. Landing logo: not too small on mobile ── */
+@media (max-width: 767px) {
+  .mownwa-landing-logo {
+    width: min(210px, 60vw) !important;
+  }
+}
+
+/* ── 4. Step header: compact on mobile so the map gets maximum space ── */
+@media (max-width: 920px) {
+  .qsf-region  { display: none !important; }
+  .qsf-title   { font-size: 1.15rem !important; margin-bottom: 2px; }
+  .qsf-sub     { font-size: .82rem; margin: 0; }
+  .qsf-header  { margin-bottom: 4px; padding-top: 0; }
+}
+
+@media (max-width: 640px) {
+  .qsf-title { font-size: 1rem !important; }
+  .qsf-sub   { display: none !important; }
+}
+
+/* On the draw step the map is the UI — eliminate the step header entirely */
+body[data-quote-flow-step="draw"] #quoteStepDynamicHeader {
+  display: none !important;
+}
+
+/* ── 5. Quote flow screens: no artificial minimum height on mobile ── */
+@media (max-width: 920px) {
+  .quote-flow-screen { min-height: unset !important; }
+}
+
+/* ── 6. Parcel-confirm map: maximise height on mobile ── */
+@media (max-width: 920px) {
+  #parcel-confirm-panel .map-stage {
+    height: clamp(320px, 48svh, 500px) !important;
+  }
+}
+
+/* ── 7. Dashboard landing: always zero top padding (its own header handles it) ── */
+body[data-active-view="dashboard"] .main-shell {
+  padding: 0 !important;
+}
+
+/* ── 8. Topbar on mobile: tighten button spacing so logo has room ── */
+@media (max-width: 920px) {
+  .app-topbar {
+    gap: 6px;
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+  .app-topbar-actions { gap: 6px; }
+}
+
+/* ── 9. Draw-step: full-width quote-app so map uses all horizontal space ── */
+@media (max-width: 920px) {
+  body[data-quote-flow-step="draw"] .quote-app { width: 100% !important; }
+}

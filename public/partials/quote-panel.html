@@ -119,7 +119,7 @@
                   <button class="btn secondary ui-icon-btn" type="button" id="deleteMowableBtn"><img src="/assets/icons/lucide/trash.svg" alt="" class="ui-icon"><span class="ui-label">Delete Area</span></button>
                   <button class="btn ghost ui-icon-btn" type="button" id="clearMowAreaBtn"><img src="/assets/icons/lucide/rotate-ccw.svg" alt="" class="ui-icon"><span class="ui-label">Clear</span></button>
                   <button class="btn ghost utility-only ui-icon-btn" type="button" id="undoCutBtn"><img src="/assets/icons/lucide/undo.svg" alt="" class="ui-icon"><span class="ui-label">Undo Cut</span></button>
-                  <button class="btn secondary hidden ui-icon-btn" type="button" id="aiDetectMowableBtn" disabled><img src="/assets/icons/lucide/crosshair.svg" alt="" class="ui-icon"><span class="ui-label">AI Detect Yard (Beta)</span></button>
+                  <button class="btn secondary hidden ui-icon-btn" type="button" id="aiDetectMowableBtn" disabled><img src="/assets/icons/lucide/crosshair.svg" alt="" class="ui-icon"><span class="ui-label">Auto Detect Lawn</span></button>
                   <button class="btn secondary ui-icon-btn" type="button" id="finishLassoBtn"><img src="/assets/icons/lucide/check.svg" alt="" class="ui-icon"><span class="ui-label">Finish</span></button>
                   <button class="btn secondary ui-icon-btn" type="button" id="useParcelShapeBtn"><img src="/assets/icons/lucide/map-pin.svg" alt="" class="ui-icon"><span class="ui-label">Use Parcel</span></button>
                   <button class="btn primary ui-icon-btn" type="button" id="saveAreaBtn"><img src="/assets/icons/lucide/save.svg" alt="" class="ui-icon"><span class="ui-label">Save</span></button>
@@ -304,7 +304,7 @@
                 <input name="smsConsent" type="checkbox" value="true" required />
                 <span>I agree to receive SMS messages from MowNWA.com about my quote, booking, scheduling, job updates, payment/COD verification, and customer support. Message frequency may vary. Msg &amp; data rates may apply. Reply STOP to opt out or HELP for help. Consent is not a condition of purchase. View our <a href="/privacy.html">Privacy Policy</a> and <a href="/terms.html">Terms of Service</a>.</span>
               </label>
-              <label><span>Email <em>optional</em></span><input name="email" type="email" placeholder="you@example.com" autocomplete="email" /></label>
+              <label><span>Email</span><input name="email" type="email" placeholder="you@example.com" autocomplete="email" required /></label>
               <label><span>Preferred contact method</span>
                 <select name="preferredContactMethod" required>
                   <option value="">Select one</option>
@@ -346,7 +346,7 @@
                   </select>
                 </label>
               </section>
-              <label><span>Notes / what needs looked at</span><textarea name="notes" rows="4" placeholder="Anything we should check in person?" required></textarea></label>
+              <label><span>Notes / what needs looked at</span><textarea name="notes" rows="4" placeholder="Anything we should check in person?"></textarea></label>
               <button class="btn primary ui-icon-btn" type="submit" id="manualQuoteSubmitBtn"><img src="/assets/icons/lucide/clipboard-check.svg" alt="" class="ui-icon"><span class="ui-label">Submit Request</span></button>
               <button class="btn ghost ui-icon-btn" type="button" id="cancelManualQuotePanel"><img src="/assets/icons/lucide/x.svg" alt="" class="ui-icon"><span class="ui-label">Cancel</span></button>
             </form>

@@ -4895,8 +4895,9 @@ app.post("/api/checkout/instant-mow", optionalAuth, async (req, res) => {
       const onlyPhone = missing.length === 1 && missing[0] === "phone";
       return res.status(400).json({ ok: false, error: onlyPhone ? phoneValidationError() : `Missing booking fields: ${missing.join(", ")}` });
     }
-    const smsConsent = requireSmsConsent(res, body, jobPayload);
-    if (!smsConsent) return;
+    // SMS consent is optional for Stripe checkout — Stripe's own payment flow provides
+    // transaction security. Record consent if given, but do not block checkout without it.
+    const smsConsent = smsConsentSnapshot(body, jobPayload);
     applySmsConsentSnapshot(jobPayload, smsConsent);
 
     const settings = await loadSettingsFromDb();
@@ -7684,6 +7685,10 @@ app.post("/api/quotes", optionalAuth, async (req, res) => {
     const body = req.body || {};
     const phone = submittedPhone(body);
     if (!isValidLookingPhone(phone)) return rejectMissingPhone(res);
+    const submittedEmail = String(body.email || body.customerEmail || "").trim().toLowerCase();
+    if (!submittedEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(submittedEmail)) {
+      return res.status(400).json({ error: "A valid email address is required." });
+    }
     const smsConsent = requireSmsConsent(res, body);
     if (!smsConsent) return;
     await ensureSmsConsentColumns();
