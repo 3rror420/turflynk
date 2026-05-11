@@ -6165,3 +6165,381 @@ body[data-active-view="dashboard"] .main-shell {
 @media (max-width: 920px) {
   body[data-quote-flow-step="draw"] .quote-app { width: 100% !important; }
 }
+
+/* Contact presence: compact, quiet, and shared across customer surfaces. */
+.header-contact-action,
+.mownwa-header-contact-btn,
+.app-topbar-contact-btn{
+  border:1px solid rgba(47,111,24,.18);
+  background:rgba(255,255,255,.82);
+  color:#2f4f25;
+  border-radius:999px;
+  font-size:.86rem;
+  font-weight:800;
+  line-height:1;
+  min-height:42px;
+  padding:10px 14px;
+  box-shadow:none;
+}
+
+.header-contact-action:hover,
+.header-contact-action:focus-visible,
+.mownwa-header-contact-btn:hover,
+.mownwa-header-contact-btn:focus-visible,
+.app-topbar-contact-btn:hover,
+.app-topbar-contact-btn:focus-visible{
+  border-color:rgba(47,111,24,.34);
+  background:#f8fbf5;
+  color:#23441c;
+  outline:none;
+}
+
+.app-topbar-contact-btn{
+  min-width:42px;
+  width:42px;
+  padding:8px;
+  background:#ffffff;
+}
+
+.header-contact-action .ui-icon,
+.mownwa-header-contact-btn .ui-icon,
+.app-topbar-contact-btn .ui-icon{
+  width:17px;
+  height:17px;
+  margin:0;
+}
+
+.sidebar-contact-link{
+  text-decoration:none;
+}
+
+.sidebar-contact-card{
+  display:grid;
+  gap:5px;
+  margin-top:2px;
+  padding:11px 12px;
+  border:1px solid rgba(47,111,24,.14);
+  border-radius:14px;
+  background:rgba(74,124,47,.08);
+  color:#dcead6;
+  font-size:.82rem;
+  line-height:1.35;
+}
+
+.sidebar-contact-card > span:first-child{
+  color:rgba(232,255,240,.68);
+  font-weight:800;
+  text-transform:uppercase;
+  letter-spacing:.08em;
+  font-size:.68rem;
+}
+
+.sidebar-contact-card a{
+  color:#f0f7eb;
+  font-weight:800;
+  text-decoration:none;
+}
+
+.drawer-contact-panel{
+  grid-template-columns:repeat(2,minmax(0,1fr));
+}
+
+.drawer-contact-panel a{
+  color:#f0f7eb;
+  text-decoration:none;
+}
+
+.contact-icon{
+  width:16px;
+  height:16px;
+  display:block;
+  flex:0 0 auto;
+  object-fit:contain;
+}
+
+.site-footer-contact{
+  display:grid;
+  justify-items:center;
+  gap:10px;
+  margin:28px auto 0;
+  padding:18px 0 4px;
+  max-width:960px;
+  border-top:1px solid rgba(47,111,24,.14);
+  color:#64705e;
+  font-size:.84rem;
+}
+
+.site-footer-contact-main,
+.site-footer-legal{
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap:10px 14px;
+  flex-wrap:wrap;
+}
+
+.site-footer-region{
+  color:#7a8675;
+  font-weight:750;
+}
+
+.site-footer-contact a{
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  color:#3d6826;
+  font-weight:800;
+  opacity:.82;
+  text-decoration:none;
+  transition:opacity .16s ease,color .16s ease;
+}
+
+.site-footer-contact a:hover,
+.site-footer-contact a:focus-visible{
+  color:#2f5f20;
+  opacity:1;
+  outline:none;
+}
+
+.site-footer-legal{
+  font-size:.76rem;
+}
+
+.site-footer-legal a{
+  color:#7a8675;
+  font-weight:750;
+}
+
+.quote-support-row,
+.checkout-trust-row{
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap:8px;
+  flex-wrap:wrap;
+  margin-top:12px;
+  color:#64705e;
+  font-size:.84rem;
+  line-height:1.35;
+}
+
+.quote-support-row--left{
+  justify-content:flex-start;
+}
+
+.quote-support-row a,
+.checkout-trust-row a{
+  color:#3d6826;
+  font-weight:850;
+  text-decoration:none;
+}
+
+.contact-link-pair{
+  display:inline-flex;
+  align-items:center;
+  gap:4px;
+  flex-wrap:wrap;
+}
+
+.contact-link-pair > span{
+  color:#7a8675;
+  font-weight:700;
+}
+
+.checkout-trust-row{
+  justify-content:space-between;
+  padding:10px 12px;
+  border:1px solid #dfe8dc;
+  border-radius:12px;
+  background:#f8fbf5;
+}
+
+.checkout-trust-row > div{
+  display:inline-flex;
+  align-items:center;
+  gap:7px;
+  min-width:0;
+}
+
+.checkout-trust-row .contact-icon,
+.quote-support-row .contact-icon{
+  opacity:.72;
+}
+
+body[data-active-view="quote"] .checkout-payment-note{
+  background:transparent;
+}
+
+.contact-page{
+  min-height:100vh;
+  background:#f8fbf5;
+  color:#1f271c;
+}
+
+.contact-page-shell{
+  width:min(920px,calc(100% - 32px));
+  margin:0 auto;
+  padding:40px 0 56px;
+}
+
+.contact-page-header{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:18px;
+  margin-bottom:34px;
+}
+
+.contact-page-logo{
+  width:min(240px,56vw);
+  height:auto;
+  display:block;
+}
+
+.contact-page-back{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  min-height:40px;
+  padding:9px 14px;
+  border:1px solid rgba(47,111,24,.18);
+  border-radius:999px;
+  background:#ffffff;
+  color:#3d6826;
+  font-size:.86rem;
+  font-weight:850;
+  text-decoration:none;
+}
+
+.contact-page-hero{
+  display:grid;
+  gap:10px;
+  margin-bottom:18px;
+}
+
+.contact-page-eyebrow{
+  color:#64705e;
+  font-size:.76rem;
+  font-weight:900;
+  letter-spacing:.12em;
+  text-transform:uppercase;
+}
+
+.contact-page-hero h1{
+  margin:0;
+  color:#163b23;
+  font-size:clamp(2rem,7vw,3.4rem);
+  line-height:1.02;
+}
+
+.contact-page-hero p{
+  max-width:620px;
+  margin:0;
+  color:#4f5b48;
+  line-height:1.55;
+}
+
+.contact-card-grid{
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:14px;
+  margin-top:22px;
+}
+
+.contact-card{
+  display:grid;
+  gap:9px;
+  padding:18px;
+  border:1px solid #dfe8dc;
+  border-radius:16px;
+  background:#ffffff;
+  box-shadow:0 12px 28px rgba(31,39,28,.06);
+}
+
+.contact-card-icon{
+  display:grid;
+  place-items:center;
+  width:36px;
+  height:36px;
+  border-radius:12px;
+  background:#eef6ea;
+}
+
+.contact-card-icon img{
+  width:18px;
+  height:18px;
+}
+
+.contact-card h2{
+  margin:0;
+  color:#1f271c;
+  font-size:1rem;
+}
+
+.contact-card p{
+  margin:0;
+  color:#64705e;
+  font-size:.9rem;
+  line-height:1.45;
+}
+
+.contact-card a{
+  width:max-content;
+  max-width:100%;
+  color:#3d6826;
+  font-weight:850;
+  overflow-wrap:anywhere;
+}
+
+.contact-card-muted{
+  background:#fbfdf9;
+}
+
+@media (max-width:1024px){
+  .site-footer-contact{
+    display:grid;
+    width:min(100% - 32px,520px);
+    padding-bottom:calc(var(--mobile-bottom-nav-height) + 26px);
+  }
+}
+
+@media (max-width:767px){
+  .mownwa-header-contact-btn .ui-label{
+    display:none;
+  }
+
+  .mownwa-header-contact-btn{
+    min-width:40px;
+    min-height:40px;
+    padding:9px;
+  }
+
+  .checkout-trust-row{
+    align-items:flex-start;
+    justify-content:flex-start;
+  }
+
+  .contact-page-shell{
+    width:min(100% - 24px,560px);
+    padding-top:22px;
+  }
+
+  .contact-page-header{
+    margin-bottom:26px;
+  }
+
+  .contact-page-back{
+    min-width:40px;
+    padding:9px 12px;
+  }
+
+  .contact-card-grid{
+    grid-template-columns:1fr;
+  }
+}
+
+@media (max-width:380px){
+  .app-topbar-contact-btn{
+    display:none;
+  }
+}

@@ -4,7 +4,12 @@
       "Bash(sudo chmod *)",
       "Bash(git -C /var/www/turflynk-arkansas-quote-ready-fixed-v3 diff --stat)",
       "Bash(awk 'NR>=2835 && NR<=3040' /var/www/turflynk-arkansas-quote-ready-fixed-v3/public/styles.css)",
-      "Bash(python3 -c ' *)"
+      "Bash(python3 -c ' *)",
+      "Bash(nvm which *)",
+      "Bash(node20 --version)",
+      "Bash(xargs -I{} sh -c '{} --version 2>/dev/null && echo \"at: {}\"')",
+      "Bash(git -C /var/www/turflynk-arkansas-quote-ready-fixed-v3 diff --name-only)",
+      "Bash(npm run *)"
     ]
   }
 }

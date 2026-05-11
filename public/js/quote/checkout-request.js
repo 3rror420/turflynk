@@ -1211,6 +1211,11 @@ async function renderCodVerifiedSuccess(response = {}, options = {}) {
             : 'Create or sign in to an account so you can track this job and manage future bookings.'}</p>
           ${jobId ? `<p class="meta">Booking ID: <strong>${escapeHtml(jobId)}</strong></p>` : ''}
         </div>
+        <div class="quote-support-row quote-support-row--left" aria-label="Booking support">
+          <img src="/assets/icons/lucide/life-buoy.svg" alt="" class="contact-icon">
+          <span>Questions about this booking?</span>
+          <span class="contact-link-pair"><a href="tel:4792740412">Call</a><span>or</span><a href="sms:4792740412">text 479-274-0412</a></span>
+        </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
           ${isLoggedIn
             ? `<button class="btn primary small ui-icon-btn" type="button" data-cod-success-action="jobs">${checkoutUiIcon('clipboard-check', 'View My Jobs')}</button>`
@@ -2281,6 +2286,11 @@ function renderCheckoutCancel() {
   const contentEl = byId('checkoutCancelContent');
   if (contentEl) {
     contentEl.innerHTML = `<p><strong>Payment was canceled.</strong> No charge was made. You can return to your quote, start over, or open your jobs/account.</p>
+      <div class="quote-support-row quote-support-row--left" aria-label="Checkout support">
+        <img src="/assets/icons/lucide/life-buoy.svg" alt="" class="contact-icon">
+        <span>Need help finishing checkout?</span>
+        <span class="contact-link-pair"><a href="tel:4792740412">Call</a><span>or</span><a href="sms:4792740412">text 479-274-0412</a></span>
+      </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
         <button class="btn primary ui-icon-btn" type="button" data-checkout-cancel-action="return-quote">${checkoutUiIcon('calculator', 'Return to Quote')}</button>
         <button class="btn ghost ui-icon-btn" type="button" data-checkout-cancel-action="start-over">${checkoutUiIcon('rotate-ccw', 'Start Over')}</button>
@@ -2502,6 +2512,11 @@ function renderCheckoutSuccess(session) {
             <div id="successSetPasswordResult" class="result hidden"></div>
           </form>
         ` : ''}
+      </div>
+      <div class="quote-support-row quote-support-row--left" aria-label="Booking support">
+        <img src="/assets/icons/lucide/life-buoy.svg" alt="" class="contact-icon">
+        <span>Need help with your booking?</span>
+        <span class="contact-link-pair"><a href="tel:4792740412">Call</a><span>or</span><a href="sms:4792740412">text 479-274-0412</a></span>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
         ${hasActiveSession() ? `<button class="btn secondary small ui-icon-btn" type="button" onclick="showAccountPanel('jobs')">${checkoutUiIcon('clipboard-check', 'View My Bookings')}</button>` : ''}
