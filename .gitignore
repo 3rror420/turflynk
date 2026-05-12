@@ -152,3 +152,12 @@ uploads/
 *.tar.gz
 *.zip
 .env
+
+node_modules/
+vision_service/.venv/
+vision_service/debug_runs/
+uploads/
+*.tar.gz
+*.zip
+.env
+
