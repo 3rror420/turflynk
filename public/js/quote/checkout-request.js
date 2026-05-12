@@ -352,6 +352,8 @@ function showManualQuotePanel(payload = {}) {
     return;
   }
 
+  if (document.body?.dataset?.activeView !== 'quote') setActiveView('quote');
+
   try {
     const basePayload = currentManualQuoteBasePayload(payload);
     const quoteForm = byId('quoteForm');
