@@ -143,3 +143,12 @@ __pycache__/
 *.pyc
 REFRESH-NOTES.md
 MowNWA Premium Refresh Preview.html
+
+# Bolt/import cleanup
+node_modules/
+vision_service/.venv/
+vision_service/debug_runs/
+uploads/
+*.tar.gz
+*.zip
+.env
