@@ -1284,6 +1284,20 @@ table{
   margin-top:8px;
 }
 
+.use-parcel-bar.hidden{
+  display:none;
+}
+
+#parcel-confirm-panel .map-stage > #useThisParcelBar{
+  position:absolute;
+  left:12px;
+  right:12px;
+  bottom:12px;
+  z-index:5;
+  margin-top:0;
+  pointer-events:auto;
+}
+
 .use-parcel-addr{
   color:#fde68a;
   font-weight:700;
@@ -2951,6 +2965,68 @@ body[data-active-view="dashboard"] .topbar,
 body[data-active-view="dashboard"] .mobile-nav,
 body[data-active-view="dashboard"] .app-topbar {
   display: none;
+}
+
+body[data-active-view="dashboard"] .app-topbar {
+  display: flex !important;
+  position: fixed;
+  top: calc(92px + max(12px, env(safe-area-inset-top, 0px)));
+  right: max(18px, env(safe-area-inset-right, 0px));
+  left: auto;
+  width: auto;
+  min-height: 0;
+  padding: 0;
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+  z-index: 130;
+}
+
+body[data-active-view="dashboard"] .app-topbar > :not(.app-topbar-actions),
+body[data-active-view="dashboard"] .app-topbar-actions > :not(#openAppDrawer) {
+  display: none !important;
+}
+
+body[data-active-view="dashboard"] .app-topbar-actions {
+  display: flex !important;
+  gap: 0;
+}
+
+body[data-active-view="dashboard"] #openAppDrawer {
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0;
+  border: 1px solid rgba(47, 111, 24, .22) !important;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .96) !important;
+  color: #23441c !important;
+  box-shadow: 0 10px 24px rgba(31, 39, 28, .14);
+}
+
+body[data-active-view="dashboard"] #openAppDrawer:hover,
+body[data-active-view="dashboard"] #openAppDrawer:focus-visible {
+  border-color: rgba(47, 111, 24, .38) !important;
+  background: #ffffff !important;
+}
+
+@media (max-width: 767px) {
+  body[data-active-view="dashboard"] .app-topbar {
+    top: calc(56px + max(10px, env(safe-area-inset-top, 0px)));
+    right: max(12px, env(safe-area-inset-right, 0px));
+  }
+
+  body[data-active-view="dashboard"] #openAppDrawer {
+    width: 40px;
+    height: 40px;
+    min-width: 40px;
+    min-height: 40px;
+  }
 }
 
 body[data-active-view="dashboard"] .app-shell {
@@ -4775,7 +4851,12 @@ body[data-session-state="logged-in"] #openAuth {
   background: #2d2d2d;
 }
 
-body[data-session-state="logged-out"] #mobileAccountAvatar,
+#mobileAccountAvatar {
+  display: none;
+}
+body[data-session-state="logged-in"] #mobileAccountAvatar {
+  display: inline-grid;
+}
 body[data-session-state="logged-out"] .customer-logged-in-nav {
   display: none !important;
 }
@@ -4792,6 +4873,10 @@ body[data-session-state="logged-in"] #mobileAuthBtn {
 
 body[data-session-state="logged-in"] .customer-logged-in-nav {
   display: grid !important;
+}
+
+body[data-active-view="dashboard"][data-session-state="logged-in"] #mobileAuthBtn {
+  display: inline-flex !important;
 }
 
 .price-note {
@@ -6089,9 +6174,8 @@ body[data-active-view="quote"] .manual-quote-panel .preferred-day-card:has(input
   .auth-bar { display: none !important; }
 }
 
-@media (min-width: 1025px) {
-  .app-topbar { display: none !important; }
-}
+/* app-topbar is visible on desktop; sidebar provides nav but topbar provides
+   the global hamburger and auth buttons required on all views */
 
 /* ── 2. Logo: readable size inside the app-topbar mobile header ── */
 .app-brand-logo {
@@ -6541,5 +6625,114 @@ body[data-active-view="quote"] .checkout-payment-note{
 @media (max-width:380px){
   .app-topbar-contact-btn{
     display:none;
+  }
+}
+
+/* #openAuth lives in the app-topbar so it is accessible regardless of which
+   view panel is active. Hide it on mobile (mobileAuthBtn covers that role)
+   and show it on desktop. The logged-in rule at body[data-session-state=
+   "logged-in"] #openAuth (specificity 1-1-1) still hides it after sign-in. */
+.app-topbar-desktop-auth {
+  display: none !important;
+}
+@media (min-width: 1025px) {
+  .app-topbar-desktop-auth {
+    display: inline-flex !important;
+  }
+  /* The dashboard hide rule (.app-topbar-actions > :not(#openAppDrawer)) has specificity
+     (1,2,1) with !important. Counter it with a (1,3,1) rule that only fires when
+     logged-out, so the logged-in hide rule still wins for authenticated users. */
+  body:not([data-session-state="logged-in"])[data-active-view="dashboard"] .app-topbar-actions #openAuth {
+    display: inline-flex !important;
+  }
+}
+
+/* Low-risk layout repairs: keep global app-topbar, remove duplicate desktop
+   header row, and preserve mobile safe-area spacing without quote JS changes. */
+@media (min-width: 1025px) {
+  .main-shell > .topbar {
+    display: none !important;
+  }
+}
+
+body[data-active-view="quote"][data-quote-flow-step="draw"] .main-shell {
+  padding-bottom: 32px !important;
+}
+
+body[data-active-view="quote"][data-quote-flow-step="draw"] #quoteDrawScreen.is-active,
+body[data-active-view="quote"][data-quote-flow-step="draw"] .draw-screen {
+  padding-bottom: 0 !important;
+}
+
+@media (max-width: 920px) {
+  .mobile-nav {
+    bottom: 0 !important;
+    padding-bottom: env(safe-area-inset-bottom, 0px) !important;
+  }
+
+  .main-shell {
+    padding-bottom: calc(80px + env(safe-area-inset-bottom, 0px)) !important;
+  }
+
+  body[data-active-view="quote"] #toastLayer {
+    top: 132px !important;
+  }
+
+  body[data-active-view="quote"][data-quote-flow-step="draw"] .main-shell {
+    padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px)) !important;
+  }
+}
+
+@media (max-width: 920px) {
+  .mownwa-landing-header-inner {
+    min-height: 72px;
+    gap: 14px;
+  }
+
+  .mownwa-landing-logo {
+    width: min(230px, 42vw) !important;
+  }
+
+  .mownwa-login-btn,
+  .mownwa-header-contact-btn,
+  .mownwa-header-quote-btn {
+    min-height: 40px;
+    padding: 9px 14px;
+    font-size: .88rem;
+  }
+}
+
+@media (max-width: 767px) {
+  .mownwa-landing-header-inner {
+    min-height: 56px;
+    gap: 8px;
+  }
+
+  .mownwa-landing-logo {
+    width: min(168px, 48vw) !important;
+  }
+
+  .mownwa-header-actions {
+    gap: 6px;
+  }
+
+  .mownwa-login-btn,
+  .mownwa-header-contact-btn,
+  .mownwa-header-quote-btn {
+    min-height: 36px;
+    padding: 8px 10px;
+    font-size: .8rem;
+  }
+}
+
+@media (max-width: 390px) {
+  .mownwa-landing-logo {
+    width: min(150px, 44vw) !important;
+  }
+
+  .mownwa-header-quote-btn .ui-label {
+    max-width: 72px;
+    white-space: normal;
+    line-height: 1.05;
   }
 }

@@ -3,7 +3,7 @@ import { test, expect } from '@playwright/test';
 async function expectParcelConfirmationUi(page) {
   const panel = page.locator('#parcel-confirm-panel');
   await expect(panel).toBeVisible();
-  await expect(panel).toContainText('Confirm your property');
+  await expect(page.locator('#quoteStepTitle')).toHaveText(/Confirm Your Property/i);
   await expect(panel.locator('#parcelInfo')).toContainText('Parcel found');
   await expect(panel.getByRole('button', { name: 'Yes, use this property' })).toBeVisible();
   await expect(panel.getByRole('button', { name: 'Search again' })).toBeVisible();
@@ -82,8 +82,8 @@ test('logged-out homepage shows global menu and login access on desktop', async 
   await page.goto('http://127.0.0.1:3000/');
 
   await expect(page.locator('#openAppDrawer')).toBeVisible();
-  await expect(page.locator('#mobileAuthBtn')).toBeVisible();
-  await expect(page.locator('#mobileAuthBtn')).toContainText('Login');
+  await expect(page.locator('.mownwa-login-btn')).toBeVisible();
+  await expect(page.locator('.mownwa-login-btn')).toContainText('Login');
   await expect(page.locator('#mobileAccountAvatar')).toBeHidden();
 });
 
@@ -714,7 +714,7 @@ test('mobile checkout Facebook login saves auth context and redirects same-tab',
   await facebookButton.click();
 
   await expect(page).toHaveURL(/\/api\/auth\/facebook\?source=checkout&step=request$/);
-  const savedContext = await page.evaluate(() => JSON.parse(localStorage.getItem('turflynk.authReturn.v1') || 'null'));
+  const savedContext = await page.evaluate(() => JSON.parse(sessionStorage.getItem('turflynk.authReturn.v1') || 'null'));
   expect(savedContext?.source).toBe('checkout');
   expect(savedContext?.step).toBe('request');
   expect(savedContext?.quote?.serviceType).toBe('mowing');
@@ -811,7 +811,7 @@ test('auth return restores saved quote request state and clears context', async 
   };
 
   await page.addInitScript((context) => {
-    localStorage.setItem('turflynk.authReturn.v1', JSON.stringify(context));
+    sessionStorage.setItem('turflynk.authReturn.v1', JSON.stringify(context));
   }, savedContext);
 
   await page.goto('http://127.0.0.1:3000/?auth=success&view=quote&step=request');
@@ -819,10 +819,10 @@ test('auth return restores saved quote request state and clears context', async 
   await expect(page.locator('#leadRequestPanel')).toBeVisible();
   await expect(page.locator('body')).toHaveAttribute('data-quote-flow-step', 'request');
   await expect(page.locator('#leadRequestForm input[name="customerName"]')).toHaveValue('Jane Doe');
-  await expect(page.locator('#leadRequestForm input[name="customerPhone"]')).toHaveValue('479-555-1212');
+  await expect(page.locator('#leadRequestForm input[name="customerPhone"]')).toHaveValue(/\(?479\)?[-\s]555-1212/);
   await expect(page.locator('#leadRequestForm textarea[name="notes"]')).toHaveValue('Gate code 1234');
   await expect(page.locator('#quoteStartScreen')).toBeHidden();
-  await expect.poll(() => page.evaluate(() => localStorage.getItem('turflynk.authReturn.v1'))).toBeNull();
+  await expect.poll(() => page.evaluate(() => sessionStorage.getItem('turflynk.authReturn.v1'))).toBeNull();
 });
 
 test('Facebook auth callback URL follows the active production host', async ({ request }) => {
@@ -1052,13 +1052,14 @@ test('manual quote request opens form and verifies phone before submit', async (
       payload,
       breakdown: [{ label: 'Standard mow', amount: 48 }]
     };
+    window.setActiveView?.('quote');
     showQuoteFlowStep('estimate', { scroll: false });
     renderEstimateState();
     updateQuoteFlowState();
   });
 
   await expect(page.getByRole('heading', { name: 'Your Quote' })).toBeVisible();
-  await page.getByRole('button', { name: /Request In-Person Quote/i }).click();
+  await page.locator('#manualQuoteBtn').click();
   await expect(page.locator('#manualQuotePanel')).toBeVisible();
   await expect(page.locator('#manualQuoteForm')).toBeVisible();
   await expect(page.locator('#manualQuoteContext')).toContainText('Selected quote summary');

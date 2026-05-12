@@ -1615,7 +1615,10 @@ function initNavigation() {
     });
   });
 
-  const first = buttons.find((b) => b.classList.contains('active'))?.dataset.view || 'dashboard';
+  const bodyView = document.body?.dataset?.activeView;
+  const first = sections.some((section) => section.dataset.viewPanel === bodyView)
+    ? bodyView
+    : buttons.find((b) => b.classList.contains('active'))?.dataset.view || 'dashboard';
   setActiveView(first);
 }
 

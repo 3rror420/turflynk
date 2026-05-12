@@ -20,7 +20,7 @@ const state = {
   drawHandler: null,
   editHandler: null,
   deleteHandler: null,
-  activeView: 'quote',
+  activeView: 'dashboard',
   mowUndoStack: [],
   editSnapshot: null,
   aiCutoutGroup: null,
