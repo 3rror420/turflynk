@@ -868,6 +868,47 @@ function computeRoutingRecommendation(diagnostics) {
   return { action, confidenceBand, reasons };
 }
 
+function computeSemanticCleanupProposal(diagnostics) {
+  const ss = diagnostics?.semantic?.semanticSummary;
+  const hcScore = diagnostics?.hybridConfidence?.score;
+  if (!ss) {
+    return { enabled: true, mode: "shadow", recommended: false, suggestedAction: "none",
+      estimatedKeepPercent: 100, estimatedRemovePercent: 0, reasons: ["semanticSummary unavailable"] };
+  }
+  const structurePercent  = ss.structurePercent  ?? 0;
+  const pavementPercent   = ss.pavementPercent   ?? 0;
+  const waterPercent      = ss.waterPercent      ?? 0;
+  const vegetationPercent = ss.vegetationPercent ?? 0;
+  let recommended = false;
+  let suggestedAction = "none";
+  let estimatedRemovePercent = 0;
+  const reasons = [];
+  if (ss.structureHeavy === true || ss.pavementHeavy === true) {
+    recommended = true;
+    suggestedAction = "remove_structure_pavement_regions";
+    estimatedRemovePercent = structurePercent + pavementPercent;
+    if (ss.structureHeavy === true) reasons.push("Structure-heavy scene detected");
+    if (ss.pavementHeavy === true)  reasons.push("Pavement-heavy scene detected");
+  }
+  if (waterPercent > 5) {
+    reasons.push("Water/pool area detected");
+    estimatedRemovePercent += waterPercent;
+  }
+  if (vegetationPercent >= 50 && ss.likelyMowable === true) {
+    recommended = false;
+    suggestedAction = "keep_sam_geometry";
+    reasons.push("Semantic layer agrees mowable vegetation is present");
+  }
+  if (hcScore != null && hcScore < 0.25) {
+    recommended = true;
+    reasons.push("Low hybrid confidence suggests manual/cleanup review");
+  }
+  estimatedRemovePercent = Math.round(Math.min(95, Math.max(0, estimatedRemovePercent)) * 10) / 10;
+  const estimatedKeepPercent = Math.round(Math.min(100, Math.max(0, 100 - estimatedRemovePercent)) * 10) / 10;
+  return { enabled: true, mode: "shadow", recommended, suggestedAction,
+    estimatedKeepPercent, estimatedRemovePercent, reasons };
+}
+
 function compactAiDetectDiagnostics(value = {}) {
   const detectedRatio = Number(value.detectedRatio);
   const parcelAreaSqft = Number(value.parcelAreaSqft);
@@ -1661,6 +1702,11 @@ async function handleAiDetectMowable(req, res, options = {}) {
                 samNormalized.diagnostics.routingRecommendation = rr;
                 console.log(`[AI Detect] routingRecommendation action=${rr.action} band=${rr.confidenceBand} reasons=${JSON.stringify(rr.reasons)}`);
               }
+              {
+                const scp = computeSemanticCleanupProposal(samNormalized.diagnostics);
+                samNormalized.diagnostics.semanticCleanupProposal = scp;
+                console.log(`[AI Detect] semanticCleanupProposal recommended=${scp.recommended} action=${scp.suggestedAction} remove=${scp.estimatedRemovePercent} keep=${scp.estimatedKeepPercent}`);
+              }
               samNormalized.diagnostics.workerStatus = workerStatus;
             }
             samNormalized.detection_mode = resolvedDetectionMode;
@@ -1856,6 +1902,11 @@ async function handleAiDetectMowable(req, res, options = {}) {
         const rr = computeRoutingRecommendation(normalized.diagnostics);
         normalized.diagnostics.routingRecommendation = rr;
         console.log(`[AI Detect] routingRecommendation action=${rr.action} band=${rr.confidenceBand} reasons=${JSON.stringify(rr.reasons)}`);
+      }
+      {
+        const scp = computeSemanticCleanupProposal(normalized.diagnostics);
+        normalized.diagnostics.semanticCleanupProposal = scp;
+        console.log(`[AI Detect] semanticCleanupProposal recommended=${scp.recommended} action=${scp.suggestedAction} remove=${scp.estimatedRemovePercent} keep=${scp.estimatedKeepPercent}`);
       }
       normalized.diagnostics.workerStatus = workerStatus;
     }

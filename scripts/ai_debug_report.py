@@ -169,6 +169,20 @@ def main() -> int:
     else:
         print(f"  {'reasons':<22} unavailable")
 
+    section("Semantic Cleanup Proposal")
+    scp = diag.get("semanticCleanupProposal") or {}
+    row("mode", scp.get("mode"))
+    row("recommended", scp.get("recommended"))
+    row("suggestedAction", scp.get("suggestedAction"))
+    row("estimatedKeepPercent", scp.get("estimatedKeepPercent"))
+    row("estimatedRemovePercent", scp.get("estimatedRemovePercent"))
+    scp_reasons = scp.get("reasons")
+    if scp_reasons:
+        for r in scp_reasons:
+            print(f"  {'reason':<22} {r}")
+    else:
+        print(f"  {'reasons':<22} unavailable")
+
     section("Debug Paths")
     row("overlay", debug_paths.get("overlay"))
     row("mask", debug_paths.get("mask"))
