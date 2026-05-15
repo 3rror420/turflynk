@@ -127,6 +127,31 @@ function readSettingsFile() {
 
 let localSettings = readSettingsFile();
 
+// ── A5000 semantic diagnostics cache ──────────────────────────────────────────
+// Keyed by samImageUrl. TTL 30 min, max 100 entries. Diagnostics-only; never
+// affects geometry, pricing, or parcel acceptance.
+const _a5000SemanticCache = new Map();
+const _A5000_CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
+const _A5000_CACHE_MAX = 100;
+function _a5000CacheGet(key) {
+  const entry = _a5000SemanticCache.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.ts > _A5000_CACHE_TTL_MS) {
+    _a5000SemanticCache.delete(key);
+    return null;
+  }
+  return entry.value;
+}
+function _a5000CacheSet(key, value) {
+  if (_a5000SemanticCache.size >= _A5000_CACHE_MAX) {
+    const oldest = _a5000SemanticCache.keys().next().value;
+    _a5000SemanticCache.delete(oldest);
+    console.log("[AI Detect] A5000 semantic cache pruned");
+  }
+  _a5000SemanticCache.set(key, { ts: Date.now(), value });
+}
+// ── end A5000 semantic cache ───────────────────────────────────────────────────
+
 function writeSettingsFile(settings) {
   const tmp = SETTINGS_FILE + ".tmp";
   writeFileSync(tmp, JSON.stringify(settings, null, 2) + "\n");
@@ -1550,28 +1575,39 @@ async function handleAiDetectMowable(req, res, options = {}) {
               let a5000Semantic = null;
               if (a5000Enabled && a5000Url && samImageUrl && (samConfidence == null || samConfidence < a5000Threshold)) {
                 console.log(`[AI Detect] A5000 semantic enabled for low confidence confidenceScore=${samConfidence ?? "missing"}`);
-                workerStatus.a5000.used = true;
-                a5000Semantic = await fetchWithTimeout(`${a5000Url}/semantic-detect`, {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ imageUrl: samImageUrl }),
-                }, a5000TimeoutMs)
-                  .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
-                  .then(data => {
-                    const classes = Array.isArray(data.classes) ? data.classes : [];
-                    const findPct = label => (classes.find(c => c.label === label)?.percent ?? 0);
-                    const buildingPercent = findPct("building");
-                    const treePercent = findPct("tree");
-                    const roadPercent = findPct("road");
-                    console.log(`[AI Detect] A5000 semantic classes: building=${buildingPercent} tree=${treePercent} road=${roadPercent}`);
-                    const semanticSummary = data.semanticSummary || null;
-                    if (semanticSummary) console.log(`[AI Detect] semanticSummary dominantClass=${semanticSummary.dominantClass ?? "?"} likelyMowable=${semanticSummary.likelyMowable ?? "?"}`);
-                    return { source: data.source || "a5000_semantic", model: data.model || null, classes, buildingPercent, treePercent, roadPercent, semanticSummary, debug: data.debug || null };
-                  })
-                  .catch(err => {
-                    console.log(`[AI Detect] A5000 semantic unavailable: ${err.message}`);
-                    return null;
-                  });
+                const _cached = _a5000CacheGet(samImageUrl);
+                if (_cached) {
+                  console.log("[AI Detect] A5000 semantic cache hit");
+                  workerStatus.a5000.cacheHit = true;
+                  a5000Semantic = { ..._cached, cache: { hit: true, key: samImageUrl, ttlSeconds: 1800 } };
+                } else {
+                  console.log("[AI Detect] A5000 semantic cache miss");
+                  workerStatus.a5000.used = true;
+                  a5000Semantic = await fetchWithTimeout(`${a5000Url}/semantic-detect`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ imageUrl: samImageUrl }),
+                  }, a5000TimeoutMs)
+                    .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+                    .then(data => {
+                      const classes = Array.isArray(data.classes) ? data.classes : [];
+                      const findPct = label => (classes.find(c => c.label === label)?.percent ?? 0);
+                      const buildingPercent = findPct("building");
+                      const treePercent = findPct("tree");
+                      const roadPercent = findPct("road");
+                      console.log(`[AI Detect] A5000 semantic classes: building=${buildingPercent} tree=${treePercent} road=${roadPercent}`);
+                      const semanticSummary = data.semanticSummary || null;
+                      if (semanticSummary) console.log(`[AI Detect] semanticSummary dominantClass=${semanticSummary.dominantClass ?? "?"} likelyMowable=${semanticSummary.likelyMowable ?? "?"}`);
+                      const result = { source: data.source || "a5000_semantic", model: data.model || null, classes, buildingPercent, treePercent, roadPercent, semanticSummary, debug: data.debug || null };
+                      _a5000CacheSet(samImageUrl, result);
+                      console.log("[AI Detect] A5000 semantic cache stored");
+                      return { ...result, cache: { hit: false, key: samImageUrl, ttlSeconds: 1800 } };
+                    })
+                    .catch(err => {
+                      console.log(`[AI Detect] A5000 semantic unavailable: ${err.message}`);
+                      return null;
+                    });
+                }
               } else if (a5000Enabled && a5000Url) {
                 console.log(`[AI Detect] A5000 semantic skipped: sam confidence sufficient confidenceScore=${samConfidence}`);
                 workerStatus.a5000.skippedReason = "sam confidence sufficient";
