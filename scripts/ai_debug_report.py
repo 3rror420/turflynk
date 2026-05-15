@@ -188,6 +188,51 @@ def main() -> int:
     row("mask", debug_paths.get("mask"))
     row("classesJson", debug_paths.get("classesJson"))
 
+    section("Visual Review")
+    row("overlayPath", debug_paths.get("overlay"))
+    row("maskPath", debug_paths.get("mask"))
+    row("classesJsonPath", debug_paths.get("classesJson"))
+    row("suggestedAction", scp.get("suggestedAction"))
+    row("estimatedRemovePercent", scp.get("estimatedRemovePercent"))
+    row("estimatedKeepPercent", scp.get("estimatedKeepPercent"))
+    row("hybridConfidence.score", hc.get("score"))
+    row("routingAction", rr.get("action"))
+
+    hints = []
+    remove_pct = scp.get("estimatedRemovePercent")
+    if remove_pct is not None:
+        try:
+            if float(remove_pct) > 70:
+                hints.append("Review carefully: semantic layer believes most of the detected region is non-mowable.")
+        except (TypeError, ValueError):
+            pass
+    hc_score = hc.get("score")
+    if hc_score is not None:
+        try:
+            if float(hc_score) < 0.25:
+                hints.append("Low-confidence result. Manual review strongly recommended.")
+        except (TypeError, ValueError):
+            pass
+    if sem.get("likelyMowable") is True:
+        veg_pct = sem.get("vegetationPercent")
+        if veg_pct is not None:
+            try:
+                if float(veg_pct) > 50:
+                    hints.append("Semantic layer generally agrees with mowable classification.")
+            except (TypeError, ValueError):
+                pass
+    if sem.get("structureHeavy") is True:
+        hints.append("Large structure/building coverage detected.")
+    if sem.get("pavementHeavy") is True:
+        hints.append("Large pavement/driveway coverage detected.")
+
+    if hints:
+        print(f"  {'---':<22}")
+        for h in hints:
+            print(f"  {h}")
+    else:
+        print(f"  {'notes':<22} none")
+
     print()
     return 0
 
