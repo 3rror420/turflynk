@@ -389,9 +389,15 @@ async function aiDetectMowableArea() {
   const parcelFeature = validPolygonalFeaturesFromValue(state.parcelFeature)[0]
     || validPolygonalFeaturesFromValue(parcelGeoJson)[0]
     || null;
+  const parcelAreaSqft = form
+    ? (Number(form.elements.lotAreaSqft?.value || 0) || (typeof layerAreaSqFt === 'function' ? Math.round(layerAreaSqFt(parcelGeoJson)) : 0))
+    : (typeof layerAreaSqFt === 'function' ? Math.round(layerAreaSqFt(parcelGeoJson)) : 0);
+
   const payload = {
     parcelGeoJson,
     parcelFeature,
+    detection_mode: 'parcel_minus_non_mowable',
+    parcelAreaSqft,
     center: center ? {
       lng: Number(center.lng ?? center[0]),
       lat: Number(center.lat ?? center[1]),
@@ -412,6 +418,11 @@ async function aiDetectMowableArea() {
   };
 
   console.log('[AI Detect] request body', payload);
+  console.log('[MowNWA AI Request]', {
+    workerUrl: '/api/ai/detect-mowable',
+    detection_mode: payload.detection_mode,
+    parcelAreaSqft,
+  });
 
   stopToolModes();
   setAiDetectMowableStatus('');
@@ -473,6 +484,14 @@ async function aiDetectMowableArea() {
       selectedCandidate: diag.selectedCandidate,
       debugRunDir: diag.debugRunDir,
     }));
+
+    console.log('[MowNWA AI Request] response', {
+      responseMode: data.mode || data.detectionMode || data.detection_mode || '',
+      confidence: data.confidence || '',
+      softCandidate: data.softCandidate ?? null,
+      excludedGeoJson: data.excludedGeoJson != null ? '[present]' : null,
+      excludedClasses: data.excludedClasses || null,
+    });
 
     renderAiSemanticDiagPanel(data);
 

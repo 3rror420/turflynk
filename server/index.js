@@ -1212,7 +1212,10 @@ function normalizeMowableResponse(payload = {}) {
     detection_mode: payload.detection_mode || payload.detectionMode || payload.mode,
     confidence: confidenceLabel,
     confidenceScore,
-    warning: payload.warning || (source === "fallback" ? "Vision service unavailable; using parcel-based draft." : undefined)
+    warning: payload.warning || (source === "fallback" ? "Vision service unavailable; using parcel-based draft." : undefined),
+    ...(payload.excludedGeoJson != null ? { excludedGeoJson: payload.excludedGeoJson } : {}),
+    ...(payload.excludedClasses != null ? { excludedClasses: payload.excludedClasses } : {}),
+    ...(payload.softCandidate != null ? { softCandidate: payload.softCandidate } : {}),
   };
 }
 
@@ -1448,6 +1451,8 @@ async function handleAiDetectMowable(req, res, options = {}) {
     // A5000 is called inline after SAM result is known — only when confidence is low.
     // ── end A5000 semantic config ─────────────────────────────────────────────
 
+    const _samDetectionMode = body.detection_mode || body.detectionMode || "parcel_minus_non_mowable";
+    console.log(`[MowNWA AI Request] url=${samUrl}/detect-mowable detection_mode=${_samDetectionMode} parcelAreaSqft=${Math.round(parcelAreaSqft)}`);
     try {
       const samUpstream = await fetchWithTimeout(`${samUrl}/detect-mowable`, {
         method: "POST",
@@ -1456,6 +1461,8 @@ async function handleAiDetectMowable(req, res, options = {}) {
           parcelGeoJson: validatedParcelGeoJson,
           parcelFeature: body.parcelFeature || parcelFeatures[0],
           detectionPreset,
+          detection_mode: _samDetectionMode,
+          parcelAreaSqft: Math.round(parcelAreaSqft),
           address: body.address || body.parcelAddress || body.serviceAddress || "",
           center: body.center,
           lat: body.lat,
@@ -1606,6 +1613,7 @@ async function handleAiDetectMowable(req, res, options = {}) {
             const workerMode = samPayload?.mode || "sam_gpu";
             const resolvedDetectionMode = workerMode === "sam_gpu" ? "sam_gpu" : workerMode;
             console.log(`[AI Detect] SAM detection accepted detection_mode=${resolvedDetectionMode} features=${samNormalized.features?.length || 0} elapsedMs=${samPayload?.elapsedMs}`);
+            console.log(`[MowNWA AI Request] response detection_mode=${resolvedDetectionMode} confidence=${samNormalized.confidence} softCandidate=${samPayload?.softCandidate ?? null}`);
             workerStatus.sam.used = true;
             samNormalized.confidenceScore = samPayload?.confidenceScore ?? samNormalized.confidenceScore;
             if (samNormalized.confidenceScore == null) {
@@ -1720,6 +1728,9 @@ async function handleAiDetectMowable(req, res, options = {}) {
             samNormalized.detectionBoundarySqft = Math.round(effectiveAreaSqft);
             samNormalized.parcelSqft = Math.round(parcelAreaSqft);
             samNormalized.usedSelectedBoundary = boundarySource !== "parcel";
+            if (samPayload?.excludedGeoJson != null) samNormalized.excludedGeoJson = samPayload.excludedGeoJson;
+            if (samPayload?.excludedClasses != null) samNormalized.excludedClasses = samPayload.excludedClasses;
+            if (samPayload?.softCandidate != null) samNormalized.softCandidate = samPayload.softCandidate;
             // Prefer classical over SAM when SAM confidence is low.
             // High confidence SAM results are returned immediately (authoritative).
             // Low confidence SAM results are held; classical runs first and wins if it finds features.
