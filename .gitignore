@@ -143,3 +143,8 @@ __pycache__/
 *.pyc
 REFRESH-NOTES.md
 MowNWA Premium Refresh Preview.html
+
+# AI debug/test artifacts
+vision-sam-worker/debug_runs/
+sam-test-runs/
+vision_service/debug_runs/
