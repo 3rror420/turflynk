@@ -1271,11 +1271,30 @@ async function handleAiDetectMowable(req, res, options = {}) {
     console.log(`[AI Detect] boundary source: parcel parcelSqft=${Math.round(parcelAreaSqft)}`);
     console.log("[AI Detect] mode=full-parcel");
   }
+  // ── Worker toggle state ────────────────────────────────────────────────────
+  const samEnabled = (process.env.SAM_VISION_ENABLED || "").trim() === "true";
+  const a5000EnabledGlobal = (process.env.A5000_VISION_ENABLED || "").trim() === "true";
+  const workerStatus = {
+    sam: samEnabled
+      ? { enabled: true, urlConfigured: Boolean((process.env.SAM_VISION_URL || "").trim()), used: false }
+      : { enabled: false, urlConfigured: Boolean((process.env.SAM_VISION_URL || "").trim()), skippedReason: "SAM_VISION_ENABLED is not true" },
+    a5000: a5000EnabledGlobal
+      ? { enabled: true, urlConfigured: Boolean((process.env.A5000_VISION_URL || "").trim()), used: false }
+      : { enabled: false, urlConfigured: Boolean((process.env.A5000_VISION_URL || "").trim()), skippedReason: "A5000_VISION_ENABLED is not true" },
+  };
+  if (!samEnabled) {
+    console.log("[AI Detect] SAM worker disabled by env");
+  } else {
+    console.log(`[AI Detect] SAM worker enabled url=${(process.env.SAM_VISION_URL || "http://127.0.0.1:8020").replace(/\/+$/, "")}`);
+  }
+  if (!a5000EnabledGlobal) {
+    console.log("[AI Detect] A5000 semantic disabled by env");
+  }
   // ── SAM GPU vision path (optional) ────────────────────────────────────────
   // When SAM_VISION_ENABLED=true the request is proxied to the SAM worker first.
   // Any failure (worker down, timeout, bad response, guardrail reject) falls
   // through to the existing classical vision service below — never blocks a quote.
-  if ((process.env.SAM_VISION_ENABLED || "").trim() === "true") {
+  if (samEnabled) {
     const samUrl = (process.env.SAM_VISION_URL || "http://127.0.0.1:8020").replace(/\/+$/, "");
     const samTimeoutMs = parseInt(process.env.SAM_VISION_TIMEOUT_MS || "120000", 10);
     console.log(`[AI Detect] SAM proxy attempt url=${samUrl} timeoutMs=${samTimeoutMs}`);
@@ -1308,7 +1327,7 @@ async function handleAiDetectMowable(req, res, options = {}) {
     }
 
     // ── A5000 semantic diagnostics (conditional on SAM confidence) ────────────
-    const a5000Enabled = process.env.A5000_VISION_ENABLED === "true";
+    const a5000Enabled = a5000EnabledGlobal;
     const a5000Url = (process.env.A5000_VISION_URL || "").replace(/\/+$/, "");
     const a5000TimeoutMs = parseInt(process.env.A5000_VISION_TIMEOUT_MS || "180000", 10);
     // A5000 is called inline after SAM result is known — only when confidence is low.
@@ -1472,6 +1491,7 @@ async function handleAiDetectMowable(req, res, options = {}) {
             const workerMode = samPayload?.mode || "sam_gpu";
             const resolvedDetectionMode = workerMode === "sam_gpu" ? "sam_gpu" : workerMode;
             console.log(`[AI Detect] SAM detection accepted detection_mode=${resolvedDetectionMode} features=${samNormalized.features?.length || 0} elapsedMs=${samPayload?.elapsedMs}`);
+            workerStatus.sam.used = true;
             samNormalized.confidenceScore = samPayload?.confidenceScore ?? samNormalized.confidenceScore;
             if (samNormalized.confidenceScore == null) {
               samNormalized.confidenceScore = 0.35;
@@ -1485,6 +1505,7 @@ async function handleAiDetectMowable(req, res, options = {}) {
               let a5000Semantic = null;
               if (a5000Enabled && a5000Url && samImageUrl && (samConfidence == null || samConfidence < a5000Threshold)) {
                 console.log(`[AI Detect] A5000 semantic enabled for low confidence confidenceScore=${samConfidence ?? "missing"}`);
+                workerStatus.a5000.used = true;
                 a5000Semantic = await fetchWithTimeout(`${a5000Url}/semantic-detect`, {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
@@ -1506,6 +1527,7 @@ async function handleAiDetectMowable(req, res, options = {}) {
                   });
               } else if (a5000Enabled && a5000Url) {
                 console.log(`[AI Detect] A5000 semantic skipped: sam confidence sufficient confidenceScore=${samConfidence}`);
+                workerStatus.a5000.skippedReason = "sam confidence sufficient";
               }
               samNormalized.diagnostics = compactAiDetectDiagnostics({
                 ...samDiagnostics,
@@ -1526,6 +1548,7 @@ async function handleAiDetectMowable(req, res, options = {}) {
                 elapsedMs: samPayload?.elapsedMs,
               });
               if (a5000Semantic) samNormalized.diagnostics.semantic = a5000Semantic;
+              samNormalized.diagnostics.workerStatus = workerStatus;
             }
             samNormalized.detection_mode = resolvedDetectionMode;
             samNormalized.detectionMode = resolvedDetectionMode;
@@ -1553,14 +1576,16 @@ async function handleAiDetectMowable(req, res, options = {}) {
   const visionStatus = await checkVisionServiceStatus(visionServiceUrl);
 
   if (!visionStatus.available) {
-    return res.json(emptyMowableDetection("vision service unavailable", {
+    const _resp = emptyMowableDetection("vision service unavailable", {
       parcelAreaSqft,
       detectionPreset,
       source: "vision_unavailable",
       featuresReturned: 0,
       includeDiagnostics,
       diagnostics: { reason: "vision service unavailable" }
-    }));
+    });
+    if (includeDiagnostics && _resp.diagnostics) _resp.diagnostics.workerStatus = workerStatus;
+    return res.json(_resp);
   }
 
   try {
@@ -1600,14 +1625,16 @@ async function handleAiDetectMowable(req, res, options = {}) {
       console.log(`[AI Detect] vision service status=upstream_http_${upstream.status}`);
       console.log("[AI Detect] vision service unavailable");
       console.log("[AI Detect] features returned=0");
-      return res.json(emptyMowableDetection("vision service unavailable", {
+      const _resp2 = emptyMowableDetection("vision service unavailable", {
         parcelAreaSqft,
         detectionPreset,
         source: "upstream_unavailable",
         featuresReturned: 0,
         includeDiagnostics,
         diagnostics: { reason: "vision service unavailable" }
-      }));
+      });
+      if (includeDiagnostics && _resp2.diagnostics) _resp2.diagnostics.workerStatus = workerStatus;
+      return res.json(_resp2);
     }
 
     const payload = await upstream.json().catch(() => null);
@@ -1658,6 +1685,7 @@ async function handleAiDetectMowable(req, res, options = {}) {
       rejectionResp.detectionBoundarySqft = Math.round(effectiveAreaSqft);
       rejectionResp.parcelSqft = Math.round(parcelAreaSqft);
       rejectionResp.usedSelectedBoundary = boundarySource !== "parcel";
+      if (includeDiagnostics && rejectionResp.diagnostics) rejectionResp.diagnostics.workerStatus = workerStatus;
       return res.json(rejectionResp);
     }
 
@@ -1686,6 +1714,7 @@ async function handleAiDetectMowable(req, res, options = {}) {
         mode: normalized.mode ?? visionDiagnostics.mode
       });
       if (a5000Semantic) normalized.diagnostics.semantic = a5000Semantic;
+      normalized.diagnostics.workerStatus = workerStatus;
     }
     normalized.detectionBoundarySource = boundarySource;
     normalized.detectionBoundarySqft = Math.round(effectiveAreaSqft);
@@ -1696,14 +1725,16 @@ async function handleAiDetectMowable(req, res, options = {}) {
     console.log("[AI Detect] vision service status=unavailable");
     console.log("[AI Detect] vision service unavailable");
     console.warn("[AI Detect] vision service error", err.message);
-    return res.json(emptyMowableDetection("vision service unavailable", {
+    const _resp3 = emptyMowableDetection("vision service unavailable", {
       parcelAreaSqft,
       detectionPreset,
       source: "vision_unavailable",
       featuresReturned: 0,
       includeDiagnostics,
       diagnostics: { reason: "vision service unavailable" }
-    }));
+    });
+    if (includeDiagnostics && _resp3.diagnostics) _resp3.diagnostics.workerStatus = workerStatus;
+    return res.json(_resp3);
   }
 }
 
