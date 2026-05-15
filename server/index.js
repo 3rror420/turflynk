@@ -1519,7 +1519,9 @@ async function handleAiDetectMowable(req, res, options = {}) {
                     const treePercent = findPct("tree");
                     const roadPercent = findPct("road");
                     console.log(`[AI Detect] A5000 semantic classes: building=${buildingPercent} tree=${treePercent} road=${roadPercent}`);
-                    return { source: data.source || "a5000_semantic", model: data.model || null, classes, buildingPercent, treePercent, roadPercent };
+                    const semanticSummary = data.semanticSummary || null;
+                    if (semanticSummary) console.log(`[AI Detect] semanticSummary dominantClass=${semanticSummary.dominantClass ?? "?"} likelyMowable=${semanticSummary.likelyMowable ?? "?"}`);
+                    return { source: data.source || "a5000_semantic", model: data.model || null, classes, buildingPercent, treePercent, roadPercent, semanticSummary, debug: data.debug || null };
                   })
                   .catch(err => {
                     console.log(`[AI Detect] A5000 semantic unavailable: ${err.message}`);
@@ -1548,6 +1550,26 @@ async function handleAiDetectMowable(req, res, options = {}) {
                 elapsedMs: samPayload?.elapsedMs,
               });
               if (a5000Semantic) samNormalized.diagnostics.semantic = a5000Semantic;
+              {
+                const ss = a5000Semantic?.semanticSummary;
+                const hasFeatures = (samNormalized.features?.length || 0) > 0;
+                if (ss) {
+                  const reasons = [];
+                  if (hasFeatures && ss.structureHeavy === true)
+                    reasons.push("SAM returned mowable geometry but semantic layer reports high structure coverage");
+                  if (hasFeatures && ss.pavementHeavy === true)
+                    reasons.push("SAM returned mowable geometry but semantic layer reports high pavement coverage");
+                  if (hasFeatures && ss.likelyMowable === false && (ss.vegetationPercent ?? 100) < 20)
+                    reasons.push("SAM returned mowable geometry but semantic layer reports low vegetation");
+                  if (ss.treeHeavy === true)
+                    reasons.push("Semantic layer reports tree-heavy parcel");
+                  const suspicious = reasons.length > 0;
+                  samNormalized.diagnostics.semanticMismatch = { suspicious, reasons };
+                  if (suspicious) console.log(`[AI Detect] semanticMismatch suspicious=true reasons=${JSON.stringify(reasons)}`);
+                } else {
+                  samNormalized.diagnostics.semanticMismatch = { suspicious: false, reasons: ["semanticSummary unavailable"] };
+                }
+              }
               samNormalized.diagnostics.workerStatus = workerStatus;
             }
             samNormalized.detection_mode = resolvedDetectionMode;
@@ -1714,6 +1736,26 @@ async function handleAiDetectMowable(req, res, options = {}) {
         mode: normalized.mode ?? visionDiagnostics.mode
       });
       if (a5000Semantic) normalized.diagnostics.semantic = a5000Semantic;
+      {
+        const ss = a5000Semantic?.semanticSummary;
+        const hasFeatures = (normalized.features?.length || 0) > 0;
+        if (ss) {
+          const reasons = [];
+          if (hasFeatures && ss.structureHeavy === true)
+            reasons.push("SAM returned mowable geometry but semantic layer reports high structure coverage");
+          if (hasFeatures && ss.pavementHeavy === true)
+            reasons.push("SAM returned mowable geometry but semantic layer reports high pavement coverage");
+          if (hasFeatures && ss.likelyMowable === false && (ss.vegetationPercent ?? 100) < 20)
+            reasons.push("SAM returned mowable geometry but semantic layer reports low vegetation");
+          if (ss.treeHeavy === true)
+            reasons.push("Semantic layer reports tree-heavy parcel");
+          const suspicious = reasons.length > 0;
+          normalized.diagnostics.semanticMismatch = { suspicious, reasons };
+          if (suspicious) console.log(`[AI Detect] semanticMismatch suspicious=true reasons=${JSON.stringify(reasons)}`);
+        } else {
+          normalized.diagnostics.semanticMismatch = { suspicious: false, reasons: ["semanticSummary unavailable"] };
+        }
+      }
       normalized.diagnostics.workerStatus = workerStatus;
     }
     normalized.detectionBoundarySource = boundarySource;
