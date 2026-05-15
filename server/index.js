@@ -1393,6 +1393,10 @@ async function handleAiDetectMowable(req, res, options = {}) {
       ? { enabled: true, urlConfigured: Boolean((process.env.A5000_VISION_URL || "").trim()), used: false }
       : { enabled: false, urlConfigured: Boolean((process.env.A5000_VISION_URL || "").trim()), skippedReason: "A5000_VISION_ENABLED is not true" },
   };
+  // When SAM succeeds but with low confidence, this holds the SAM result so classical
+  // can run first. If classical also finds nothing, SAM low-confidence is used as last resort.
+  let samLowConfidenceFallback = null;
+
   if (!samEnabled) {
     console.log("[AI Detect] SAM worker disabled by env");
   } else {
@@ -1716,7 +1720,17 @@ async function handleAiDetectMowable(req, res, options = {}) {
             samNormalized.detectionBoundarySqft = Math.round(effectiveAreaSqft);
             samNormalized.parcelSqft = Math.round(parcelAreaSqft);
             samNormalized.usedSelectedBoundary = boundarySource !== "parcel";
-            return res.json(samNormalized);
+            // Prefer classical over SAM when SAM confidence is low.
+            // High confidence SAM results are returned immediately (authoritative).
+            // Low confidence SAM results are held; classical runs first and wins if it finds features.
+            const _samConfScore = typeof samNormalized.confidenceScore === "number" ? samNormalized.confidenceScore : 0.35;
+            const SAM_CLASSICAL_PREFER_THRESHOLD = 0.42;
+            if (_samConfScore >= SAM_CLASSICAL_PREFER_THRESHOLD) {
+              console.log(`[AI Detect] SAM high-confidence (${_samConfScore.toFixed(3)}) — returning SAM result`);
+              return res.json(samNormalized);
+            }
+            console.log(`[AI Detect] SAM low-confidence (${_samConfScore.toFixed(3)}) — holding result, trying classical first`);
+            samLowConfidenceFallback = samNormalized;
           }
           console.log(`[AI Detect] SAM guardrail reject reason=${samGuardrail.reason} — falling back to vision service`);
         } else {
@@ -1735,6 +1749,10 @@ async function handleAiDetectMowable(req, res, options = {}) {
   const visionStatus = await checkVisionServiceStatus(visionServiceUrl);
 
   if (!visionStatus.available) {
+    if (samLowConfidenceFallback) {
+      console.log("[AI Detect] classical unavailable — using SAM low-confidence result as last resort");
+      return res.json(samLowConfidenceFallback);
+    }
     const _resp = emptyMowableDetection("vision service unavailable", {
       parcelAreaSqft,
       detectionPreset,
@@ -1784,6 +1802,10 @@ async function handleAiDetectMowable(req, res, options = {}) {
       console.log(`[AI Detect] vision service status=upstream_http_${upstream.status}`);
       console.log("[AI Detect] vision service unavailable");
       console.log("[AI Detect] features returned=0");
+      if (samLowConfidenceFallback) {
+        console.log("[AI Detect] classical upstream error — using SAM low-confidence result as last resort");
+        return res.json(samLowConfidenceFallback);
+      }
       const _resp2 = emptyMowableDetection("vision service unavailable", {
         parcelAreaSqft,
         detectionPreset,
@@ -1823,6 +1845,10 @@ async function handleAiDetectMowable(req, res, options = {}) {
 
     if (rejectionReason) {
       console.log(`[AI Detect] REJECTED: reason=${rejectionReason} detectedRatio=${(parcelAreaSqft > 0 ? detectedAreaSqft / parcelAreaSqft : 0).toFixed(4)} parcelAreaSqft=${Math.round(parcelAreaSqft)}`);
+      if (samLowConfidenceFallback) {
+        console.log(`[AI Detect] classical guardrail reject (${rejectionReason}) — using SAM low-confidence result as last resort`);
+        return res.json(samLowConfidenceFallback);
+      }
       const rejectionResp = emptyMowableDetection(rejectionReason, {
         parcelAreaSqft,
         detectedAreaSqft,
@@ -1919,6 +1945,10 @@ async function handleAiDetectMowable(req, res, options = {}) {
     console.log("[AI Detect] vision service status=unavailable");
     console.log("[AI Detect] vision service unavailable");
     console.warn("[AI Detect] vision service error", err.message);
+    if (samLowConfidenceFallback) {
+      console.log("[AI Detect] classical threw — using SAM low-confidence result as last resort");
+      return res.json(samLowConfidenceFallback);
+    }
     const _resp3 = emptyMowableDetection("vision service unavailable", {
       parcelAreaSqft,
       detectionPreset,
@@ -4824,6 +4854,32 @@ app.get("/api/admin/ai-tuning/built-in-presets", requireAuth, requireRole("admin
   } catch (err) {
     res.status(503).json({ ok: false, error: "Vision service unavailable", detail: err.message });
   }
+});
+
+// ── AI Semantic Debug File Serving (Admin only) ──────────────────────────────
+// Serves local semantic debug artifacts (overlay, mask, classes JSON) for admin
+// inspection. Files must be within SEMANTIC_DEBUG_ROOT to prevent path traversal.
+const SEMANTIC_DEBUG_ROOT = path.resolve(
+  process.env.SEMANTIC_DEBUG_ROOT ||
+  path.join(__dirname, "..", "vision-sam-worker", "debug_runs")
+);
+
+app.get("/api/admin/ai/semantic-debug-file", requireAuth, requireRole("admin"), (req, res) => {
+  const rawPath = typeof req.query.path === "string" ? req.query.path.trim() : "";
+  if (!rawPath) return res.status(400).json({ ok: false, error: "Missing path parameter" });
+  const filePath = path.resolve(rawPath);
+  const rootPrefix = SEMANTIC_DEBUG_ROOT.endsWith(path.sep)
+    ? SEMANTIC_DEBUG_ROOT
+    : SEMANTIC_DEBUG_ROOT + path.sep;
+  if (!filePath.startsWith(rootPrefix) && filePath !== SEMANTIC_DEBUG_ROOT) {
+    return res.status(400).json({ ok: false, error: "Path outside semantic debug root" });
+  }
+  if (!existsSync(filePath)) return res.status(404).json({ ok: false, error: "File not found" });
+  const ext = path.extname(filePath).toLowerCase();
+  const mime = { ".png": "image/png", ".jpg": "image/jpeg", ".json": "application/json" }[ext] || "application/octet-stream";
+  res.setHeader("Cache-Control", "private, max-age=300");
+  res.setHeader("Content-Type", mime);
+  return res.sendFile(filePath);
 });
 
 // ── AI TUNING PRO: Ground Truth Annotations ──────────────────────────────────

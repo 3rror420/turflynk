@@ -503,8 +503,21 @@ async function aiDetectMowableArea() {
     if (features.length === 0) {
       const rejectionReason = data.reason || diag.reason || diag.guardrailReason || '';
       const failureStage = diag.failureStage || '';
+
+      // Clear any stale mowable polygon so no shape remains on the map when AI finds nothing.
+      // This prevents a prior lasso draw or previous AI result from confusing the user.
+      const staleFeaturesCleared = getMowableFeatureCount() > 0;
+      if (staleFeaturesCleared) clearMowableFeatures();
+      // Belt-and-suspenders: ensure any in-progress lasso temp line is also gone.
+      if (typeof setLassoTempLine === 'function') setLassoTempLine([]);
+
       console.warn('[MowNWA AI State] no usable features after server + client pipeline',
-        { serverFeaturesCount, rejectionReason, failureStage });
+        { serverFeaturesCount, rejectionReason, failureStage, staleFeaturesCleared });
+
+      // Reset helper text to prompt manual lasso so the user knows what to do next.
+      const _noFeatForm = byId('quoteForm');
+      updateMowAreaHelper(Number(_noFeatForm?.elements?.lotAreaSqft?.value || 0), 0);
+
       let msg;
       if (rejectionReason && rejectionReason !== 'vision service unavailable') {
         msg = `AI detection completed but no confident vegetation area was found. Reason: ${rejectionReason}. Use Lasso Yard to outline the mowable area.`;
