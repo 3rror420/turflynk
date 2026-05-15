@@ -796,9 +796,10 @@ body[data-active-view="quote"] .tool-group-body{
   border: 1px solid var(--tlx-line);
   border-radius: var(--tlx-radius-sm);
   box-shadow: var(--tlx-shadow-md);
-  /* Position below the toggle for inline layout */
+  /* Opens upward so it does not overlap the Back/Next CTA bar below */
   position: absolute;
-  top: calc(100% + 4px);
+  bottom: calc(100% + 4px);
+  top: auto;
   left: 0;
   z-index: 200;
   min-width: 180px;
@@ -818,12 +819,12 @@ body[data-active-view="quote"] .tool-group-body .btn{
 
 /* toolbar-groups.js manages display via inline style; don't override with !important */
 
-/* Mobile: wider group dropdown panels, float upward if near bottom */
+/* Mobile: wider group dropdown panels, prefer right-align to stay in viewport */
 @media (max-width: 600px){
   body[data-active-view="quote"] .tool-group-body{
     min-width: 160px;
     left: auto;
-    right: 0; /* prefer right-align on small screens to stay in viewport */
+    right: 0;
   }
   body[data-active-view="quote"] .tool-group:last-child .tool-group-body{
     right: 0;

@@ -1,7 +1,10 @@
 // public/js/map/toolbar-groups.js
 // Manages expand/collapse state of grouped tool panels in the map toolbar.
-// Uses MutationObserver to auto-open groups when their buttons become relevant,
-// and auto-close them when all buttons inside are hidden.
+// Rules:
+//  - Only one group may be open at a time (exclusive).
+//  - Clicking a toggle opens that group and closes all others.
+//  - Clicking outside any open group closes all groups.
+//  - syncToolGroups only manages toggle *visibility* — it never auto-opens groups.
 // Loaded after app.js — all IDs are already in the DOM.
 
 (function () {
@@ -11,6 +14,13 @@
     return s.display !== 'none' && s.visibility !== 'hidden';
   }
 
+  function closeAllGroups() {
+    document.querySelectorAll('.tool-group.is-open').forEach(function (g) {
+      g.classList.remove('is-open');
+    });
+  }
+
+  // Only manages toggle visibility; never auto-opens groups.
   function syncToolGroups() {
     document.querySelectorAll('.tool-group').forEach(function (group) {
       const body = group.querySelector('.tool-group-body');
@@ -21,26 +31,33 @@
 
       toggle.style.display = hasVisible ? '' : 'none';
 
-      if (hasVisible) {
-        group.classList.add('is-open');
-      } else {
+      // Auto-close groups whose buttons are all hidden.
+      if (!hasVisible) {
         group.classList.remove('is-open');
-        delete group.dataset.userClosed;
       }
     });
   }
 
-  // Allow manual toggle of group open/closed state
+  // Exclusive toggle: open clicked group, close all others.
   document.addEventListener('click', function (e) {
     const toggle = e.target.closest('.tool-group-toggle');
-    if (!toggle) return;
-    const group = toggle.closest('.tool-group');
-    if (!group) return;
-    const isOpen = group.classList.toggle('is-open');
-    group.dataset.userClosed = isOpen ? '' : '1';
-  }, { passive: true });
+    if (toggle) {
+      const group = toggle.closest('.tool-group');
+      if (!group) return;
+      const willOpen = !group.classList.contains('is-open');
+      closeAllGroups();
+      if (willOpen) group.classList.add('is-open');
+      e.stopPropagation();
+      return;
+    }
 
-  // Watch for JS-driven visibility changes on toolbar buttons
+    // Click outside any open group → close all.
+    if (!e.target.closest('.tool-group')) {
+      closeAllGroups();
+    }
+  });
+
+  // Watch for JS-driven visibility changes on toolbar buttons.
   function attachObserver() {
     const panel = document.getElementById('mapToolsPanel');
     if (!panel) return;

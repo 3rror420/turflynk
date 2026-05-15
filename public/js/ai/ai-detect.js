@@ -474,27 +474,37 @@ async function aiDetectMowableArea() {
       debugRunDir: diag.debugRunDir,
     }));
 
-    let features = sanitizeAiMowableFeatures(data, parcelGeoJson, constraintGeoJson);
-    const serverFeaturesCount = Array.isArray(data.features) ? data.features.length : (Array.isArray(data.featureCollection?.features) ? data.featureCollection.features.length : 0);
-    console.log('[AI Detect] server features count', serverFeaturesCount, '| sanitized features count', features.length);
-if (serverFeaturesCount > 0 && features.length === 0) {
-  console.warn('[AI Detect] forcing fallback features through for manual review');
-  const rawFeatures = Array.isArray(data.features) && data.features.length
-    ? data.features
-    : (Array.isArray(data.featureCollection?.features) ? data.featureCollection.features : []);
-  features = rawFeatures
-    .filter(f => f && f.geometry)
-    .map(f => ({
-      type: 'Feature',
-      properties: { ...(f.properties || {}), source: 'ai-detect-beta-low-manual-review' },
-      geometry: f.geometry
-    }));
-}
+    renderAiSemanticDiagPanel(data);
 
-    if (!data?.ok) {
+    let features = sanitizeAiMowableFeatures(data, parcelGeoJson, constraintGeoJson);
+    const serverFeaturesCount = Array.isArray(data.features) ? data.features.length
+      : (Array.isArray(data.featureCollection?.features) ? data.featureCollection.features.length : 0);
+    console.log('[MowNWA AI State] server features count', serverFeaturesCount, '| sanitized features count', features.length);
+
+    // If client-side sanitization rejected features but the server had them, force them through.
+    // This handles the case where server polygons slightly exceed the 97% area threshold check.
+    if (serverFeaturesCount > 0 && features.length === 0) {
+      console.warn('[MowNWA AI State] sanitization rejected all features — forcing raw server features through for manual review');
+      const rawFeatures = Array.isArray(data.features) && data.features.length
+        ? data.features
+        : (Array.isArray(data.featureCollection?.features) ? data.featureCollection.features : []);
+      features = rawFeatures
+        .filter(f => f && f.geometry)
+        .map(f => ({
+          type: 'Feature',
+          properties: { ...(f.properties || {}), source: 'ai-detect-beta-low-manual-review' },
+          geometry: f.geometry,
+        }));
+      console.log('[MowNWA AI State] forced features count after override:', features.length);
+    }
+
+    // Server returned no usable features — guardrail rejection or no detection.
+    // Note: server always returns ok:true, so we use features.length and data.reason to detect rejection.
+    if (features.length === 0) {
       const rejectionReason = data.reason || diag.reason || diag.guardrailReason || '';
       const failureStage = diag.failureStage || '';
-      console.warn('[AI Detect] no usable features - reason:', rejectionReason, 'failureStage:', failureStage);
+      console.warn('[MowNWA AI State] no usable features after server + client pipeline',
+        { serverFeaturesCount, rejectionReason, failureStage });
       let msg;
       if (rejectionReason && rejectionReason !== 'vision service unavailable') {
         msg = `AI detection completed but no confident vegetation area was found. Reason: ${rejectionReason}. Use Lasso Yard to outline the mowable area.`;
@@ -507,21 +517,34 @@ if (serverFeaturesCount > 0 && features.length === 0) {
       return;
     }
 
+    // Commit features into the same mowable-area state used by manual lasso selection.
+    console.log('[MowNWA AI State] committing', features.length, 'feature(s) to mowable state');
     state.mowUndoStack = [];
     state.selectedMowableFeatureId = null;
     setMowableFeatures(features);
     clearCutoutFeatures();
     reorderMapOverlays();
     syncMowAreaFromLayers();
+    updateQuoteFlowState();
 
-    if (getMowableFeatureCount() === 0) {
+    const committedCount = getMowableFeatureCount();
+    const committedSqFt = Math.round(features.reduce((sum, f) => {
+      try { return sum + (typeof turf !== 'undefined' ? turf.area(f) * 10.7639 : 0); } catch { return sum; }
+    }, 0));
+    console.log('[MowNWA AI State] committed count:', committedCount, '| estimated sqft:', committedSqFt);
+
+    // Genuine rendering failure — features were provided but couldn't be committed to map state.
+    if (committedCount === 0) {
       if (constraintGeoJson) setMowableFeatures(constraintGeoJson.features);
       const msg = 'AI returned a yard suggestion, but it could not be displayed. Use Lasso Yard to quickly outline the mowable grass area.';
+      console.warn('[MowNWA AI State] render failure — getMowableFeatureCount()=0 after setMowableFeatures');
       setAiDetectMowableStatus('fallback');
       showResult('parcelInfo', `<strong>Use Lasso Yard</strong><br>${escapeHtml(msg)}`);
       showToast(msg, 'warning', { duration: 6000 });
       return;
     }
+
+    console.log('[MowNWA AI State] state committed successfully — refreshing estimate and enabling Next button');
 
     await refreshEstimate({ force: true }).catch((error) => {
       showError(prettyApiError(error));
@@ -535,10 +558,12 @@ if (serverFeaturesCount > 0 && features.length === 0) {
       : isLowConfidence
         ? 'AI Detect found a low-confidence area. Please review and edit before booking.'
         : 'Beta AI selected likely mowable vegetation by excluding buildings, pavement, roads, and other hard surfaces. Please review and edit before booking.';
-    console.log('[AI Detect] success confidenceLabel:', confidenceLabel, 'isLowConfidence:', isLowConfidence, 'features:', features.length);
+    console.log('[MowNWA AI State] success — confidenceLabel:', confidenceLabel, 'isLowConfidence:', isLowConfidence,
+      'committedFeatures:', committedCount, 'sqft:', committedSqFt);
     setAiDetectMowableStatus('success');
     showResult('parcelInfo', successMsg);
     showToast(successMsg, isFallback || isLowConfidence ? 'info' : 'success', { duration: 6000 });
+    updateQuoteFlowState();
   } catch (error) {
     console.error('[AI Detect] error', error);
     const msg = aiDetectFallbackMessage();
@@ -626,6 +651,84 @@ function applyAiCutouts() {
   syncMowAreaFromLayers();
 
   showResult('parcelInfo', '<strong>AI cutouts applied.</strong>');
+}
+
+// ── Admin AI Semantic Diagnostics Panel ──────────────────────────────────────
+// Only shown to admins. Never touches customer-facing flow or pricing.
+
+function _aiDiagDebugFileUrl(filePath) {
+  if (!filePath) return null;
+  return '/api/admin/ai/semantic-debug-file?path=' + encodeURIComponent(filePath);
+}
+
+function _aiDiagBand(score) {
+  if (score == null || !Number.isFinite(Number(score))) return '';
+  const n = Number(score);
+  if (n >= 0.7) return 'diag-good';
+  if (n >= 0.4) return 'diag-warn';
+  return 'diag-bad';
+}
+
+function renderAiSemanticDiagPanel(data) {
+  if (typeof isAdmin !== 'function' || !isAdmin()) return;
+  const diag = data?.diagnostics || {};
+  const sem = diag.semantic || {};
+  const semDebug = sem.debug || {};
+  const hc = diag.hybridConfidence || {};
+  const rr = diag.routingRecommendation || {};
+  const scp = diag.semanticCleanupProposal || {};
+
+  const hasDiag = hc.score != null || rr.action || scp.suggestedAction || semDebug.overlay;
+  if (!hasDiag) return;
+
+  let panel = document.getElementById('ai-semantic-diag-panel');
+  if (!panel) {
+    panel = document.createElement('div');
+    panel.id = 'ai-semantic-diag-panel';
+    const anchor = document.getElementById('mowAreaHelper') || document.getElementById('aiDetectGrassStatus');
+    if (anchor) {
+      anchor.parentNode.insertBefore(panel, anchor.nextSibling);
+    } else {
+      const drawScreen = document.getElementById('quoteDrawScreen');
+      if (drawScreen) drawScreen.appendChild(panel);
+    }
+    panel.addEventListener('click', (e) => {
+      if (e.target.closest('.ai-diag-header')) {
+        panel.classList.toggle('diag-open');
+      }
+    });
+  }
+
+  const score = hc.score != null ? Number(hc.score).toFixed(3) : '—';
+  const action = rr.action || '—';
+  const band = rr.confidenceBand || hc.confidenceBand || '—';
+  const removePercent = scp.estimatedRemovePercent != null ? Number(scp.estimatedRemovePercent).toFixed(1) + '%' : '—';
+  const cleanupAction = scp.suggestedAction || '—';
+
+  const overlayUrl = _aiDiagDebugFileUrl(semDebug.overlay);
+  const maskUrl = _aiDiagDebugFileUrl(semDebug.mask);
+  const classesUrl = _aiDiagDebugFileUrl(semDebug.classesJson);
+
+  const linkHtml = [
+    overlayUrl ? `<a class="ai-diag-link" href="${overlayUrl}" target="_blank" rel="noopener">Semantic Overlay</a>` : '',
+    maskUrl    ? `<a class="ai-diag-link" href="${maskUrl}"    target="_blank" rel="noopener">Semantic Mask</a>` : '',
+    classesUrl ? `<a class="ai-diag-link" href="${classesUrl}" target="_blank" rel="noopener">Classes JSON</a>` : '',
+  ].filter(Boolean).join('');
+
+  panel.innerHTML = `
+    <div class="ai-diag-header">
+      <span class="ai-diag-header-label">AI Diagnostics (admin)</span>
+      <span class="ai-diag-chevron">&#9660;</span>
+    </div>
+    <div class="ai-diag-body">
+      <div class="ai-diag-section-title">AI Routing</div>
+      <div class="ai-diag-row"><span class="ai-diag-key">Action</span><span class="ai-diag-val">${escapeHtml(action)}</span></div>
+      <div class="ai-diag-row"><span class="ai-diag-key">Confidence band</span><span class="ai-diag-val">${escapeHtml(band)}</span></div>
+      <div class="ai-diag-row"><span class="ai-diag-key">Hybrid score</span><span class="ai-diag-val ${_aiDiagBand(hc.score)}">${escapeHtml(score)}</span></div>
+      <div class="ai-diag-row"><span class="ai-diag-key">Remove estimate</span><span class="ai-diag-val">${escapeHtml(removePercent)}</span></div>
+      <div class="ai-diag-row"><span class="ai-diag-key">Cleanup action</span><span class="ai-diag-val">${escapeHtml(cleanupAction)}</span></div>
+      ${linkHtml ? `<div class="ai-diag-section-title">Visual Debug</div><div class="ai-diag-links">${linkHtml}</div>` : ''}
+    </div>`;
 }
 
 // Event listeners — wired here; app.js no longer registers these
