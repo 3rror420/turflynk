@@ -148,3 +148,8 @@ MowNWA Premium Refresh Preview.html
 vision-sam-worker/debug_runs/
 sam-test-runs/
 vision_service/debug_runs/
+
+# AI debug/test artifacts
+vision-sam-worker/debug_runs/
+sam-test-runs/
+vision_service/debug_runs/
