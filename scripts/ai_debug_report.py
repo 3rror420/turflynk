@@ -122,6 +122,12 @@ def main() -> int:
     row("A5000 enabled", a5k.get("enabled"))
     row("A5000 used", a5k.get("used"))
 
+    section("Semantic Cache")
+    cache = sem_block.get("cache") or {}
+    row("hit", cache.get("hit"))
+    row("ttlSeconds", cache.get("ttlSeconds"))
+    row("key", cache.get("key"))
+
     section("Semantic Summary")
     row("dominantClass", sem.get("dominantClass"))
     row("vegetationPercent", sem.get("vegetationPercent"))
