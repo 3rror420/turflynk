@@ -1307,34 +1307,12 @@ async function handleAiDetectMowable(req, res, options = {}) {
       }
     }
 
-    // ── A5000 semantic diagnostics (parallel, diagnostics-only) ───────────────
+    // ── A5000 semantic diagnostics (conditional on SAM confidence) ────────────
     const a5000Enabled = process.env.A5000_VISION_ENABLED === "true";
     const a5000Url = (process.env.A5000_VISION_URL || "").replace(/\/+$/, "");
     const a5000TimeoutMs = parseInt(process.env.A5000_VISION_TIMEOUT_MS || "180000", 10);
-    let a5000SemanticPromise = null;
-    if (a5000Enabled && a5000Url && samImageUrl) {
-      console.log(`[AI Detect] A5000 semantic attempt url=${a5000Url}/semantic-detect`);
-      a5000SemanticPromise = fetchWithTimeout(`${a5000Url}/semantic-detect`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ imageUrl: samImageUrl }),
-      }, a5000TimeoutMs)
-        .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
-        .then(data => {
-          const classes = Array.isArray(data.classes) ? data.classes : [];
-          const findPct = label => (classes.find(c => c.label === label)?.percent ?? 0);
-          const buildingPercent = findPct("building");
-          const treePercent = findPct("tree");
-          const roadPercent = findPct("road");
-          console.log(`[AI Detect] A5000 semantic classes: building=${buildingPercent} tree=${treePercent} road=${roadPercent}`);
-          return { source: data.source || "a5000_semantic", model: data.model || null, classes, buildingPercent, treePercent, roadPercent };
-        })
-        .catch(err => {
-          console.log(`[AI Detect] A5000 semantic unavailable: ${err.message}`);
-          return null;
-        });
-    }
-    // ── end A5000 semantic ────────────────────────────────────────────────────
+    // A5000 is called inline after SAM result is known — only when confidence is low.
+    // ── end A5000 semantic config ─────────────────────────────────────────────
 
     try {
       const samUpstream = await fetchWithTimeout(`${samUrl}/detect-mowable`, {
@@ -1494,8 +1472,41 @@ async function handleAiDetectMowable(req, res, options = {}) {
             const workerMode = samPayload?.mode || "sam_gpu";
             const resolvedDetectionMode = workerMode === "sam_gpu" ? "sam_gpu" : workerMode;
             console.log(`[AI Detect] SAM detection accepted detection_mode=${resolvedDetectionMode} features=${samNormalized.features?.length || 0} elapsedMs=${samPayload?.elapsedMs}`);
+            samNormalized.confidenceScore = samPayload?.confidenceScore ?? samNormalized.confidenceScore;
+            if (samNormalized.confidenceScore == null) {
+              samNormalized.confidenceScore = 0.35;
+              samNormalized.confidenceLabel = samNormalized.confidenceLabel || "beta_low";
+              samNormalized.confidence = samNormalized.confidence || "beta_low";
+            }
+            console.log(`[AI Detect] SAM normalized confidenceScore: ${samNormalized.confidenceScore}`);
             if (includeDiagnostics) {
-              const a5000Semantic = a5000SemanticPromise ? await a5000SemanticPromise : null;
+              const samConfidence = samNormalized.confidenceScore;
+              const a5000Threshold = 0.45;
+              let a5000Semantic = null;
+              if (a5000Enabled && a5000Url && samImageUrl && (samConfidence == null || samConfidence < a5000Threshold)) {
+                console.log(`[AI Detect] A5000 semantic enabled for low confidence confidenceScore=${samConfidence ?? "missing"}`);
+                a5000Semantic = await fetchWithTimeout(`${a5000Url}/semantic-detect`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ imageUrl: samImageUrl }),
+                }, a5000TimeoutMs)
+                  .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+                  .then(data => {
+                    const classes = Array.isArray(data.classes) ? data.classes : [];
+                    const findPct = label => (classes.find(c => c.label === label)?.percent ?? 0);
+                    const buildingPercent = findPct("building");
+                    const treePercent = findPct("tree");
+                    const roadPercent = findPct("road");
+                    console.log(`[AI Detect] A5000 semantic classes: building=${buildingPercent} tree=${treePercent} road=${roadPercent}`);
+                    return { source: data.source || "a5000_semantic", model: data.model || null, classes, buildingPercent, treePercent, roadPercent };
+                  })
+                  .catch(err => {
+                    console.log(`[AI Detect] A5000 semantic unavailable: ${err.message}`);
+                    return null;
+                  });
+              } else if (a5000Enabled && a5000Url) {
+                console.log(`[AI Detect] A5000 semantic skipped: sam confidence sufficient confidenceScore=${samConfidence}`);
+              }
               samNormalized.diagnostics = compactAiDetectDiagnostics({
                 ...samDiagnostics,
                 reason: "",
@@ -1518,13 +1529,6 @@ async function handleAiDetectMowable(req, res, options = {}) {
             }
             samNormalized.detection_mode = resolvedDetectionMode;
             samNormalized.detectionMode = resolvedDetectionMode;
-            samNormalized.confidenceScore = samPayload?.confidenceScore ?? samNormalized.confidenceScore;
-            if (samNormalized.confidenceScore == null) {
-              samNormalized.confidenceScore = 0.35;
-              samNormalized.confidenceLabel = samNormalized.confidenceLabel || "beta_low";
-              samNormalized.confidence = samNormalized.confidence || "beta_low";
-            }
-            console.log(`[AI Detect] SAM normalized confidenceScore: ${samNormalized.confidenceScore}`);
             samNormalized.elapsedMs = samPayload?.elapsedMs;
             samNormalized.detectionBoundarySource = boundarySource;
             samNormalized.detectionBoundarySqft = Math.round(effectiveAreaSqft);
@@ -1665,7 +1669,7 @@ async function handleAiDetectMowable(req, res, options = {}) {
     console.log("[AI Detect] accepted reason=vision polygons accepted");
     console.log("[AI Detect] accepted/rejected reason=accepted");
     if (includeDiagnostics) {
-      const a5000Semantic = a5000SemanticPromise ? await a5000SemanticPromise : null;
+      const a5000Semantic = null; // A5000 only runs on low-confidence SAM path
       normalized.diagnostics = compactAiDetectDiagnostics({
         ...visionDiagnostics,
         reason: "",
