@@ -798,6 +798,51 @@ function numericConfidence(payload = {}) {
   return Number.isFinite(value) ? value : null;
 }
 
+function computeHybridConfidence(confidenceScore, diagnostics) {
+  const baseConfidence = confidenceScore ?? 0.35;
+  const ss = diagnostics?.semantic?.semanticSummary;
+  const mismatch = diagnostics?.semanticMismatch;
+  let adjustment = 0;
+  const reasons = [];
+  if (mismatch?.suspicious === true)         { adjustment -= 0.15; reasons.push("semanticMismatch.suspicious"); }
+  if (ss?.structureHeavy === true)           { adjustment -= 0.12; reasons.push("structureHeavy"); }
+  if (ss?.pavementHeavy === true)            { adjustment -= 0.10; reasons.push("pavementHeavy"); }
+  if ((ss?.vegetationPercent ?? 100) < 20)   { adjustment -= 0.10; reasons.push("vegetationPercent<20"); }
+  if (ss?.likelyMowable === true)            { adjustment += 0.12; reasons.push("likelyMowable"); }
+  if ((ss?.vegetationPercent ?? 0) >= 50)    { adjustment += 0.08; reasons.push("vegetationPercent>=50"); }
+  if (ss?.treeHeavy === true)                { adjustment -= 0.05; reasons.push("treeHeavy"); }
+  const score = Math.round(Math.min(1, Math.max(0, baseConfidence + adjustment)) * 100) / 100;
+  const adj   = Math.round(adjustment * 100) / 100;
+  return { score, baseConfidence, adjustment: adj, reasons };
+}
+
+function computeRoutingRecommendation(diagnostics) {
+  const score = diagnostics?.hybridConfidence?.score ?? 0;
+  const mismatch = diagnostics?.semanticMismatch;
+  const sem = diagnostics?.semantic?.semanticSummary;
+  let action, confidenceBand;
+  const reasons = [];
+  if (score >= 0.70) {
+    action = "auto_accept";
+    confidenceBand = "high";
+    reasons.push("Hybrid confidence is high");
+  } else if (score >= 0.40) {
+    action = "manual_review";
+    confidenceBand = "medium";
+    reasons.push("Hybrid confidence is medium");
+  } else {
+    action = "request_manual_draw";
+    confidenceBand = "low";
+    reasons.push("Hybrid confidence is low");
+  }
+  if (mismatch?.suspicious === true) reasons.push("Semantic mismatch flagged");
+  if (sem?.structureHeavy === true)  reasons.push("Structure-heavy scene");
+  if (sem?.pavementHeavy === true)   reasons.push("Pavement-heavy scene");
+  if (sem?.treeHeavy === true)       reasons.push("Tree-heavy scene");
+  if (sem?.likelyMowable === false)  reasons.push("Semantic layer does not consider scene likely mowable");
+  return { action, confidenceBand, reasons };
+}
+
 function compactAiDetectDiagnostics(value = {}) {
   const detectedRatio = Number(value.detectedRatio);
   const parcelAreaSqft = Number(value.parcelAreaSqft);
@@ -1570,6 +1615,16 @@ async function handleAiDetectMowable(req, res, options = {}) {
                   samNormalized.diagnostics.semanticMismatch = { suspicious: false, reasons: ["semanticSummary unavailable"] };
                 }
               }
+              {
+                const hc = computeHybridConfidence(samNormalized.confidenceScore, samNormalized.diagnostics);
+                samNormalized.diagnostics.hybridConfidence = hc;
+                console.log(`[AI Detect] hybridConfidence score=${hc.score} base=${hc.baseConfidence} adjustment=${hc.adjustment} reasons=${JSON.stringify(hc.reasons)}`);
+              }
+              {
+                const rr = computeRoutingRecommendation(samNormalized.diagnostics);
+                samNormalized.diagnostics.routingRecommendation = rr;
+                console.log(`[AI Detect] routingRecommendation action=${rr.action} band=${rr.confidenceBand} reasons=${JSON.stringify(rr.reasons)}`);
+              }
               samNormalized.diagnostics.workerStatus = workerStatus;
             }
             samNormalized.detection_mode = resolvedDetectionMode;
@@ -1755,6 +1810,16 @@ async function handleAiDetectMowable(req, res, options = {}) {
         } else {
           normalized.diagnostics.semanticMismatch = { suspicious: false, reasons: ["semanticSummary unavailable"] };
         }
+      }
+      {
+        const hc = computeHybridConfidence(normalized.confidenceScore, normalized.diagnostics);
+        normalized.diagnostics.hybridConfidence = hc;
+        console.log(`[AI Detect] hybridConfidence score=${hc.score} base=${hc.baseConfidence} adjustment=${hc.adjustment} reasons=${JSON.stringify(hc.reasons)}`);
+      }
+      {
+        const rr = computeRoutingRecommendation(normalized.diagnostics);
+        normalized.diagnostics.routingRecommendation = rr;
+        console.log(`[AI Detect] routingRecommendation action=${rr.action} band=${rr.confidenceBand} reasons=${JSON.stringify(rr.reasons)}`);
       }
       normalized.diagnostics.workerStatus = workerStatus;
     }

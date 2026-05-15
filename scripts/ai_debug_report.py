@@ -140,6 +140,29 @@ def main() -> int:
     else:
         print(f"  {'reasons':<22} unavailable")
 
+    section("Hybrid Confidence")
+    hc = diag.get("hybridConfidence") or {}
+    row("baseConfidence", hc.get("baseConfidence"))
+    row("adjustment", hc.get("adjustment"))
+    row("score", hc.get("score"))
+    hc_reasons = hc.get("reasons")
+    if hc_reasons:
+        for r in hc_reasons:
+            print(f"  {'reason':<22} {r}")
+    else:
+        print(f"  {'reasons':<22} unavailable")
+
+    section("Routing Recommendation")
+    rr = diag.get("routingRecommendation") or {}
+    row("action", rr.get("action"))
+    row("confidenceBand", rr.get("confidenceBand"))
+    rr_reasons = rr.get("reasons")
+    if rr_reasons:
+        for r in rr_reasons:
+            print(f"  {'reason':<22} {r}")
+    else:
+        print(f"  {'reasons':<22} unavailable")
+
     section("Debug Paths")
     row("overlay", debug_paths.get("overlay"))
     row("mask", debug_paths.get("mask"))
