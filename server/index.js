@@ -22,6 +22,7 @@ import { computeTerrainGuardrail, DEFAULT_TERRAIN_MANUAL_REVIEW_MESSAGE } from "
 import { fileURLToPath } from "url";
 import { createRequire } from "module";
 import { mkdirSync, readFileSync, writeFileSync, renameSync, existsSync } from "fs";
+import turfIntersect from "@turf/intersect";
 
 // Load deployment config from the project root even when PM2 starts from another cwd.
 
@@ -566,6 +567,48 @@ function featuresFromGeoJson(value, properties = {}) {
   return feature ? [feature] : [];
 }
 
+function clipFeaturesToParcel(features, parcelCollection) {
+  const parcelFeatures = (parcelCollection?.features || []).filter(f => {
+    const t = f?.geometry?.type;
+    return t === "Polygon" || t === "MultiPolygon";
+  });
+  if (!parcelFeatures.length) return features;
+
+  const clipped = [];
+  for (const feature of features) {
+    try {
+      const geom = feature?.geometry;
+      if (!geom || (geom.type !== "Polygon" && geom.type !== "MultiPolygon")) {
+        clipped.push(feature);
+        continue;
+      }
+      for (const parcelFeature of parcelFeatures) {
+        try {
+          const result = turfIntersect({
+            type: "FeatureCollection",
+            features: [
+              { type: "Feature", geometry: geom, properties: {} },
+              { type: "Feature", geometry: parcelFeature.geometry, properties: {} },
+            ],
+          });
+          if (result) {
+            clipped.push({
+              ...feature,
+              geometry: result.geometry,
+              properties: { ...(feature.properties || {}), source: "sam" },
+            });
+          }
+        } catch (_) {
+          // continue to next parcel feature
+        }
+      }
+    } catch (_) {
+      // skip feature if clipping throws
+    }
+  }
+  return clipped;
+}
+
 function ringAreaSqm(ring) {
   if (!Array.isArray(ring) || ring.length < 4) return 0;
   let area = 0;
@@ -724,6 +767,16 @@ function aiPresetGuardrailThresholds(detectionPreset) {
     return { highRatioNeedsEvidence: 0.75, hardRatioLimit: 0.93, allowLowConfidenceCandidate: false, minimumConfidence: 0.35 };
   }
   return { highRatioNeedsEvidence: 0.92, hardRatioLimit: 0.97, allowLowConfidenceCandidate: true, minimumConfidence: 0.35 };
+}
+
+function aiSamGuardrailThresholds() {
+  return { highRatioNeedsEvidence: 0.92, hardRatioLimit: 0.985, allowLowConfidenceCandidate: true, minimumConfidence: 0.15 };
+}
+
+function isSamPayload(payload, visionDiagnostics) {
+  const modeStr = String(payload?.mode || visionDiagnostics?.detectionMode || visionDiagnostics?.detection_mode || "").toLowerCase();
+  const sourceStr = String(payload?.source || "").toLowerCase();
+  return modeStr.includes("sam") || sourceStr === "sam" || Boolean(payload?.sam);
 }
 
 function fallbackishSource(value) {
@@ -1055,6 +1108,8 @@ function normalizeMowableResponse(payload = {}) {
 function guardrailForMowableDetection(normalized, parcelCollection, parcelAreaSqft, detectedAreaSqft, payload = {}, visionDiagnostics = {}, detectionPreset = "") {
   const preset = normalizeAiDetectionPreset(detectionPreset || visionDiagnostics?.detectionPreset || payload?.detectionPreset, parcelAreaSqft);
   const presetThresholds = aiPresetGuardrailThresholds(preset);
+  const isSam = isSamPayload(payload, visionDiagnostics);
+  const effectiveThresholds = isSam ? aiSamGuardrailThresholds() : presetThresholds;
   const detectedRatio = parcelAreaSqft > 0 ? detectedAreaSqft / parcelAreaSqft : 0;
   const confidence = normalized?.confidenceScore ?? numericConfidence(payload);
   const boundarySimilarity = normalized
@@ -1078,13 +1133,18 @@ function guardrailForMowableDetection(normalized, parcelCollection, parcelAreaSq
     constrainedBoundarySource === "mowable" ||
     constrainedBoundarySource === "selected_area";
   const roughCandidateAllowed = Boolean(visionDiagnostics?.lowConfidenceCandidateReturned)
-    && presetThresholds.allowLowConfidenceCandidate
+    && effectiveThresholds.allowLowConfidenceCandidate
     && (exclusionEvidence.present || isLargeParcel)
     && detectedRatio > 0.01
     && detectedRatio <= 0.97
     && boundarySimilarity < 0.99;
   if (roughCandidateAllowed) {
     console.log(`[AI Detect] roughCandidateAllowed=true isLargeParcel=${isLargeParcel} detectedRatio=${detectedRatio.toFixed(4)} boundarySimilarity=${Number(boundarySimilarity).toFixed(4)}`);
+  }
+  if (isSam) {
+    console.log("[AI Detect] SAM guardrail mode active");
+    console.log(`[AI Detect] SAM detected ratio: ${detectedRatio.toFixed(4)}`);
+    console.log(`[AI Detect] SAM parcel boundary similarity: ${Number(boundarySimilarity).toFixed(4)}`);
   }
   let reason = "";
   let highRatioAllowed = false;
@@ -1101,7 +1161,7 @@ function guardrailForMowableDetection(normalized, parcelCollection, parcelAreaSq
     reason = "extremely small detection";
   } else if (detectionUsesFallbackSource(normalized)) {
     reason = "parcel-sized fallback";
-  } else if (detectedRatio > presetThresholds.hardRatioLimit && !roughCandidateAllowed && !isConstrainedBoundary) {
+  } else if (detectedRatio > effectiveThresholds.hardRatioLimit && !roughCandidateAllowed && !isConstrainedBoundary) {
     reason = "detected ratio above hard limit";
   } else if (
     (boundarySimilarity >= 0.97 ||
@@ -1119,10 +1179,10 @@ function guardrailForMowableDetection(normalized, parcelCollection, parcelAreaSq
     && allowMostlyFailedManualReview
   ) {
     reason = "";
-  } else if (detectedRatio >= presetThresholds.highRatioNeedsEvidence && detectedRatio <= presetThresholds.hardRatioLimit) {
+  } else if (detectedRatio >= effectiveThresholds.highRatioNeedsEvidence && detectedRatio <= effectiveThresholds.hardRatioLimit) {
     highRatioAllowed = roughCandidateAllowed || (
       smallHardscapeEvidence
-      && detectedRatio <= presetThresholds.hardRatioLimit
+      && detectedRatio <= effectiveThresholds.hardRatioLimit
     ) || (
       confidence !== null
       && confidence >= 0.45
@@ -1135,14 +1195,16 @@ function guardrailForMowableDetection(normalized, parcelCollection, parcelAreaSq
       // boundary after manmade removal is expected and should not be rejected.
       isConstrainedBoundary
       && exclusionEvidence.present
-      && detectedRatio <= presetThresholds.hardRatioLimit
+      && detectedRatio <= effectiveThresholds.hardRatioLimit
+    ) || (
+      isSam && detectedRatio <= effectiveThresholds.hardRatioLimit
     );
     if (!highRatioAllowed) {
       reason = "high detected ratio without enough exclusion evidence";
     }
-  } else if (detectedRatio > presetThresholds.hardRatioLimit && !roughCandidateAllowed && !isConstrainedBoundary) {
+  } else if (detectedRatio > effectiveThresholds.hardRatioLimit && !roughCandidateAllowed && !isConstrainedBoundary) {
     reason = "high detected ratio";
-  } else if (confidence !== null && confidence < presetThresholds.minimumConfidence && !roughCandidateAllowed && !isConstrainedBoundary) {
+  } else if (confidence !== null && confidence < effectiveThresholds.minimumConfidence && !roughCandidateAllowed && !isConstrainedBoundary) {
     reason = "low confidence";
   }
 
@@ -1153,7 +1215,7 @@ function guardrailForMowableDetection(normalized, parcelCollection, parcelAreaSq
   return {
     reason,
     detectionPreset: preset,
-    thresholds: presetThresholds,
+    thresholds: effectiveThresholds,
     highRatioAllowed,
     parcelBoundarySimilarity: Number(boundarySimilarity.toFixed(4)),
     exclusionEvidence,
@@ -1209,6 +1271,280 @@ async function handleAiDetectMowable(req, res, options = {}) {
     console.log(`[AI Detect] boundary source: parcel parcelSqft=${Math.round(parcelAreaSqft)}`);
     console.log("[AI Detect] mode=full-parcel");
   }
+  // ── SAM GPU vision path (optional) ────────────────────────────────────────
+  // When SAM_VISION_ENABLED=true the request is proxied to the SAM worker first.
+  // Any failure (worker down, timeout, bad response, guardrail reject) falls
+  // through to the existing classical vision service below — never blocks a quote.
+  if ((process.env.SAM_VISION_ENABLED || "").trim() === "true") {
+    const samUrl = (process.env.SAM_VISION_URL || "http://127.0.0.1:8020").replace(/\/+$/, "");
+    const samTimeoutMs = parseInt(process.env.SAM_VISION_TIMEOUT_MS || "120000", 10);
+    console.log(`[AI Detect] SAM proxy attempt url=${samUrl} timeoutMs=${samTimeoutMs}`);
+
+    // Build Esri static export URL so the SAM worker can download real parcel imagery.
+    // Uses the same World_Imagery source as the tile URL. bbox is derived from center+zoom
+    // assuming ~1024×1024 px output. metersPerPx = 156543.034 / 2^zoom (Web Mercator pixel size).
+    let samImageUrl = null;
+    let samImageBbox = null; // [minLng, minLat, maxLng, maxLat] numeric — used for pixel→geo conversion
+    {
+      const lat  = parseFloat(body.lat  ?? body.center?.[1]);
+      const lng  = parseFloat(body.lng  ?? body.center?.[0]);
+      const zoom = parseFloat(body.zoom ?? 19);
+      if (Number.isFinite(lat) && Number.isFinite(lng) && Number.isFinite(zoom)) {
+        const metersPerPx = 156543.03392804103 / Math.pow(2, zoom);
+        const halfLng = metersPerPx * 512 / 111320;
+        const halfLat = metersPerPx * 512 * Math.cos(lat * Math.PI / 180) / 111320;
+        samImageBbox = [lng - halfLng, lat - halfLat, lng + halfLng, lat + halfLat];
+        const bbox = [
+          (lng - halfLng).toFixed(8),
+          (lat - halfLat).toFixed(8),
+          (lng + halfLng).toFixed(8),
+          (lat + halfLat).toFixed(8),
+        ].join(",");
+        samImageUrl = `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/export?bbox=${bbox}&bboxSR=4326&size=1024,1024&imageSR=4326&format=jpg&f=image`;
+        console.log(`[AI Detect] SAM imageUrl bbox=${bbox} zoom=${zoom}`);
+      } else {
+        console.log("[AI Detect] SAM imageUrl skipped — center/zoom not available");
+      }
+    }
+
+    // ── A5000 semantic diagnostics (parallel, diagnostics-only) ───────────────
+    const a5000Enabled = process.env.A5000_VISION_ENABLED === "true";
+    const a5000Url = (process.env.A5000_VISION_URL || "").replace(/\/+$/, "");
+    const a5000TimeoutMs = parseInt(process.env.A5000_VISION_TIMEOUT_MS || "180000", 10);
+    let a5000SemanticPromise = null;
+    if (a5000Enabled && a5000Url && samImageUrl) {
+      console.log(`[AI Detect] A5000 semantic attempt url=${a5000Url}/semantic-detect`);
+      a5000SemanticPromise = fetchWithTimeout(`${a5000Url}/semantic-detect`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ imageUrl: samImageUrl }),
+      }, a5000TimeoutMs)
+        .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+        .then(data => {
+          const classes = Array.isArray(data.classes) ? data.classes : [];
+          const findPct = label => (classes.find(c => c.label === label)?.percent ?? 0);
+          const buildingPercent = findPct("building");
+          const treePercent = findPct("tree");
+          const roadPercent = findPct("road");
+          console.log(`[AI Detect] A5000 semantic classes: building=${buildingPercent} tree=${treePercent} road=${roadPercent}`);
+          return { source: data.source || "a5000_semantic", model: data.model || null, classes, buildingPercent, treePercent, roadPercent };
+        })
+        .catch(err => {
+          console.log(`[AI Detect] A5000 semantic unavailable: ${err.message}`);
+          return null;
+        });
+    }
+    // ── end A5000 semantic ────────────────────────────────────────────────────
+
+    try {
+      const samUpstream = await fetchWithTimeout(`${samUrl}/detect-mowable`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          parcelGeoJson: validatedParcelGeoJson,
+          parcelFeature: body.parcelFeature || parcelFeatures[0],
+          detectionPreset,
+          address: body.address || body.parcelAddress || body.serviceAddress || "",
+          center: body.center,
+          lat: body.lat,
+          lng: body.lng,
+          zoom: body.zoom,
+          source: body.source || "maplibre",
+          debugArtifacts: Boolean(options.debugArtifacts || body.debugArtifacts),
+          imageSource: body.imageSource || {
+            type: "tile",
+            provider: "esri-world-imagery",
+            tileUrl: DEFAULT_SATELLITE_TILE_URL
+          },
+          ...(samImageUrl ? { imageUrl: samImageUrl } : {}),
+          ...(validatedConstraintGeoJson ? {
+            constraintGeoJson: validatedConstraintGeoJson,
+            mowableGeoJson: validatedConstraintGeoJson,
+            boundarySource,
+          } : {}),
+        })
+      }, samTimeoutMs);
+
+      if (samUpstream.ok) {
+        const samPayload = await samUpstream.json().catch(() => null);
+
+        if (samPayload && typeof samPayload === "object") {
+          samPayload.source = "sam";
+          samPayload.mode = samPayload.mode || "sam_gpu";
+          samPayload.detectionMode = samPayload.detectionMode || "sam_gpu";
+          samPayload.detection_mode = samPayload.detection_mode || "sam_gpu";
+          samPayload.sam = true;
+        }
+
+        // Convert pixel-space polygon from SAM worker into a geographic GeoJSON
+        // FeatureCollection using the same bbox sent to the Esri image export.
+        // Image is 1024×1024: x=0→minLng, x=1024→maxLng, y=0→maxLat (top), y=1024→minLat.
+        let samPixelCoords = null;
+        let samCoordSource = "missing";
+        const _rawSAM = samPayload?.selectedMaskPolygonPixels;
+        if (Array.isArray(_rawSAM)) {
+          samPixelCoords = _rawSAM;
+          samCoordSource = "raw";
+        } else if (_rawSAM && typeof _rawSAM === "object") {
+          if (_rawSAM.type === "Feature" && Array.isArray(_rawSAM.geometry?.coordinates)) {
+            samPixelCoords = _rawSAM.geometry.coordinates;
+            samCoordSource = "feature";
+          } else if (_rawSAM.type && Array.isArray(_rawSAM.coordinates)) {
+            samPixelCoords = _rawSAM.coordinates;
+            samCoordSource = "geometry";
+          }
+        }
+        if (
+          samPayload &&
+          Array.isArray(samPixelCoords) &&
+          samPixelCoords.length > 0 &&
+          samImageBbox &&
+          !isFeatureCollection(samPayload.featureCollection) &&
+          !Array.isArray(samPayload.features) &&
+          !Array.isArray(samPayload.polygons)
+        ) {
+          const [minLng, minLat, maxLng, maxLat] = samImageBbox;
+          const pixToGeo = ([px, py]) => [
+            minLng + (px / 1024) * (maxLng - minLng),
+            maxLat - (py / 1024) * (maxLat - minLat),
+          ];
+          const rawPixels = samPixelCoords;
+
+          const d0 = rawPixels[0];
+          const d1 = Array.isArray(d0) ? d0[0] : undefined;
+
+          // Determine ring format:
+          // - Flat numbers:    [x, y, x, y, ...]          → d0 is number
+          // - Flat ring:       [[x,y], [x,y], ...]         → d0 is array, d0[0] is number
+          // - OpenCV contour:  [[[x,y]], [[x,y]], ...]     → d0 is array, d0.length===1, d0[0] is array
+          // - Multi-ring:      [[[x,y],[x,y],...], [...]]  → d0 is array, d0.length>1, d0[0] is array
+          let rings;
+          if (!Array.isArray(d0)) {
+            // Flat number array [x, y, x, y, ...]
+            const pts = [];
+            for (let i = 0; i + 1 < rawPixels.length; i += 2) pts.push([rawPixels[i], rawPixels[i + 1]]);
+            rings = [pts];
+          } else if (!Array.isArray(d1)) {
+            // Simple flat ring: [[x,y], [x,y], ...]
+            rings = [rawPixels];
+          } else if (d0.length === 1) {
+            // OpenCV contour format: [[[x,y]], [[x,y]], ...] — unwrap each single-element wrapper
+            rings = [rawPixels.map(pt => pt[0])];
+          } else {
+            // Multi-ring: [[[x,y],...], [[x,y],...]]
+            rings = rawPixels;
+          }
+
+          const geoRings = rings.map(ring => {
+            const coords = ring
+              .filter(pt => Array.isArray(pt) && pt.length >= 2)
+              .map(pixToGeo);
+            if (coords.length < 3) return null;
+            const first = coords[0], last = coords[coords.length - 1];
+            if (first[0] !== last[0] || first[1] !== last[1]) coords.push([first[0], first[1]]);
+            return coords;
+          }).filter(Boolean);
+
+          if (geoRings.length > 0 && geoRings[0].length >= 4) {
+            const geoFeatures = [{
+              type: "Feature",
+              geometry: { type: "Polygon", coordinates: geoRings },
+              properties: {},
+            }];
+            samPayload.featureCollection = {
+              type: "FeatureCollection",
+              features: geoFeatures,
+            };
+            console.log(`[AI Detect] SAM generated geo features: ${geoFeatures.length}`);
+          }
+        }
+
+        if (false && samPayload && isFeatureCollection(samPayload.featureCollection)) {
+          const beforeClip = samPayload.featureCollection.features.length;
+          console.log(`[AI Detect] SAM clip before features: ${beforeClip}`);
+          const clippedFeatures = clipFeaturesToParcel(
+            samPayload.featureCollection.features,
+            validatedParcelGeoJson
+          );
+          console.log(`[AI Detect] SAM clip after features: ${clippedFeatures.length}`);
+          samPayload.featureCollection = { type: "FeatureCollection", features: clippedFeatures };
+          if (Array.isArray(samPayload.features)) {
+            samPayload.features = clippedFeatures;
+          }
+        }
+
+        const samNormalized = normalizeMowableResponse(samPayload);
+        if (samNormalized) {
+          const samDetectedAreaSqft = featureCollectionAreaSqft(samNormalized.featureCollection);
+          const samDiagnostics = diagnosticsFromVisionPayload(samPayload || {});
+          samDiagnostics.detectionPreset = samDiagnostics.detectionPreset || detectionPreset;
+          const samGuardrail = guardrailForMowableDetection(
+            samNormalized,
+            validatedParcelGeoJson,
+            effectiveAreaSqft,
+            samDetectedAreaSqft,
+            samPayload || {},
+            samDiagnostics,
+            detectionPreset
+          );
+          if (!samGuardrail.reason) {
+            // Use the worker's mode field to label detection_mode honestly.
+            // "sam_gpu" = real SAM masks used; "sam_gpu_fallback" = SAM attempted
+            // but fell back to parcel boundary; anything else treated as sam_gpu.
+            const workerMode = samPayload?.mode || "sam_gpu";
+            const resolvedDetectionMode = workerMode === "sam_gpu" ? "sam_gpu" : workerMode;
+            console.log(`[AI Detect] SAM detection accepted detection_mode=${resolvedDetectionMode} features=${samNormalized.features?.length || 0} elapsedMs=${samPayload?.elapsedMs}`);
+            if (includeDiagnostics) {
+              const a5000Semantic = a5000SemanticPromise ? await a5000SemanticPromise : null;
+              samNormalized.diagnostics = compactAiDetectDiagnostics({
+                ...samDiagnostics,
+                reason: "",
+                guardrailReason: "",
+                detectionPreset,
+                thresholds: samGuardrail.thresholds,
+                highRatioAllowed: samGuardrail.highRatioAllowed,
+                parcelBoundarySimilarity: samGuardrail.parcelBoundarySimilarity,
+                exclusionEvidence: samGuardrail.exclusionEvidence,
+                detectedRatio: effectiveAreaSqft > 0 ? samDetectedAreaSqft / effectiveAreaSqft : 0,
+                confidence: samNormalized.confidence,
+                confidenceScore: samNormalized.confidenceScore,
+                detection_mode: resolvedDetectionMode,
+                mode: samNormalized.mode,
+                cuda: samPayload?.cuda,
+                gpuName: samPayload?.gpuName,
+                elapsedMs: samPayload?.elapsedMs,
+              });
+              if (a5000Semantic) samNormalized.diagnostics.semantic = a5000Semantic;
+            }
+            samNormalized.detection_mode = resolvedDetectionMode;
+            samNormalized.detectionMode = resolvedDetectionMode;
+            samNormalized.confidenceScore = samPayload?.confidenceScore ?? samNormalized.confidenceScore;
+            if (samNormalized.confidenceScore == null) {
+              samNormalized.confidenceScore = 0.35;
+              samNormalized.confidenceLabel = samNormalized.confidenceLabel || "beta_low";
+              samNormalized.confidence = samNormalized.confidence || "beta_low";
+            }
+            console.log(`[AI Detect] SAM normalized confidenceScore: ${samNormalized.confidenceScore}`);
+            samNormalized.elapsedMs = samPayload?.elapsedMs;
+            samNormalized.detectionBoundarySource = boundarySource;
+            samNormalized.detectionBoundarySqft = Math.round(effectiveAreaSqft);
+            samNormalized.parcelSqft = Math.round(parcelAreaSqft);
+            samNormalized.usedSelectedBoundary = boundarySource !== "parcel";
+            return res.json(samNormalized);
+          }
+          console.log(`[AI Detect] SAM guardrail reject reason=${samGuardrail.reason} — falling back to vision service`);
+        } else {
+          console.log("[AI Detect] SAM returned no usable features — falling back to vision service");
+        }
+      } else {
+        console.log(`[AI Detect] SAM worker HTTP ${samUpstream.status} — falling back to vision service`);
+      }
+    } catch (samErr) {
+      console.log(`[AI Detect] SAM worker unavailable (${samErr.message}) — falling back to vision service`);
+    }
+  }
+  // ── end SAM path ───────────────────────────────────────────────────────────
+
   const visionServiceUrl = (process.env.VISION_SERVICE_URL || "http://127.0.0.1:8017").replace(/\/+$/, "");
   const visionStatus = await checkVisionServiceStatus(visionServiceUrl);
 
@@ -1329,6 +1665,7 @@ async function handleAiDetectMowable(req, res, options = {}) {
     console.log("[AI Detect] accepted reason=vision polygons accepted");
     console.log("[AI Detect] accepted/rejected reason=accepted");
     if (includeDiagnostics) {
+      const a5000Semantic = a5000SemanticPromise ? await a5000SemanticPromise : null;
       normalized.diagnostics = compactAiDetectDiagnostics({
         ...visionDiagnostics,
         reason: "",
@@ -1344,6 +1681,7 @@ async function handleAiDetectMowable(req, res, options = {}) {
         detection_mode: normalized.detection_mode,
         mode: normalized.mode ?? visionDiagnostics.mode
       });
+      if (a5000Semantic) normalized.diagnostics.semantic = a5000Semantic;
     }
     normalized.detectionBoundarySource = boundarySource;
     normalized.detectionBoundarySqft = Math.round(effectiveAreaSqft);
