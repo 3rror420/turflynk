@@ -22,6 +22,7 @@ import { computeTerrainGuardrail, DEFAULT_TERRAIN_MANUAL_REVIEW_MESSAGE } from "
 import { fileURLToPath } from "url";
 import { createRequire } from "module";
 import { mkdirSync, readFileSync, writeFileSync, renameSync, existsSync } from "fs";
+import zlib from "zlib";
 import turfIntersect from "@turf/intersect";
 
 // Load deployment config from the project root even when PM2 starts from another cwd.
@@ -1065,6 +1066,151 @@ function saveSemanticDebugArtifacts(debugRunDir, semanticMasks) {
   }
 }
 
+// ── Semantic mask overlap helpers ────────────────────────────────────────────
+
+function _parsePngChunks(buf) {
+  const SIG = [137, 80, 78, 71, 13, 10, 26, 10];
+  for (let i = 0; i < 8; i++) if (buf[i] !== SIG[i]) throw new Error("Not a PNG");
+  const chunks = [];
+  let pos = 8;
+  while (pos + 11 < buf.length) {
+    const len = buf.readUInt32BE(pos);
+    const type = buf.subarray(pos + 4, pos + 8).toString("ascii");
+    const data = buf.subarray(pos + 8, pos + 8 + len);
+    chunks.push({ type, data });
+    pos += 12 + len;
+    if (type === "IEND") break;
+  }
+  return chunks;
+}
+
+function _applyPngFilters(idatData, width, height, channels) {
+  const stride = width * channels;
+  const raw = zlib.inflateSync(idatData);
+  const pixels = new Uint8Array(width * height * channels);
+  for (let y = 0; y < height; y++) {
+    const filterType = raw[y * (stride + 1)];
+    const rowOff = y * (stride + 1) + 1;
+    const pxOff = y * stride;
+    const prevPxOff = pxOff - stride;
+    for (let x = 0; x < stride; x++) {
+      const b = raw[rowOff + x];
+      const left = x >= channels ? pixels[pxOff + x - channels] : 0;
+      const up = y > 0 ? pixels[prevPxOff + x] : 0;
+      const upLeft = y > 0 && x >= channels ? pixels[prevPxOff + x - channels] : 0;
+      let v;
+      switch (filterType) {
+        case 1: v = (b + left) & 0xff; break;
+        case 2: v = (b + up) & 0xff; break;
+        case 3: v = (b + Math.floor((left + up) / 2)) & 0xff; break;
+        case 4: {
+          const p = left + up - upLeft;
+          const pa = Math.abs(p - left), pb = Math.abs(p - up), pc = Math.abs(p - upLeft);
+          const pr = pa <= pb && pa <= pc ? left : pb <= pc ? up : upLeft;
+          v = (b + pr) & 0xff; break;
+        }
+        default: v = b; break;
+      }
+      pixels[pxOff + x] = v;
+    }
+  }
+  return pixels;
+}
+
+function decodeSemanticMaskPngBase64(b64) {
+  const buf = Buffer.from(b64, "base64");
+  const chunks = _parsePngChunks(buf);
+  const ihdr = chunks.find(c => c.type === "IHDR");
+  if (!ihdr) throw new Error("Missing IHDR");
+  const width = ihdr.data.readUInt32BE(0);
+  const height = ihdr.data.readUInt32BE(4);
+  const bitDepth = ihdr.data[8];
+  const colorType = ihdr.data[9];
+  if (ihdr.data[12] !== 0) throw new Error("Interlaced PNG not supported");
+  if (bitDepth !== 8) throw new Error(`Unsupported bit depth: ${bitDepth}`);
+  const channelsMap = { 0: 1, 2: 3, 4: 2, 6: 4 };
+  const channels = channelsMap[colorType];
+  if (!channels) throw new Error(`Unsupported color type: ${colorType}`);
+  const idatData = Buffer.concat(chunks.filter(c => c.type === "IDAT").map(c => c.data));
+  if (!idatData.length) throw new Error("No IDAT data");
+  const pixels = _applyPngFilters(idatData, width, height, channels);
+  return { pixels, width, height, channels };
+}
+
+function sampleMaskAtPixel(decoded, px, py, threshold = 127) {
+  if (!decoded || px < 0 || py < 0 || px >= decoded.width || py >= decoded.height) return false;
+  const idx = (Math.round(py) * decoded.width + Math.round(px)) * decoded.channels;
+  return decoded.pixels[idx] > threshold;
+}
+
+function polygonPixelBoundingBox(ring) {
+  if (!Array.isArray(ring) || ring.length === 0) return null;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const pt of ring) {
+    if (!Array.isArray(pt) || pt.length < 2) continue;
+    if (pt[0] < minX) minX = pt[0];
+    if (pt[1] < minY) minY = pt[1];
+    if (pt[0] > maxX) maxX = pt[0];
+    if (pt[1] > maxY) maxY = pt[1];
+  }
+  return isFinite(minX) ? { minX, minY, maxX, maxY } : null;
+}
+
+function _pointInPolygon(x, y, ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const xi = ring[i][0], yi = ring[i][1], xj = ring[j][0], yj = ring[j][1];
+    if (((yi > y) !== (yj > y)) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+function _normalizeSamPixelRing(raw) {
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+  const d0 = raw[0];
+  const d1 = Array.isArray(d0) ? d0[0] : undefined;
+  if (!Array.isArray(d0)) {
+    // Flat [x, y, x, y, ...]
+    const pts = [];
+    for (let i = 0; i + 1 < raw.length; i += 2) pts.push([raw[i], raw[i + 1]]);
+    return pts.length >= 3 ? pts : null;
+  } else if (!Array.isArray(d1)) {
+    // [[x,y], [x,y], ...]
+    return raw.length >= 3 ? raw : null;
+  } else if (d0.length === 1) {
+    // OpenCV: [[[x,y]], [[x,y]], ...]
+    const pts = raw.map(pt => pt[0]);
+    return pts.length >= 3 ? pts : null;
+  } else {
+    // Multi-ring: take first ring
+    return Array.isArray(raw[0]) && raw[0].length >= 3 ? raw[0] : null;
+  }
+}
+
+function estimatePolygonMaskOverlap(ring, decoded, maxSamples = 10000) {
+  if (!decoded || !Array.isArray(ring) || ring.length < 3) {
+    return { overlapRatio: 0, sampledPixels: 0 };
+  }
+  const bbox = polygonPixelBoundingBox(ring);
+  if (!bbox) return { overlapRatio: 0, sampledPixels: 0 };
+  const { minX, minY, maxX, maxY } = bbox;
+  const bboxW = Math.max(1, Math.ceil(maxX) - Math.floor(minX));
+  const bboxH = Math.max(1, Math.ceil(maxY) - Math.floor(minY));
+  const step = Math.max(1, Math.ceil(Math.sqrt((bboxW * bboxH) / maxSamples)));
+  let sampled = 0, hits = 0;
+  for (let py = Math.floor(minY); py <= Math.ceil(maxY); py += step) {
+    for (let px = Math.floor(minX); px <= Math.ceil(maxX); px += step) {
+      if (_pointInPolygon(px, py, ring)) {
+        sampled++;
+        if (sampleMaskAtPixel(decoded, px, py)) hits++;
+      }
+    }
+  }
+  return { overlapRatio: sampled > 0 ? hits / sampled : 0, sampledPixels: sampled };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 function emptyMowableDetection(reason, metrics = {}) {
   const parcelAreaSqft = Number(metrics.parcelAreaSqft || 0);
   const detectedAreaSqft = Number(metrics.detectedAreaSqft || 0);
@@ -1288,6 +1434,30 @@ function applySemanticConfidenceAdjustments({ confidenceScore, confidenceLabel, 
   };
 }
 
+function applySemanticOverlapConfidenceAdjustments({ confidenceScore, semanticMaskOverlap }) {
+  const { hardscapeOverlapRatio = 0, buildingOverlapRatio = 0, roadOverlapRatio = 0, treeOverlapRatio = 0, sampledPixels = 0 } = semanticMaskOverlap || {};
+  if (!semanticMaskOverlap || sampledPixels < 100) return { adjusted: false, confidenceScore, notes: [] };
+
+  let score = confidenceScore;
+  const notes = [];
+
+  if (buildingOverlapRatio > 0.25)  { score -= 0.20; notes.push("sam-overlaps-building"); }
+  if (roadOverlapRatio > 0.15)      { score -= 0.15; notes.push("sam-overlaps-road"); }
+  if (hardscapeOverlapRatio > 0.30) { score -= 0.20; notes.push("sam-overlaps-hardscape"); }
+  if (treeOverlapRatio > 0.65)      { score -= 0.15; notes.push("sam-mostly-tree-canopy"); }
+
+  if (
+    hardscapeOverlapRatio < 0.10 &&
+    buildingOverlapRatio  < 0.10 &&
+    roadOverlapRatio      < 0.05 &&
+    treeOverlapRatio      < 0.35
+  ) { score += 0.06; notes.push("sam-low-semantic-conflict"); }
+
+  score = Math.max(0.15, Math.min(0.75, score));
+
+  return { adjusted: notes.length > 0, confidenceScore: score, notes };
+}
+
 function guardrailForMowableDetection(normalized, parcelCollection, parcelAreaSqft, detectedAreaSqft, payload = {}, visionDiagnostics = {}, detectionPreset = "") {
   const preset = normalizeAiDetectionPreset(detectionPreset || visionDiagnostics?.detectionPreset || payload?.detectionPreset, parcelAreaSqft);
   const presetThresholds = aiPresetGuardrailThresholds(preset);
@@ -1409,6 +1579,22 @@ function guardrailForMowableDetection(normalized, parcelCollection, parcelAreaSq
 
 function rejectionReasonForMowableDetection(normalized, parcelCollection, parcelAreaSqft, detectedAreaSqft, payload = {}) {
   return guardrailForMowableDetection(normalized, parcelCollection, parcelAreaSqft, detectedAreaSqft, payload).reason;
+}
+
+function shouldRunA5000Semantic({ includeDiagnostics, samPayload, samNormalized, parcelAreaSqft, detectedRatio }) {
+  if (includeDiagnostics) return { run: true, reason: "includeDiagnostics" };
+  const confidenceScore = samNormalized?.confidenceScore ?? samPayload?.confidenceScore;
+  if (confidenceScore != null && confidenceScore < 0.50) return { run: true, reason: `confidenceScore=${confidenceScore}` };
+  const selectedMaskScore = samPayload?.selectedMaskScore ?? samPayload?.selectedMaskConfidence;
+  if (selectedMaskScore != null && selectedMaskScore < 0.50) return { run: true, reason: `selectedMaskScore=${selectedMaskScore}` };
+  const ratio = Number(detectedRatio);
+  if (Number.isFinite(ratio) && ratio < 0.05) return { run: true, reason: `detectedRatio=${ratio.toFixed(4)}<0.05` };
+  if (Number.isFinite(ratio) && ratio > 0.85) return { run: true, reason: `detectedRatio=${ratio.toFixed(4)}>0.85` };
+  const featureCount = samNormalized?.features?.length ?? 0;
+  if (featureCount === 0) return { run: true, reason: "featureCount=0" };
+  const area = Number(parcelAreaSqft);
+  if (Number.isFinite(area) && area > 40000) return { run: true, reason: `parcelAreaSqft=${Math.round(area)}>40000` };
+  return { run: false, reason: "sam result sufficient" };
 }
 
 async function handleAiDetectMowable(req, res, options = {}) {
@@ -1691,12 +1877,19 @@ async function handleAiDetectMowable(req, res, options = {}) {
               samNormalized.confidence = samNormalized.confidence || "beta_low";
             }
             console.log(`[AI Detect] SAM normalized confidenceScore: ${samNormalized.confidenceScore}`);
-            if (includeDiagnostics) {
-              const samConfidence = samNormalized.confidenceScore;
-              const a5000Threshold = 0.45;
-              let a5000Semantic = null;
-              if (a5000Enabled && a5000Url && samImageUrl && (samConfidence == null || samConfidence < a5000Threshold)) {
-                console.log(`[AI Detect] A5000 semantic enabled for low confidence confidenceScore=${samConfidence ?? "missing"}`);
+            // ── A5000 semantic decision (runs regardless of includeDiagnostics) ─────
+            let a5000Semantic = null;
+            if (a5000Enabled && a5000Url && samImageUrl) {
+              const _samDetectedRatio = effectiveAreaSqft > 0 ? samDetectedAreaSqft / effectiveAreaSqft : 0;
+              const _a5000Decision = shouldRunA5000Semantic({
+                includeDiagnostics,
+                samPayload,
+                samNormalized,
+                parcelAreaSqft,
+                detectedRatio: _samDetectedRatio,
+              });
+              console.log(`[AI Detect] A5000 semantic decision run=${_a5000Decision.run} reason=${_a5000Decision.reason}`);
+              if (_a5000Decision.run) {
                 const _cached = _a5000CacheGet(samImageUrl);
                 if (_cached) {
                   console.log("[AI Detect] A5000 semantic cache hit");
@@ -1730,10 +1923,14 @@ async function handleAiDetectMowable(req, res, options = {}) {
                       return null;
                     });
                 }
-              } else if (a5000Enabled && a5000Url) {
-                console.log(`[AI Detect] A5000 semantic skipped: sam confidence sufficient confidenceScore=${samConfidence}`);
-                workerStatus.a5000.skippedReason = "sam confidence sufficient";
+              } else {
+                workerStatus.a5000.skippedReason = _a5000Decision.reason;
               }
+            } else if (a5000Enabled && a5000Url && !samImageUrl) {
+              workerStatus.a5000.skippedReason = "no image URL";
+            }
+            // ── end A5000 semantic decision ────────────────────────────────────────
+            if (includeDiagnostics) {
               samNormalized.diagnostics = compactAiDetectDiagnostics({
                 ...samDiagnostics,
                 reason: "",
@@ -1754,6 +1951,45 @@ async function handleAiDetectMowable(req, res, options = {}) {
               });
               if (a5000Semantic) samNormalized.diagnostics.semantic = a5000Semantic;
               if (a5000Semantic?.semanticMasks) saveSemanticDebugArtifacts(samDiagnostics.debugRunDir, a5000Semantic.semanticMasks);
+              {
+                try {
+                  const semanticMasks = a5000Semantic?.semanticMasks;
+                  const ring = _normalizeSamPixelRing(samPixelCoords);
+                  if (semanticMasks && ring) {
+                    const decodeOrNull = b64 => {
+                      if (typeof b64 !== "string" || !b64) return null;
+                      try { return decodeSemanticMaskPngBase64(b64); } catch (e) { return null; }
+                    };
+                    const maskBuilding   = decodeOrNull(semanticMasks.buildingMaskPngBase64);
+                    const maskRoad       = decodeOrNull(semanticMasks.roadMaskPngBase64);
+                    const maskHardscape  = decodeOrNull(semanticMasks.hardscapeMaskPngBase64);
+                    const maskTree       = decodeOrNull(semanticMasks.treeMaskPngBase64);
+                    const MAX_SAMPLES = 10000;
+                    const bOver = estimatePolygonMaskOverlap(ring, maskBuilding,  MAX_SAMPLES);
+                    const rOver = estimatePolygonMaskOverlap(ring, maskRoad,       MAX_SAMPLES);
+                    const hOver = estimatePolygonMaskOverlap(ring, maskHardscape,  MAX_SAMPLES);
+                    const tOver = estimatePolygonMaskOverlap(ring, maskTree,       MAX_SAMPLES);
+                    const sampledPixels = bOver.sampledPixels || rOver.sampledPixels || hOver.sampledPixels || tOver.sampledPixels;
+                    const overlap = {
+                      hardscapeOverlapRatio: +hOver.overlapRatio.toFixed(4),
+                      buildingOverlapRatio:  +bOver.overlapRatio.toFixed(4),
+                      roadOverlapRatio:      +rOver.overlapRatio.toFixed(4),
+                      treeOverlapRatio:      +tOver.overlapRatio.toFixed(4),
+                      sampledPixels,
+                      method: "bbox-sampled-polygon",
+                    };
+                    samNormalized.diagnostics.semanticMaskOverlap = overlap;
+                    console.log(`[AI Detect] semantic mask overlap hardscape=${overlap.hardscapeOverlapRatio} building=${overlap.buildingOverlapRatio} road=${overlap.roadOverlapRatio} tree=${overlap.treeOverlapRatio} samples=${sampledPixels}`);
+                  } else if (semanticMasks && !ring) {
+                    samNormalized.diagnostics.semanticMaskOverlap = { note: "no polygon ring available", method: "bbox-sampled-polygon" };
+                  } else {
+                    samNormalized.diagnostics.semanticMaskOverlap = { note: "no semanticMasks from A5000", method: "bbox-sampled-polygon" };
+                  }
+                } catch (err) {
+                  console.log(`[AI Detect] semanticMaskOverlap error: ${err.message}`);
+                  if (samNormalized.diagnostics) samNormalized.diagnostics.semanticMaskOverlap = { error: err.message, method: "bbox-sampled-polygon" };
+                }
+              }
               {
                 const ss = a5000Semantic?.semanticSummary;
                 const hasFeatures = (samNormalized.features?.length || 0) > 0;
@@ -1827,6 +2063,25 @@ async function handleAiDetectMowable(req, res, options = {}) {
                 console.log(`[AI Detect] semantic confidence adjusted from ${originalConfidenceScore} to ${confidenceScore} notes=${JSON.stringify(notes)}`);
               }
             }
+            // ── semantic mask overlap confidence adjustment ────────────────────
+            {
+              const _overlap = samNormalized.diagnostics?.semanticMaskOverlap;
+              if (_overlap && typeof _overlap.sampledPixels === "number" && _overlap.sampledPixels >= 100) {
+                const _preOverlapScore = samNormalized.confidenceScore;
+                const { adjusted, confidenceScore: _adjScore, notes: _notes } = applySemanticOverlapConfidenceAdjustments({
+                  confidenceScore: samNormalized.confidenceScore,
+                  semanticMaskOverlap: _overlap,
+                });
+                samNormalized.confidenceScore = _adjScore;
+                samNormalized.diagnostics.semanticOverlapConfidenceNotes = _notes;
+                samNormalized.diagnostics.semanticOverlapAdjustedConfidence = adjusted;
+                samNormalized.diagnostics.confidenceScoreAfterSemanticOverlap = _adjScore;
+                if (adjusted) {
+                  console.log(`[AI Detect] semantic overlap confidence adjusted from ${_preOverlapScore} to ${_adjScore} notes=${JSON.stringify(_notes)}`);
+                }
+              }
+            }
+            // ── end semantic mask overlap adjustment ───────────────────────────
             // Prefer classical over SAM when SAM confidence is low.
             // High confidence SAM results are returned immediately (authoritative).
             // Low confidence SAM results are held; classical runs first and wins if it finds features.
