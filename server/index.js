@@ -1041,6 +1041,30 @@ function logVisionDiagnostics(diagnostics = {}) {
   console.log(`[AI Detect] vision diagnostics=${JSON.stringify(compactAiDetectDiagnostics(diagnostics))}`);
 }
 
+function saveSemanticDebugArtifacts(debugRunDir, semanticMasks) {
+  const isDebug = process.env.NODE_ENV !== "production" ||
+    ["1", "true", "yes", "on"].includes(String(process.env.AI_DETECT_DEBUG || "").toLowerCase());
+  if (!isDebug || !debugRunDir || !semanticMasks || typeof semanticMasks !== "object") return;
+  const maskFiles = [
+    { key: "buildingMaskPngBase64",  file: "semantic-building-mask.png" },
+    { key: "roadMaskPngBase64",      file: "semantic-road-mask.png" },
+    { key: "hardscapeMaskPngBase64", file: "semantic-hardscape-mask.png" },
+    { key: "treeMaskPngBase64",      file: "semantic-tree-mask.png" },
+  ];
+  try {
+    mkdirSync(debugRunDir, { recursive: true });
+    for (const { key, file } of maskFiles) {
+      const b64 = semanticMasks[key];
+      if (typeof b64 === "string" && b64.length > 0) {
+        writeFileSync(path.join(debugRunDir, file), Buffer.from(b64, "base64"));
+      }
+    }
+    console.log("[AI Detect] saved semantic mask artifacts");
+  } catch (err) {
+    console.log(`[AI Detect] saveSemanticDebugArtifacts error: ${err.message}`);
+  }
+}
+
 function emptyMowableDetection(reason, metrics = {}) {
   const parcelAreaSqft = Number(metrics.parcelAreaSqft || 0);
   const detectedAreaSqft = Number(metrics.detectedAreaSqft || 0);
@@ -1696,7 +1720,7 @@ async function handleAiDetectMowable(req, res, options = {}) {
                       console.log(`[AI Detect] A5000 semantic classes: building=${buildingPercent} tree=${treePercent} road=${roadPercent}`);
                       const semanticSummary = data.semanticSummary || null;
                       if (semanticSummary) console.log(`[AI Detect] semanticSummary dominantClass=${semanticSummary.dominantClass ?? "?"} likelyMowable=${semanticSummary.likelyMowable ?? "?"}`);
-                      const result = { source: data.source || "a5000_semantic", model: data.model || null, classes, buildingPercent, treePercent, roadPercent, semanticSummary, debug: data.debug || null };
+                      const result = { source: data.source || "a5000_semantic", model: data.model || null, classes, buildingPercent, treePercent, roadPercent, semanticSummary, debug: data.debug || null, semanticMasks: data.semanticMasks || null };
                       _a5000CacheSet(samImageUrl, result);
                       console.log("[AI Detect] A5000 semantic cache stored");
                       return { ...result, cache: { hit: false, key: samImageUrl, ttlSeconds: 1800 } };
@@ -1729,6 +1753,7 @@ async function handleAiDetectMowable(req, res, options = {}) {
                 elapsedMs: samPayload?.elapsedMs,
               });
               if (a5000Semantic) samNormalized.diagnostics.semantic = a5000Semantic;
+              if (a5000Semantic?.semanticMasks) saveSemanticDebugArtifacts(samDiagnostics.debugRunDir, a5000Semantic.semanticMasks);
               {
                 const ss = a5000Semantic?.semanticSummary;
                 const hasFeatures = (samNormalized.features?.length || 0) > 0;
@@ -1776,6 +1801,32 @@ async function handleAiDetectMowable(req, res, options = {}) {
             if (samPayload?.excludedGeoJson != null) samNormalized.excludedGeoJson = samPayload.excludedGeoJson;
             if (samPayload?.excludedClasses != null) samNormalized.excludedClasses = samPayload.excludedClasses;
             if (samPayload?.softCandidate != null) samNormalized.softCandidate = samPayload.softCandidate;
+            // Apply semantic confidence adjustment for SAM responses with semantic diagnostics.
+            {
+              const _semDiag = samNormalized.diagnostics?.semantic;
+              const _isSamSource = samNormalized.source === "sam" ||
+                (typeof samNormalized.mode === "string" && samNormalized.mode.includes("sam")) ||
+                (typeof samNormalized.detectionMode === "string" && samNormalized.detectionMode.includes("sam"));
+              if (
+                _isSamSource &&
+                _semDiag &&
+                (_semDiag.buildingPercent != null || _semDiag.treePercent != null || _semDiag.roadPercent != null)
+              ) {
+                const originalConfidenceScore = samNormalized.confidenceScore;
+                const { adjusted, confidenceScore, confidenceLabel, notes } = applySemanticConfidenceAdjustments({
+                  confidenceScore: samNormalized.confidenceScore,
+                  confidenceLabel: samNormalized.confidenceLabel || samNormalized.confidence,
+                  semantic: samNormalized.diagnostics.semantic,
+                });
+                samNormalized.confidenceScore = confidenceScore;
+                samNormalized.confidenceLabel = confidenceLabel;
+                samNormalized.confidence = confidenceLabel;
+                samNormalized.diagnostics.semanticAdjustedConfidence = adjusted;
+                samNormalized.diagnostics.semanticConfidenceNotes = notes;
+                samNormalized.diagnostics.originalConfidenceScore = originalConfidenceScore;
+                console.log(`[AI Detect] semantic confidence adjusted from ${originalConfidenceScore} to ${confidenceScore} notes=${JSON.stringify(notes)}`);
+              }
+            }
             // Prefer classical over SAM when SAM confidence is low.
             // High confidence SAM results are returned immediately (authoritative).
             // Low confidence SAM results are held; classical runs first and wins if it finds features.
