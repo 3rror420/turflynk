@@ -50,6 +50,11 @@ NAIP_MIN_IMAGE_SIZE = 256
 NAIP_MAX_IMAGE_SIZE = 2200
 NAIP_PIXEL_SIZE_METERS = 0.6
 
+# Set VISION_DEBUG_PIPELINE=1 (or true/yes) in the PM2 env or as a per-request
+# flag to enable full forensic diagnostics. Normal production runs get concise
+# summaries only; debug mode adds candidate/component/mask/barrier detail.
+_VISION_DEBUG_PIPELINE = os.environ.get("VISION_DEBUG_PIPELINE", "").strip().lower() in {"1", "true", "yes"}
+
 
 class DetectMowableRequest(BaseModel):
     parcelGeoJson: Dict[str, Any]
@@ -64,6 +69,7 @@ class DetectMowableRequest(BaseModel):
     imageSource: Optional[Dict[str, Any]] = None
     address: Optional[str] = None
     debugArtifacts: bool = False
+    debugPipeline: bool = False
     constraintGeoJson: Optional[Dict[str, Any]] = None
     mowableGeoJson: Optional[Dict[str, Any]] = None
     boundarySource: Optional[str] = None
@@ -126,7 +132,7 @@ def env_float(names: Tuple[str, ...], default: float) -> float:
     return default
 
 
-def log_naip_diagnostics(diagnostic: Dict[str, Any], reject_reason: str = "") -> None:
+def log_naip_diagnostics(diagnostic: Dict[str, Any], reject_reason: str = "", debug: bool = False) -> None:
     thresholds = diagnostic.get("thresholds") if isinstance(diagnostic.get("thresholds"), dict) else {}
     thresholds_summary = {
         "detectionMode": thresholds.get("detectionMode"),
@@ -143,35 +149,37 @@ def log_naip_diagnostics(diagnostic: Dict[str, Any], reject_reason: str = "") ->
         f"areaSqft={vision_log_value(diagnostic.get('finalSelectedAreaSqft') or diagnostic.get('detectedAreaSqft'))} "
         f"hardscapeExcludedRatio={vision_log_value(diagnostic.get('hardscapeExcludedRatio'))} "
         f"features={vision_log_value(diagnostic.get('polygonCount'))} "
+        f"confidence={vision_log_value(diagnostic.get('confidence'))} "
         f"reason={reject_reason or diagnostic.get('reason') or 'none'}",
         flush=True,
     )
-    print(f"[Vision] detectionPreset={vision_log_value(diagnostic.get('detectionPreset'))}", flush=True)
-    if thresholds_summary:
-        print(f"[Vision] thresholdsSummary={vision_log_value(thresholds_summary)}", flush=True)
-    print(f"[Vision] NAIP bbox={vision_log_value(diagnostic.get('bbox'))}", flush=True)
-    print(f"[Vision] NAIP status={vision_log_value(diagnostic.get('status'))}", flush=True)
-    print(f"[Vision] NAIP bytes={vision_log_value(diagnostic.get('bytes'))}", flush=True)
-    print(f"[Vision] raster bands={vision_log_value(diagnostic.get('rasterBands'))}", flush=True)
-    print(f"[Vision] raster size={vision_log_value([diagnostic.get('rasterWidth'), diagnostic.get('rasterHeight')])}", flush=True)
-    print(f"[Vision] raster CRS={vision_log_value(diagnostic.get('rasterCrs'))}", flush=True)
-    print(f"[Vision] usedNir={vision_log_value(diagnostic.get('usedNir'))}", flush=True)
     if diagnostic.get("naipNirWarning"):
         print(f"[Vision] {diagnostic.get('naipNirWarning')}", flush=True)
-    print(f"[Vision] vegetationPixels={vision_log_value(diagnostic.get('vegetationPixels'))}", flush=True)
-    print(f"[Vision] polygonCount={vision_log_value(diagnostic.get('polygonCount'))}", flush=True)
-    print(f"[Vision] detectedAreaSqm={vision_log_value(diagnostic.get('detectedAreaSqm'))}", flush=True)
-    print(f"[Vision] ndviThreshold={vision_log_value(diagnostic.get('ndviThreshold'))}", flush=True)
-    print(f"[Vision] visibleThreshold={vision_log_value(diagnostic.get('visibleThreshold'))}", flush=True)
-    print(f"[Vision] brightnessMin={vision_log_value(diagnostic.get('brightnessMin'))}", flush=True)
-    print(f"[Vision] excessGreenMin={vision_log_value(diagnostic.get('excessGreenMin'))}", flush=True)
-    print(f"[Vision] saturationMin={vision_log_value(diagnostic.get('saturationMin'))}", flush=True)
-    print(f"[Vision] strictDetectedRatio={vision_log_value(diagnostic.get('strictDetectedRatio'))}", flush=True)
-    print(f"[Vision] softDetectedRatio={vision_log_value(diagnostic.get('softDetectedRatio'))}", flush=True)
-    print(f"[Vision] fallbackSoftMaskUsed={vision_log_value(diagnostic.get('fallbackSoftMaskUsed'))}", flush=True)
-    print(f"[Vision] debugRunDir={vision_log_value(diagnostic.get('debugRunDir'))}", flush=True)
-    print(f"[Vision] confidence={vision_log_value(diagnostic.get('confidence'))}", flush=True)
-    print(f"[Vision] reject reason={reject_reason or diagnostic.get('reason') or 'none'}", flush=True)
+    if debug:
+        print(f"[Vision] detectionPreset={vision_log_value(diagnostic.get('detectionPreset'))}", flush=True)
+        if thresholds_summary:
+            print(f"[Vision] thresholdsSummary={vision_log_value(thresholds_summary)}", flush=True)
+        print(f"[Vision] NAIP bbox={vision_log_value(diagnostic.get('bbox'))}", flush=True)
+        print(f"[Vision] NAIP status={vision_log_value(diagnostic.get('status'))}", flush=True)
+        print(f"[Vision] NAIP bytes={vision_log_value(diagnostic.get('bytes'))}", flush=True)
+        print(f"[Vision] raster bands={vision_log_value(diagnostic.get('rasterBands'))}", flush=True)
+        print(f"[Vision] raster size={vision_log_value([diagnostic.get('rasterWidth'), diagnostic.get('rasterHeight')])}", flush=True)
+        print(f"[Vision] raster CRS={vision_log_value(diagnostic.get('rasterCrs'))}", flush=True)
+        print(f"[Vision] usedNir={vision_log_value(diagnostic.get('usedNir'))}", flush=True)
+        print(f"[Vision] vegetationPixels={vision_log_value(diagnostic.get('vegetationPixels'))}", flush=True)
+        print(f"[Vision] polygonCount={vision_log_value(diagnostic.get('polygonCount'))}", flush=True)
+        print(f"[Vision] detectedAreaSqm={vision_log_value(diagnostic.get('detectedAreaSqm'))}", flush=True)
+        print(f"[Vision] ndviThreshold={vision_log_value(diagnostic.get('ndviThreshold'))}", flush=True)
+        print(f"[Vision] visibleThreshold={vision_log_value(diagnostic.get('visibleThreshold'))}", flush=True)
+        print(f"[Vision] brightnessMin={vision_log_value(diagnostic.get('brightnessMin'))}", flush=True)
+        print(f"[Vision] excessGreenMin={vision_log_value(diagnostic.get('excessGreenMin'))}", flush=True)
+        print(f"[Vision] saturationMin={vision_log_value(diagnostic.get('saturationMin'))}", flush=True)
+        print(f"[Vision] strictDetectedRatio={vision_log_value(diagnostic.get('strictDetectedRatio'))}", flush=True)
+        print(f"[Vision] softDetectedRatio={vision_log_value(diagnostic.get('softDetectedRatio'))}", flush=True)
+        print(f"[Vision] fallbackSoftMaskUsed={vision_log_value(diagnostic.get('fallbackSoftMaskUsed'))}", flush=True)
+        print(f"[Vision] debugRunDir={vision_log_value(diagnostic.get('debugRunDir'))}", flush=True)
+        print(f"[Vision] confidence={vision_log_value(diagnostic.get('confidence'))}", flush=True)
+        print(f"[Vision] reject reason={reject_reason or diagnostic.get('reason') or 'none'}", flush=True)
 
 
 def estimate_utm_epsg(lng: float, lat: float) -> str:
@@ -535,6 +543,7 @@ def geospatial_args(
     debug_dir: Optional[Path] = None,
     detection_preset: str = "large_rural",
     constrained_boundary_mode: bool = False,
+    debug_pipeline: bool = False,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         imagery=str(imagery_path),
@@ -544,6 +553,7 @@ def geospatial_args(
         debug_dir=str(debug_dir or ""),
         detection_preset=detection_preset,
         constrained_boundary_mode=constrained_boundary_mode,
+        debug_pipeline=debug_pipeline,
         sam_mask="",
         combine="intersect",
         parcel_crs="EPSG:4326",
@@ -735,8 +745,10 @@ def run_naip_mowable_detection(req: DetectMowableRequest) -> Dict[str, Any]:
     active_boundary_geojson = req.mowableGeoJson or req.constraintGeoJson
     detection_geom = parcel_geom
     has_constraint = False
-    print(f"[VISION] constraint received: {active_boundary_geojson is not None}", flush=True)
-    print(f"[VISION] parcel_geom area: {parcel_geom.area}", flush=True)
+    _early_debug = _VISION_DEBUG_PIPELINE or bool(getattr(req, "debugPipeline", False))
+    if _early_debug:
+        print(f"[VISION] constraint received: {active_boundary_geojson is not None}", flush=True)
+        print(f"[VISION] parcel_geom area: {parcel_geom.area}", flush=True)
     if active_boundary_geojson:
         try:
             constraint_geom = geometry_from_geojson(active_boundary_geojson)
@@ -761,7 +773,8 @@ def run_naip_mowable_detection(req: DetectMowableRequest) -> Dict[str, Any]:
                 print("[VISION] constraint is empty geometry, falling back to parcel", flush=True)
         except Exception as exc:
             print(f"[Vision] constraint parse failed, falling back to full parcel: {exc}", flush=True)
-    print(f"[VISION] detection_geom area: {detection_geom.area}", flush=True)
+    if _early_debug:
+        print(f"[VISION] detection_geom area: {detection_geom.area}", flush=True)
 
     parcel_area_sqft = area_sqft(detection_geom)
     requested_detection_preset = req.detectionPreset or req.detection_preset
@@ -779,8 +792,9 @@ def run_naip_mowable_detection(req: DetectMowableRequest) -> Dict[str, Any]:
     requested_w, requested_h = bbox_image_size(image_bounds)
     pixel_size_m = float(os.environ.get("VISION_NAIP_PIXEL_SIZE_METERS") or NAIP_PIXEL_SIZE_METERS)
     print(f"[Vision] parcel_area_sqft={round(parcel_area_sqft, 1)} detectionPreset={detection_preset} is_large_parcel={is_large_parcel}", flush=True)
-    print(f"[Vision] parcel_bounds={parcel_bounds}", flush=True)
-    print(f"[Vision] image_bounds={list(image_bounds)} requested_size={requested_w}x{requested_h} pixel_size_m={pixel_size_m}", flush=True)
+    if _early_debug:
+        print(f"[Vision] parcel_bounds={parcel_bounds}", flush=True)
+        print(f"[Vision] image_bounds={list(image_bounds)} requested_size={requested_w}x{requested_h} pixel_size_m={pixel_size_m}", flush=True)
 
     try:
         import mowable_geospatial
@@ -841,8 +855,9 @@ def run_naip_mowable_detection(req: DetectMowableRequest) -> Dict[str, Any]:
             )
 
         try:
+            _req_debug = _VISION_DEBUG_PIPELINE or bool(getattr(req, "debugPipeline", False))
             result = mowable_geospatial.detect_mowable(
-                geospatial_args(parcel_path, imagery_path, output_path, debug_dir=debug_dir, detection_preset=detection_preset, constrained_boundary_mode=has_constraint)
+                geospatial_args(parcel_path, imagery_path, output_path, debug_dir=debug_dir, detection_preset=detection_preset, constrained_boundary_mode=has_constraint, debug_pipeline=_req_debug)
             )
             print(f"[Vision] detection complete features={result.get('features', 0)} confidence={result.get('confidence')} rejectReason={result.get('selectedCandidate', {}).get('rejectReason', '')}", flush=True)
         except SystemExit as exc:
@@ -976,8 +991,9 @@ def run_naip_mowable_detection(req: DetectMowableRequest) -> Dict[str, Any]:
         if detection_preset == "small_residential" and not features and selected_reject_reason
         else ("no features" if not features else "")
     )
+    _req_debug_final = _VISION_DEBUG_PIPELINE or bool(getattr(req, "debugPipeline", False))
     print(f"[Vision] final: features={len(features)} area_sqft={round(detected_area_sqft, 1)} confidence={confidence} reason={diagnostics['reason']}", flush=True)
-    log_naip_diagnostics(diagnostics, diagnostics["reason"])
+    log_naip_diagnostics(diagnostics, diagnostics["reason"], debug=_req_debug_final)
     area = round(detected_area_sqft, 2) if features else 0
     detection_boundary_source = req.boundarySource or (
         "mowable" if req.mowableGeoJson else ("constraint" if req.constraintGeoJson else "parcel")

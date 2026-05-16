@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -2021,6 +2022,9 @@ def detect_mowable(args: argparse.Namespace) -> Dict[str, Any]:
     from rasterio.features import sieve
     from rasterio.mask import mask as raster_mask
 
+    _debug = bool(getattr(args, "debug_pipeline", False)) or (
+        os.environ.get("VISION_DEBUG_PIPELINE", "").strip().lower() in {"1", "true", "yes"}
+    )
     debug_dir_value = str(getattr(args, "debug_dir", "") or "").strip()
     debug_dir = Path(debug_dir_value) if debug_dir_value else None
     debug_artifacts: Dict[str, str] = {}
@@ -2259,11 +2263,11 @@ def detect_mowable(args: argparse.Namespace) -> Dict[str, Any]:
             f" hardExcl_px={_hard_excl_px} morphOnlyBarrier_px={_morph_only_px}",
             flush=True,
         )
-        # DEBUG: dtype/shape/sample audit before boolean operations
-        _dbg_sample = morphology_barrier_mask[:10, :10] if morphology_barrier_mask.size >= 100 else morphology_barrier_mask
-        print(f"[Vision] DEBUG morphology_barrier_mask dtype={morphology_barrier_mask.dtype} shape={morphology_barrier_mask.shape} unique_sample={np.unique(_dbg_sample).tolist()}", flush=True)
-        _dbg_sample = hard_exclusion_mask[:10, :10] if hard_exclusion_mask.size >= 100 else hard_exclusion_mask
-        print(f"[Vision] DEBUG hard_exclusion_mask dtype={hard_exclusion_mask.dtype} shape={hard_exclusion_mask.shape} unique_sample={np.unique(_dbg_sample).tolist()}", flush=True)
+        if _debug:
+            _dbg_sample = morphology_barrier_mask[:10, :10] if morphology_barrier_mask.size >= 100 else morphology_barrier_mask
+            print(f"[Vision] DEBUG morphology_barrier_mask dtype={morphology_barrier_mask.dtype} shape={morphology_barrier_mask.shape} unique_sample={np.unique(_dbg_sample).tolist()}", flush=True)
+            _dbg_sample = hard_exclusion_mask[:10, :10] if hard_exclusion_mask.size >= 100 else hard_exclusion_mask
+            print(f"[Vision] DEBUG hard_exclusion_mask dtype={hard_exclusion_mask.dtype} shape={hard_exclusion_mask.shape} unique_sample={np.unique(_dbg_sample).tolist()}", flush=True)
 
         # For medium_residential + constrained: compute strong-green mask used to
         # rescue barrier-zone pixels that have clear vegetation evidence back into
@@ -2290,8 +2294,9 @@ def detect_mowable(args: argparse.Namespace) -> Dict[str, Any]:
         else:
             _strong_green = np.zeros(valid_pixels.shape, dtype=bool)
         _strong_green = np.asarray(_strong_green, dtype=bool)
-        _dbg_sg = _strong_green[:10, :10] if _strong_green.size >= 100 else _strong_green
-        print(f"[Vision] DEBUG _strong_green dtype={_strong_green.dtype} shape={_strong_green.shape} unique_sample={np.unique(_dbg_sg).tolist()}", flush=True)
+        if _debug:
+            _dbg_sg = _strong_green[:10, :10] if _strong_green.size >= 100 else _strong_green
+            print(f"[Vision] DEBUG _strong_green dtype={_strong_green.dtype} shape={_strong_green.shape} unique_sample={np.unique(_dbg_sg).tolist()}", flush=True)
 
         # Trailer/RV/metal component exclusion — medium_residential constrained only.
         # grassPositiveMode: detection runs for diagnostics but result is NOT applied
@@ -2350,7 +2355,8 @@ def detect_mowable(args: argparse.Namespace) -> Dict[str, Any]:
             "minComponentAreaSqft": thresholds_used["minComponentAreaSqft"],
             "softFallback": thresholds_used["softFallback"],
         }
-        print(f"[Vision] preset threshold summary={json.dumps(threshold_summary, default=str, separators=(',', ':'))}", flush=True)
+        if _debug:
+            print(f"[Vision] preset threshold summary={json.dumps(threshold_summary, default=str, separators=(',', ':'))}", flush=True)
 
         if detection_preset == "small_residential":
             remainder_mask = valid_pixels & ~hardscape_subtract_mask
@@ -2487,16 +2493,17 @@ def detect_mowable(args: argparse.Namespace) -> Dict[str, Any]:
                             _grass_before_he_last = int(np.count_nonzero(mowable))
                             mowable = (mowable | _rescued) & ~hard_exclusion_mask & valid_pixels
                             _grass_after_he_last = int(np.count_nonzero(mowable))
-                            _apx = parcel_area_sqft / valid_pixel_count if valid_pixel_count > 0 else 0.0
-                            print(
-                                f"[Vision] medConstrainedBarrier (primary):"
-                                f" hardExcl_px={_hard_excl_px}"
-                                f" morphOnlyBarrier_px={_morph_only_px}"
-                                f" rescued_px={_rescued_px_last}"
-                                f" grassBefore={_grass_before_he_last} ({round(_grass_before_he_last * _apx, 1)} sqft)"
-                                f" grassAfter={_grass_after_he_last} ({round(_grass_after_he_last * _apx, 1)} sqft)",
-                                flush=True,
-                            )
+                            if _debug:
+                                _apx = parcel_area_sqft / valid_pixel_count if valid_pixel_count > 0 else 0.0
+                                print(
+                                    f"[Vision] medConstrainedBarrier (primary):"
+                                    f" hardExcl_px={_hard_excl_px}"
+                                    f" morphOnlyBarrier_px={_morph_only_px}"
+                                    f" rescued_px={_rescued_px_last}"
+                                    f" grassBefore={_grass_before_he_last} ({round(_grass_before_he_last * _apx, 1)} sqft)"
+                                    f" grassAfter={_grass_after_he_last} ({round(_grass_after_he_last * _apx, 1)} sqft)",
+                                    flush=True,
+                                )
 
                         # Green narrow/tip component rescue — medium_residential constrained only.
                         # Finds strongly-green pixels eroded or sieved away during morphology
@@ -2543,14 +2550,15 @@ def detect_mowable(args: argparse.Namespace) -> Dict[str, Any]:
                                     mowable = (mowable | _nr_mask) & ~hard_exclusion_mask & valid_pixels
                             _green_narrow_rescued_px_last = _green_narrow_rescued_px_iter
                             _green_narrow_count_last = _green_narrow_count_iter
-                            _apx = parcel_area_sqft / valid_pixel_count if valid_pixel_count > 0 else 0.0
-                            print(
-                                f"[Vision] greenNarrowRescue (primary):"
-                                f" rescued_geoms={_green_narrow_count_last}"
-                                f" rescued_px={_green_narrow_rescued_px_last}"
-                                f" ({round(_green_narrow_rescued_px_last * _apx, 1)} sqft)",
-                                flush=True,
-                            )
+                            if _debug:
+                                _apx = parcel_area_sqft / valid_pixel_count if valid_pixel_count > 0 else 0.0
+                                print(
+                                    f"[Vision] greenNarrowRescue (primary):"
+                                    f" rescued_geoms={_green_narrow_count_last}"
+                                    f" rescued_px={_green_narrow_rescued_px_last}"
+                                    f" ({round(_green_narrow_rescued_px_last * _apx, 1)} sqft)",
+                                    flush=True,
+                                )
 
                         _hs_px_before = int(np.count_nonzero(mowable & hardscape_subtract_mask))
                         mowable = mowable & ~hardscape_subtract_mask & valid_pixels
@@ -2586,29 +2594,30 @@ def detect_mowable(args: argparse.Namespace) -> Dict[str, Any]:
                         candidate["remainderAreaSqft"] = candidate["detectedAreaSqft"]
                         candidate["vegetationFilterApplied"] = True
                         candidate["retryReason"] = hardscape_retry_reason
-                        _apx_diag = parcel_area_sqft / valid_pixel_count if valid_pixel_count > 0 else 0.0
-                        print(
-                            f"[Vision] candidate_diag"
-                            f" ndvi={ndvi_threshold} vis={visible_threshold} brt={brightness_min}"
-                            f" validPixels={candidate.get('validPixels',0)}"
-                            f" vegCandidatePx={candidate.get('vegetationCandidatePixels',0)}"
-                            f" vegCandidateSqft={round(candidate.get('vegetationCandidatePixels',0)*_apx_diag,1)}"
-                            f" hsSeedPx={candidate.get('hardscapeSeedPixels',0)}"
-                            f" hsPx={candidate.get('hardscapePixels',0)}"
-                            f" hsExclRatio={candidate.get('hardscapeExcludedRatio',0)}"
-                            f" townLawnExtPx={candidate.get('townLawnExtensionPixels',0)}"
-                            f" finalPxAfterHS={candidate.get('finalPixelsAfterHardscapeSubtract',0)}"
-                            f" finalSelectedSqft={candidate.get('finalSelectedAreaSqft',0)}"
-                            f" maskPxBefore={candidate.get('maskPixelCountBeforeFiltering',0)}"
-                            f" maskPxAfter={candidate.get('maskPixelCountAfterFiltering',0)}"
-                            f" polyBefore={candidate.get('polygonCountBeforeFiltering',0)}"
-                            f" polyAfter={candidate.get('polygonCountAfterFiltering',0)}"
-                            f" keptComps={candidate.get('keptComponentCount',0)}"
-                            f" largestShare={candidate.get('largestComponentShare',0)}"
-                            f" compAreas={candidate.get('componentAreas',[])[:6]}"
-                            f" reject={candidate.get('rejectReason','')}",
-                            flush=True,
-                        )
+                        if _debug:
+                            _apx_diag = parcel_area_sqft / valid_pixel_count if valid_pixel_count > 0 else 0.0
+                            print(
+                                f"[Vision] candidate_diag"
+                                f" ndvi={ndvi_threshold} vis={visible_threshold} brt={brightness_min}"
+                                f" validPixels={candidate.get('validPixels',0)}"
+                                f" vegCandidatePx={candidate.get('vegetationCandidatePixels',0)}"
+                                f" vegCandidateSqft={round(candidate.get('vegetationCandidatePixels',0)*_apx_diag,1)}"
+                                f" hsSeedPx={candidate.get('hardscapeSeedPixels',0)}"
+                                f" hsPx={candidate.get('hardscapePixels',0)}"
+                                f" hsExclRatio={candidate.get('hardscapeExcludedRatio',0)}"
+                                f" townLawnExtPx={candidate.get('townLawnExtensionPixels',0)}"
+                                f" finalPxAfterHS={candidate.get('finalPixelsAfterHardscapeSubtract',0)}"
+                                f" finalSelectedSqft={candidate.get('finalSelectedAreaSqft',0)}"
+                                f" maskPxBefore={candidate.get('maskPixelCountBeforeFiltering',0)}"
+                                f" maskPxAfter={candidate.get('maskPixelCountAfterFiltering',0)}"
+                                f" polyBefore={candidate.get('polygonCountBeforeFiltering',0)}"
+                                f" polyAfter={candidate.get('polygonCountAfterFiltering',0)}"
+                                f" keptComps={candidate.get('keptComponentCount',0)}"
+                                f" largestShare={candidate.get('largestComponentShare',0)}"
+                                f" compAreas={candidate.get('componentAreas',[])[:6]}"
+                                f" reject={candidate.get('rejectReason','')}",
+                                flush=True,
+                            )
                         if _med_constrained:
                             _apx_c = parcel_area_sqft / valid_pixel_count if valid_pixel_count > 0 else 0.0
                             candidate["trailerExcludedPixels"] = _trailer_excl_px
@@ -2689,14 +2698,15 @@ def detect_mowable(args: argparse.Namespace) -> Dict[str, Any]:
                 _grass_before_he_last = int(np.count_nonzero(soft_mowable))
                 soft_mowable = (soft_mowable | _sf_rescued) & ~hard_exclusion_mask & valid_pixels
                 _grass_after_he_last = int(np.count_nonzero(soft_mowable))
-                _apx = parcel_area_sqft / valid_pixel_count if valid_pixel_count > 0 else 0.0
-                print(
-                    f"[Vision] medConstrainedBarrier (soft-fallback):"
-                    f" rescued_px={_rescued_px_last}"
-                    f" grassBefore={_grass_before_he_last} ({round(_grass_before_he_last * _apx, 1)} sqft)"
-                    f" grassAfter={_grass_after_he_last} ({round(_grass_after_he_last * _apx, 1)} sqft)",
-                    flush=True,
-                )
+                if _debug:
+                    _apx = parcel_area_sqft / valid_pixel_count if valid_pixel_count > 0 else 0.0
+                    print(
+                        f"[Vision] medConstrainedBarrier (soft-fallback):"
+                        f" rescued_px={_rescued_px_last}"
+                        f" grassBefore={_grass_before_he_last} ({round(_grass_before_he_last * _apx, 1)} sqft)"
+                        f" grassAfter={_grass_after_he_last} ({round(_grass_after_he_last * _apx, 1)} sqft)",
+                        flush=True,
+                    )
 
             # Green narrow/tip rescue (soft-fallback path)
             _sf_green_narrow_rescued_px = 0
@@ -2739,14 +2749,15 @@ def detect_mowable(args: argparse.Namespace) -> Dict[str, Any]:
                         soft_mowable = (soft_mowable | _sf_nr_mask) & ~hard_exclusion_mask & valid_pixels
                 _green_narrow_rescued_px_last = _sf_green_narrow_rescued_px
                 _green_narrow_count_last = _sf_green_narrow_count
-                _apx = parcel_area_sqft / valid_pixel_count if valid_pixel_count > 0 else 0.0
-                print(
-                    f"[Vision] greenNarrowRescue (soft-fallback):"
-                    f" rescued_geoms={_sf_green_narrow_count}"
-                    f" rescued_px={_sf_green_narrow_rescued_px}"
-                    f" ({round(_sf_green_narrow_rescued_px * _apx, 1)} sqft)",
-                    flush=True,
-                )
+                if _debug:
+                    _apx = parcel_area_sqft / valid_pixel_count if valid_pixel_count > 0 else 0.0
+                    print(
+                        f"[Vision] greenNarrowRescue (soft-fallback):"
+                        f" rescued_geoms={_sf_green_narrow_count}"
+                        f" rescued_px={_sf_green_narrow_rescued_px}"
+                        f" ({round(_sf_green_narrow_rescued_px * _apx, 1)} sqft)",
+                        flush=True,
+                    )
 
             _hs_sf_before = int(np.count_nonzero(soft_mowable & hardscape_subtract_mask))
             soft_mowable = soft_mowable & ~hardscape_subtract_mask & valid_pixels
@@ -2778,23 +2789,24 @@ def detect_mowable(args: argparse.Namespace) -> Dict[str, Any]:
             soft_candidate["hardscapePixelsBeforeSubtract"] = _hs_sf_before
             soft_candidate["hardscapePixelsSubtracted"] = _hs_sf_before
             soft_candidate["finalPixelsAfterHardscapeSubtract"] = int(np.count_nonzero(soft_mowable))
-            _apx_sfdiag = parcel_area_sqft / valid_pixel_count if valid_pixel_count > 0 else 0.0
-            print(
-                f"[Vision] soft_candidate_diag"
-                f" validPixels={soft_candidate.get('validPixels',0)}"
-                f" vegCandidatePx={soft_candidate.get('vegetationCandidatePixels',0)}"
-                f" vegCandidateSqft={round(soft_candidate.get('vegetationCandidatePixels',0)*_apx_sfdiag,1)}"
-                f" hsPx={soft_candidate.get('hardscapePixels',0)}"
-                f" hsExclRatio={soft_candidate.get('hardscapeExcludedRatio',0)}"
-                f" townLawnExtPx={soft_candidate.get('townLawnExtensionPixels',0)}"
-                f" finalPxAfterHS={soft_candidate.get('finalPixelsAfterHardscapeSubtract',0)}"
-                f" finalSelectedSqft={soft_candidate.get('finalSelectedAreaSqft',0)}"
-                f" keptComps={soft_candidate.get('keptComponentCount',0)}"
-                f" largestShare={soft_candidate.get('largestComponentShare',0)}"
-                f" compAreas={soft_candidate.get('componentAreas',[])[:6]}"
-                f" reject={soft_candidate.get('rejectReason','')}",
-                flush=True,
-            )
+            if _debug:
+                _apx_sfdiag = parcel_area_sqft / valid_pixel_count if valid_pixel_count > 0 else 0.0
+                print(
+                    f"[Vision] soft_candidate_diag"
+                    f" validPixels={soft_candidate.get('validPixels',0)}"
+                    f" vegCandidatePx={soft_candidate.get('vegetationCandidatePixels',0)}"
+                    f" vegCandidateSqft={round(soft_candidate.get('vegetationCandidatePixels',0)*_apx_sfdiag,1)}"
+                    f" hsPx={soft_candidate.get('hardscapePixels',0)}"
+                    f" hsExclRatio={soft_candidate.get('hardscapeExcludedRatio',0)}"
+                    f" townLawnExtPx={soft_candidate.get('townLawnExtensionPixels',0)}"
+                    f" finalPxAfterHS={soft_candidate.get('finalPixelsAfterHardscapeSubtract',0)}"
+                    f" finalSelectedSqft={soft_candidate.get('finalSelectedAreaSqft',0)}"
+                    f" keptComps={soft_candidate.get('keptComponentCount',0)}"
+                    f" largestShare={soft_candidate.get('largestComponentShare',0)}"
+                    f" compAreas={soft_candidate.get('componentAreas',[])[:6]}"
+                    f" reject={soft_candidate.get('rejectReason','')}",
+                    flush=True,
+                )
             if _med_constrained:
                 _apx_csf = parcel_area_sqft / valid_pixel_count if valid_pixel_count > 0 else 0.0
                 soft_candidate["trailerExcludedPixels"] = _trailer_excl_px
@@ -3027,28 +3039,36 @@ def detect_mowable(args: argparse.Namespace) -> Dict[str, Any]:
     _sel = selected or {}
     print(
         "[Vision] full_pipeline_diagnostics"
-        f" parcelAreaSqft={round(parcel_area_sqft, 1)}"
-        f" validPixels={valid_pixel_count}"
-        f" vegetationCandidatePixels={mask_diagnostics.get('vegetationCandidatePixels', 0)}"
-        f" softSurfacePixels={mask_diagnostics.get('softSurfacePixels', 0)}"
-        f" hardscapeSeedPixels={mask_diagnostics.get('hardscapeSeedPixels', 0)}"
-        f" hardscapePixels={mask_diagnostics.get('hardscapePixels', 0)}"
+        f" preset={detection_preset}"
+        f" areaSqft={round(detected_area_sqft, 1)}"
+        f" features={len(geoms)}"
+        f" confidence={round(selected_confidence, 3)}"
         f" hardscapeExcludedRatio={round(float(_sel.get('hardscapeExcludedRatio', 0)), 4)}"
-        f" shadowPixels={mask_diagnostics.get('shadowPixels', mask_diagnostics.get('canopyRejectedPixels', 0))}"
-        f" frozenExclusionPixels={morphology_barrier_details.get('frozenExclusionPixels', 0)}"
-        f" morphologyBarrierPixels={morphology_barrier_details.get('morphologyBarrierPixels', 0)}"
-        f" finalPixelsAfterSubtract={_sel.get('finalPixelsAfterHardscapeSubtract', 0)}"
-        f" townLawnExtensionPixels={mask_diagnostics.get('townLawnExtensionPixels', 0)}"
-        f" componentAreas={component_areas[:8]}"
-        f" componentScores={[round(float(c.get('score', 0)), 3) for c in _sel.get('componentScores', [])][:8]}"
-        f" keptComponentCount={len(geoms)}"
-        f" polygonCountBeforeFiltering={_sel.get('polygonCountBeforeFiltering', 0)}"
-        f" polygonCountAfterFiltering={_sel.get('polygonCountAfterFiltering', 0)}"
-        f" finalSelectedAreaSqft={round(detected_area_sqft, 1)}"
-        f" confidenceScore={round(selected_confidence, 3)}"
+        f" detectedRatio={round(detected_ratio, 4)}"
         f" rejectReason={_sel.get('rejectReason', '') or 'none'}",
         flush=True,
     )
+    if _debug:
+        print(
+            "[Vision] full_pipeline_diagnostics_detail"
+            f" parcelAreaSqft={round(parcel_area_sqft, 1)}"
+            f" validPixels={valid_pixel_count}"
+            f" vegetationCandidatePixels={mask_diagnostics.get('vegetationCandidatePixels', 0)}"
+            f" softSurfacePixels={mask_diagnostics.get('softSurfacePixels', 0)}"
+            f" hardscapeSeedPixels={mask_diagnostics.get('hardscapeSeedPixels', 0)}"
+            f" hardscapePixels={mask_diagnostics.get('hardscapePixels', 0)}"
+            f" shadowPixels={mask_diagnostics.get('shadowPixels', mask_diagnostics.get('canopyRejectedPixels', 0))}"
+            f" frozenExclusionPixels={morphology_barrier_details.get('frozenExclusionPixels', 0)}"
+            f" morphologyBarrierPixels={morphology_barrier_details.get('morphologyBarrierPixels', 0)}"
+            f" finalPixelsAfterSubtract={_sel.get('finalPixelsAfterHardscapeSubtract', 0)}"
+            f" townLawnExtensionPixels={mask_diagnostics.get('townLawnExtensionPixels', 0)}"
+            f" componentAreas={component_areas[:8]}"
+            f" componentScores={[round(float(c.get('score', 0)), 3) for c in _sel.get('componentScores', [])][:8]}"
+            f" keptComponentCount={len(geoms)}"
+            f" polygonCountBeforeFiltering={_sel.get('polygonCountBeforeFiltering', 0)}"
+            f" polygonCountAfterFiltering={_sel.get('polygonCountAfterFiltering', 0)}",
+            flush=True,
+        )
     print(
         "[Vision] geospatial_summary "
         f"preset={detection_preset} mode={mask_diagnostics.get('detectionMode', mode)} "
