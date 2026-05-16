@@ -1219,6 +1219,51 @@ function normalizeMowableResponse(payload = {}) {
   };
 }
 
+
+function applySemanticConfidenceAdjustments({ confidenceScore, confidenceLabel, semantic }) {
+  const { buildingPercent = 0, treePercent = 0, roadPercent = 0 } = semantic || {};
+  let score = confidenceScore;
+  const notes = [];
+
+  if (buildingPercent > 60) {
+    score -= 0.25;
+    notes.push("building-heavy");
+  }
+  if (roadPercent > 10) {
+    score -= 0.15;
+    notes.push("road-heavy");
+  }
+  if (treePercent > 35) {
+    score -= 0.10;
+    notes.push("tree-heavy");
+  }
+  if (buildingPercent < 10 && roadPercent < 5 && treePercent < 20) {
+    score += 0.08;
+    notes.push("clean-lawn-scene");
+  }
+
+  score = Math.max(0.15, Math.min(0.75, score));
+
+  let label;
+  if (score < 0.45) {
+    label = "beta_low";
+  } else if (score <= 0.65) {
+    label = "beta_medium";
+  } else {
+    label = "beta_high";
+  }
+
+  // Example log (not wired yet):
+  // console.log("[applySemanticConfidenceAdjustments]", { in: { confidenceScore, buildingPercent, treePercent, roadPercent }, out: { score, label, notes } });
+
+  return {
+    confidenceScore: score,
+    confidenceLabel: label,
+    notes,
+    adjusted: notes.length > 0,
+  };
+}
+
 function guardrailForMowableDetection(normalized, parcelCollection, parcelAreaSqft, detectedAreaSqft, payload = {}, visionDiagnostics = {}, detectionPreset = "") {
   const preset = normalizeAiDetectionPreset(detectionPreset || visionDiagnostics?.detectionPreset || payload?.detectionPreset, parcelAreaSqft);
   const presetThresholds = aiPresetGuardrailThresholds(preset);
