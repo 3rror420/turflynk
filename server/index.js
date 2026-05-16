@@ -24,6 +24,9 @@ import { createRequire } from "module";
 import { mkdirSync, readFileSync, writeFileSync, renameSync, existsSync } from "fs";
 import zlib from "zlib";
 import turfIntersect from "@turf/intersect";
+import turfCleanCoords from "@turf/clean-coords";
+import turfRewind from "@turf/rewind";
+import turfUnkink from "@turf/unkink-polygon";
 
 // Load deployment config from the project root even when PM2 starts from another cwd.
 
@@ -593,12 +596,39 @@ function featuresFromGeoJson(value, properties = {}) {
   return feature ? [feature] : [];
 }
 
+// Repair a polygon or multi-polygon geometry before clipping:
+//   1. cleanCoords  — removes duplicate/collinear vertices
+//   2. rewind       — enforces RFC 7946 right-hand winding rule
+//   3. unkinkPolygon — splits self-intersecting rings into valid polygons
+// Returns an array of geometry objects (may be >1 if unkink splits the polygon).
+function repairGeometriesForClip(geometry) {
+  if (!geometry) return [];
+  try {
+    const feature = { type: "Feature", geometry, properties: {} };
+    const cleaned = turfCleanCoords(feature);
+    const rewound = turfRewind(cleaned, { mutate: false });
+    const unkinked = turfUnkink(rewound);
+    return (unkinked?.features || []).map(f => f.geometry).filter(Boolean);
+  } catch (_) {
+    return [geometry];
+  }
+}
+
+function bboxesOverlap(bboxA, bboxB) {
+  if (!bboxA || !bboxB) return true; // can't determine — allow through
+  const [aMinX, aMinY, aMaxX, aMaxY] = bboxA;
+  const [bMinX, bMinY, bMaxX, bMaxY] = bboxB;
+  return aMinX <= bMaxX && aMaxX >= bMinX && aMinY <= bMaxY && aMaxY >= bMinY;
+}
+
 function clipFeaturesToParcel(features, parcelCollection) {
   const parcelFeatures = (parcelCollection?.features || []).filter(f => {
     const t = f?.geometry?.type;
     return t === "Polygon" || t === "MultiPolygon";
   });
   if (!parcelFeatures.length) return features;
+
+  const parcelBbox = featureCollectionBbox(parcelCollection);
 
   const clipped = [];
   for (const feature of features) {
@@ -608,28 +638,43 @@ function clipFeaturesToParcel(features, parcelCollection) {
         clipped.push(feature);
         continue;
       }
-      for (const parcelFeature of parcelFeatures) {
-        try {
-          const result = turfIntersect({
-            type: "FeatureCollection",
-            features: [
-              { type: "Feature", geometry: geom, properties: {} },
-              { type: "Feature", geometry: parcelFeature.geometry, properties: {} },
-            ],
-          });
-          if (result) {
-            clipped.push({
-              ...feature,
-              geometry: result.geometry,
-              properties: { ...(feature.properties || {}), source: "sam" },
+
+      const geomBbox = geometryBbox(geom);
+      if (!bboxesOverlap(geomBbox, parcelBbox)) {
+        console.log(`[AI Detect] SAM clip: bbox no overlap — geom=[${geomBbox?.map(v=>v.toFixed(6))}] parcel=[${parcelBbox?.map(v=>v.toFixed(6))}]`);
+        continue;
+      }
+
+      const repairedGeoms = repairGeometriesForClip(geom);
+      let intersected = false;
+      for (const repairedGeom of repairedGeoms) {
+        for (const parcelFeature of parcelFeatures) {
+          try {
+            const result = turfIntersect({
+              type: "FeatureCollection",
+              features: [
+                { type: "Feature", geometry: repairedGeom, properties: {} },
+                { type: "Feature", geometry: parcelFeature.geometry, properties: {} },
+              ],
             });
+            if (result) {
+              clipped.push({
+                ...feature,
+                geometry: result.geometry,
+                properties: { ...(feature.properties || {}), source: "sam" },
+              });
+              intersected = true;
+            }
+          } catch (_) {
+            // try next parcel feature
           }
-        } catch (_) {
-          // continue to next parcel feature
         }
       }
-    } catch (_) {
-      // skip feature if clipping throws
+      if (!intersected) {
+        console.log("[AI Detect] SAM clip: repaired intersect returned null (no overlap)");
+      }
+    } catch (err) {
+      console.log(`[AI Detect] SAM clip: feature repair failed — ${err?.message}`);
     }
   }
   return clipped;
@@ -1673,29 +1718,30 @@ async function handleAiDetectMowable(req, res, options = {}) {
     console.log(`[AI Detect] SAM proxy attempt url=${samUrl} timeoutMs=${samTimeoutMs}`);
 
     // Build Esri static export URL so the SAM worker can download real parcel imagery.
-    // Uses the same World_Imagery source as the tile URL. bbox is derived from center+zoom
-    // assuming ~1024×1024 px output. metersPerPx = 156543.034 / 2^zoom (Web Mercator pixel size).
+    // Use the parcel's own bounding box (+ 8% padding) instead of center+zoom so the
+    // image is tightly cropped to the parcel. At low zoom levels the center+zoom bbox
+    // covers a wide area containing many properties, and SAM selects the highest-quality
+    // green mask in the entire image — which is often from a different property entirely.
+    // Parcel-bounded crop guarantees every SAM candidate mask falls within the parcel.
     let samImageUrl = null;
-    let samImageBbox = null; // [minLng, minLat, maxLng, maxLat] numeric — used for pixel→geo conversion
+    let samImageBbox = null; // [minLng, minLat, maxLng, maxLat] — must match imageUrl bbox exactly
     {
-      const lat  = parseFloat(body.lat  ?? body.center?.[1]);
-      const lng  = parseFloat(body.lng  ?? body.center?.[0]);
-      const zoom = parseFloat(body.zoom ?? 19);
-      if (Number.isFinite(lat) && Number.isFinite(lng) && Number.isFinite(zoom)) {
-        const metersPerPx = 156543.03392804103 / Math.pow(2, zoom);
-        const halfLng = metersPerPx * 512 / 111320;
-        const halfLat = metersPerPx * 512 * Math.cos(lat * Math.PI / 180) / 111320;
-        samImageBbox = [lng - halfLng, lat - halfLat, lng + halfLng, lat + halfLat];
-        const bbox = [
-          (lng - halfLng).toFixed(8),
-          (lat - halfLat).toFixed(8),
-          (lng + halfLng).toFixed(8),
-          (lat + halfLat).toFixed(8),
-        ].join(",");
+      const parcelBbox = featureCollectionBbox(validatedParcelGeoJson);
+      if (parcelBbox && Number.isFinite(parcelBbox[0])) {
+        const [pMinLng, pMinLat, pMaxLng, pMaxLat] = parcelBbox;
+        const padLng = Math.max((pMaxLng - pMinLng) * 0.08, 0.0001);
+        const padLat = Math.max((pMaxLat - pMinLat) * 0.08, 0.0001);
+        samImageBbox = [
+          Math.max(-180, pMinLng - padLng),
+          Math.max(-90,  pMinLat - padLat),
+          Math.min(180,  pMaxLng + padLng),
+          Math.min(90,   pMaxLat + padLat),
+        ];
+        const bbox = samImageBbox.map(v => v.toFixed(8)).join(",");
         samImageUrl = `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/export?bbox=${bbox}&bboxSR=4326&size=1024,1024&imageSR=4326&format=jpg&f=image`;
-        console.log(`[AI Detect] SAM imageUrl bbox=${bbox} zoom=${zoom}`);
+        console.log(`[AI Detect] SAM imageUrl bbox=${bbox} (parcel-bounded)`);
       } else {
-        console.log("[AI Detect] SAM imageUrl skipped — center/zoom not available");
+        console.log("[AI Detect] SAM imageUrl skipped — parcel bbox not available");
       }
     }
 
@@ -1833,14 +1879,13 @@ async function handleAiDetectMowable(req, res, options = {}) {
           }
         }
 
-        if (false && samPayload && isFeatureCollection(samPayload.featureCollection)) {
+        if (samPayload && isFeatureCollection(samPayload.featureCollection)) {
           const beforeClip = samPayload.featureCollection.features.length;
-          console.log(`[AI Detect] SAM clip before features: ${beforeClip}`);
           const clippedFeatures = clipFeaturesToParcel(
             samPayload.featureCollection.features,
             validatedParcelGeoJson
           );
-          console.log(`[AI Detect] SAM clip after features: ${clippedFeatures.length}`);
+          console.log(`[AI Detect] SAM parcel clip before=${beforeClip} after=${clippedFeatures.length} dropped=${beforeClip - clippedFeatures.length}`);
           samPayload.featureCollection = { type: "FeatureCollection", features: clippedFeatures };
           if (Array.isArray(samPayload.features)) {
             samPayload.features = clippedFeatures;
