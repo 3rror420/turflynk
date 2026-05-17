@@ -870,7 +870,8 @@ function numericConfidence(payload = {}) {
 }
 
 function computeHybridConfidence(confidenceScore, diagnostics) {
-  const baseConfidence = confidenceScore ?? 0.35;
+  const numericBaseConfidence = confidenceScore == null ? null : Number(confidenceScore);
+  const baseConfidence = Number.isFinite(numericBaseConfidence) ? numericBaseConfidence : 0.35;
   const ss = diagnostics?.semantic?.semanticSummary;
   const mismatch = diagnostics?.semanticMismatch;
   let adjustment = 0;
@@ -1950,8 +1951,20 @@ async function handleAiDetectMowable(req, res, options = {}) {
                   }, a5000TimeoutMs)
                     .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
                     .then(data => {
-                      const classes = Array.isArray(data.classes) ? data.classes : [];
-                      const findPct = label => (classes.find(c => c.label === label)?.percent ?? 0);
+                      const rawClasses = data?.classes;
+                      const classes = Array.isArray(rawClasses)
+                        ? rawClasses
+                        : (rawClasses && typeof rawClasses === "object")
+                          ? Object.entries(rawClasses).map(([label, value]) => ({
+                            label,
+                            percent: typeof value === "number" ? value : Number(value?.percent ?? value?.pct ?? value?.ratio ?? 0),
+                          }))
+                          : [];
+                      const findPct = label => {
+                        const match = classes.find(c => String(c?.label || "").toLowerCase() === label);
+                        const percent = Number(match?.percent);
+                        return Number.isFinite(percent) ? percent : 0;
+                      };
                       const buildingPercent = findPct("building");
                       const treePercent = findPct("tree");
                       const roadPercent = findPct("road");
