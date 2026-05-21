@@ -655,7 +655,7 @@ checkoutBindOnce(byId('manualQuoteForm'), 'submit', 'manual-quote-form-submit', 
     if (!payload.name) missing.push('name');
     if (!isValidLookingPhone(payload.phone)) missing.push('phone');
     const manualEmail = String(payload.email || '').trim();
-    if (!manualEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(manualEmail)) missing.push('a valid email address');
+    if (manualEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(manualEmail)) missing.push('a valid email address');
     if (!payload.preferredContactMethod) missing.push('preferred contact method');
     if (missing.length) {
       if (missing.includes('phone')) showPhoneRequiredError('manualQuoteResult');

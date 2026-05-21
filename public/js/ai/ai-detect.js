@@ -242,9 +242,23 @@ function currentAiParcelGeoJson() {
   return null;
 }
 
+// AI-source pattern list used by multiple guards below.
+const _AI_SOURCE_PATTERNS = ['vision', 'sam', 'ai', 'ai_detect', 'auto'];
+
+function _isAiGeneratedFeature(f) {
+  const src = String(f?.properties?.source || '').toLowerCase();
+  return _AI_SOURCE_PATTERNS.some((pat) => src.includes(pat));
+}
+
+function _allFeaturesAreAiGenerated(features) {
+  return Array.isArray(features) && features.length > 0 && features.every(_isAiGeneratedFeature);
+}
+
+// Returns only human-drawn mow layers — excludes AI/vision/SAM polygons so
+// this cannot accidentally feed prior AI output back as a constraint.
 function getAiConstraintGeoJson() {
   const features = getAllMowLayers().filter(
-    (f) => f && isPolygonalGeometry(f.geometry)
+    (f) => f && isPolygonalGeometry(f.geometry) && !_isAiGeneratedFeature(f)
   );
   if (!features.length) return null;
   return { type: 'FeatureCollection', features };
@@ -293,13 +307,25 @@ function sanitizeAiMowableFeatures(data = {}, parcelGeoJson = null, selectedArea
       draft: data.source === 'fallback' || feature.properties?.draft === true,
     });
     if (!normalized || !isPolygonalGeometry(normalized.geometry)) return;
+    const normalizedAreaSqFt = layerAreaSqFt(normalized);
+    if (typeof logGeomContractAi === 'function') {
+      logGeomContractAi('frontend received vision GeoJSON', normalized, {
+        source: data.source || feature.properties?.source || 'vision',
+        isRawPixelMask: false,
+        conversionApplied: 'none',
+        clippedToParcel: false,
+        outsideParcelRatio: 0,
+      });
+    }
 
     let candidate = normalized;
+    let clippedToParcel = false;
     if (clipFeature && source !== 'fallback' && typeof turf !== 'undefined' && typeof turf.intersect === 'function') {
       try {
         const clipped = turf.intersect(normalized, clipFeature);
         if (clipped?.geometry && isPolygonalGeometry(clipped.geometry)) {
           candidate = asFeature(clipped, normalized.properties);
+          clippedToParcel = true;
         }
       } catch (error) {
         console.warn('[AI Detect] could not clip detected feature to boundary', error);
@@ -308,6 +334,18 @@ function sanitizeAiMowableFeatures(data = {}, parcelGeoJson = null, selectedArea
 
     const areaSqFt = layerAreaSqFt(candidate);
     if (areaSqFt <= 0) return;
+    if (typeof logGeomContractAi === 'function') {
+      const outsideParcelRatio = normalizedAreaSqFt > 0
+        ? Math.max(0, (normalizedAreaSqFt - areaSqFt) / normalizedAreaSqFt)
+        : 0;
+      logGeomContractAi('frontend sanitized AI GeoJSON before setData', candidate, {
+        source: data.source || feature.properties?.source || 'vision',
+        isRawPixelMask: false,
+        conversionApplied: 'none',
+        clippedToParcel,
+        outsideParcelRatio: Number(outsideParcelRatio.toFixed(6)),
+      });
+    }
     if (thresholdAreaSqFt > 0 && areaSqFt > thresholdAreaSqFt * 0.97) {
       console.warn('[AI Detect] rejected boundary-sized mowable feature', { areaSqFt, thresholdAreaSqFt });
       return;
@@ -350,6 +388,17 @@ async function aiDetectMowableArea() {
   }
 
   const parcelGeoJson = currentAiParcelGeoJson();
+  // Apply global alignment calibration if present before sending geometry to backend
+  const _acal = window._globalAlignmentCalibration;
+  const effectiveParcelGeoJson = (_acal && typeof applyAlignmentCalibrationToGeoJson === 'function')
+    ? applyAlignmentCalibrationToGeoJson(parcelGeoJson, _acal)
+    : parcelGeoJson;
+  if (_acal && effectiveParcelGeoJson !== parcelGeoJson) {
+    console.log('[ALIGNMENT CALIBRATION] applied to AI detect input', JSON.stringify({
+      translateLng: _acal.translateLng, translateLat: _acal.translateLat,
+      scale: _acal.scale, rotationDeg: _acal.rotationDeg,
+    }));
+  }
   if (!parcelGeoJson) {
     const msg = 'Select a parcel first, then run AI Detect.';
     showResult('parcelInfo', `<strong>No parcel selected.</strong><br>${escapeHtml(msg)}`);
@@ -358,15 +407,40 @@ async function aiDetectMowableArea() {
     return;
   }
 
-  const constraintGeoJson = getAiConstraintGeoJson();
-  const detectionBoundarySource = constraintGeoJson ? 'mowable' : 'parcel';
+  // Anchor the detection base to human-defined geometry.
+  // If the user has drawn/lassoed an area, use that as the constraint.
+  // If no human area exists yet, fall back to the parcel (no constraintGeoJson).
+  // Critically: NEVER use current mow layers directly — they may be prior AI output,
+  // which would cause recursive shrinking on repeated clicks.
+  if (!state.detectionBaseGeoJson && state.lastHumanDefinedGeoJson) {
+    state.detectionBaseGeoJson = state.lastHumanDefinedGeoJson;
+    state.detectionBaseSource = state.lastHumanDefinedSource || 'human';
+  }
+  const constraintGeoJson = state.detectionBaseGeoJson || null;
+  const detectionBoundarySource = constraintGeoJson ? (state.detectionBaseSource || 'human') : 'parcel';
+
+  console.log('[AI Detect] detection base', {
+    detectionBaseSource: state.detectionBaseSource || 'parcel',
+    hasDetectionBase: Boolean(state.detectionBaseGeoJson),
+    hasParcelGeoJson: Boolean(parcelGeoJson),
+    hasLastHumanDefinedGeoJson: Boolean(state.lastHumanDefinedGeoJson),
+    currentMowableSource: String(getAllMowLayers()[0]?.properties?.source || 'none'),
+    sendingConstraintFrom: constraintGeoJson ? (state.detectionBaseSource || 'human') : 'none (full parcel)',
+    aiUndoAvailable: Boolean(state.previousMowableBeforeAi?.length),
+  });
   if (constraintGeoJson) {
-    console.debug('[AI Detect] mode:', 'constrained-selection', constraintGeoJson.features.length);
-    console.debug('[AI Detect] boundary source: mowable');
+    console.debug('[AI Detect] mode:', 'constrained-selection', constraintGeoJson.features?.length || 1);
+    console.debug('[AI Detect] boundary source:', detectionBoundarySource);
   } else {
     console.debug('[AI Detect] mode:', 'full-parcel');
     console.debug('[AI Detect] boundary source: parcel');
   }
+
+  // Snapshot current mowable area before AI overwrites it — enables Undo AI
+  const _priorMowable = getAllMowLayers();
+  state.previousMowableBeforeAi = _priorMowable.length
+    ? _priorMowable.map(f => cloneGeoJson(f))
+    : null;
 
   const form = byId('quoteForm');
   const mapCenter = map.getCenter?.();
@@ -387,14 +461,21 @@ async function aiDetectMowableArea() {
 
   const metadataPoint = formPoint || center;
   const parcelFeature = validPolygonalFeaturesFromValue(state.parcelFeature)[0]
-    || validPolygonalFeaturesFromValue(parcelGeoJson)[0]
+    || validPolygonalFeaturesFromValue(effectiveParcelGeoJson)[0]
     || null;
   const parcelAreaSqft = form
     ? (Number(form.elements.lotAreaSqft?.value || 0) || (typeof layerAreaSqFt === 'function' ? Math.round(layerAreaSqFt(parcelGeoJson)) : 0))
     : (typeof layerAreaSqFt === 'function' ? Math.round(layerAreaSqFt(parcelGeoJson)) : 0);
+  const aiRequestId = (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function')
+    ? crypto.randomUUID()
+    : `ai-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  const debugId = `mownwa-ai-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
   const payload = {
-    parcelGeoJson,
+    forceFreshSamOnly: true,
+    aiRequestId,
+    debugId,
+    parcelGeoJson: effectiveParcelGeoJson,
     parcelFeature,
     detection_mode: 'parcel_minus_non_mowable',
     parcelAreaSqft,
@@ -417,12 +498,91 @@ async function aiDetectMowableArea() {
     ...(constraintGeoJson ? { constraintGeoJson, mowableGeoJson: constraintGeoJson } : {}),
   };
 
+  // Geometry source trace — correlates with [AI INPUT TRACE] in server logs
+  const _parcelBbox = (() => {
+    try {
+      if (typeof turf !== 'undefined' && typeof turf.bbox === 'function') return turf.bbox(parcelGeoJson);
+    } catch {}
+    return null;
+  })();
+  const _constraintBbox = constraintGeoJson ? (() => {
+    try {
+      if (typeof turf !== 'undefined' && typeof turf.bbox === 'function') return turf.bbox(constraintGeoJson);
+    } catch {}
+    return null;
+  })() : null;
+  const _constraintAreaSqft = constraintGeoJson ? (() => {
+    try {
+      return typeof turf !== 'undefined' ? Math.round(turf.area(constraintGeoJson) * 10.7639) : null;
+    } catch {}
+    return null;
+  })() : null;
+  console.log('[AI GEOMETRY TRACE]', JSON.stringify({
+    parcelBboxWgs84: _parcelBbox,
+    constraintBboxWgs84: _constraintBbox,
+    parcelAreaSqft,
+    constraintAreaSqft: _constraintAreaSqft,
+    constraintToParcelRatio: (_constraintAreaSqft && parcelAreaSqft) ? Number((_constraintAreaSqft / parcelAreaSqft).toFixed(3)) : null,
+    geometrySource: detectionBoundarySource,
+    hasConstraint: Boolean(constraintGeoJson),
+    detectionBaseSource: state.detectionBaseSource || 'parcel',
+    lastHumanDefinedSource: state.lastHumanDefinedSource || null,
+    currentMowableSource: String(getAllMowLayers()[0]?.properties?.source || 'none'),
+    mowableLayerCount: getAllMowLayers().length,
+  }));
   console.log('[AI Detect] request body', payload);
   console.log('[MowNWA AI Request]', {
     workerUrl: '/api/ai/detect-mowable',
     detection_mode: payload.detection_mode,
     parcelAreaSqft,
+    forceFreshSamOnly: payload.forceFreshSamOnly,
+    aiRequestId,
+    debugId,
   });
+
+  const _existingMowLayers = getAllMowLayers();
+  const _inputAreaSqft = constraintGeoJson ? (() => {
+    try { return typeof turf !== 'undefined' ? Math.round(turf.area(constraintGeoJson) * 10.7639) : null; } catch { return null; }
+  })() : parcelAreaSqft;
+  const _inputBBox = (() => {
+    try { return (typeof turf !== 'undefined' && typeof turf.bbox === 'function') ? turf.bbox(constraintGeoJson || parcelGeoJson) : null; } catch { return null; }
+  })();
+  console.log('[AI DETECT INPUT]', JSON.stringify({
+    aiInputSource: detectionBoundarySource,
+    hasDetectionBase: Boolean(state.detectionBaseGeoJson),
+    detectionBaseSource: state.detectionBaseSource || null,
+    inputAreaSqft: _inputAreaSqft,
+    inputBBox: _inputBBox,
+    hasExistingAiGeometry: _existingMowLayers.length > 0 && _allFeaturesAreAiGenerated(_existingMowLayers),
+  }));
+
+  // ── ALIGNMENT TRACE: original vs calibrated vs payload geometry ──────────────
+  {
+    const _origBbox   = (() => { try { return typeof turf !== 'undefined' ? turf.bbox(parcelGeoJson) : null; } catch { return null; } })();
+    const _adjBbox    = (() => { try { return typeof turf !== 'undefined' ? turf.bbox(effectiveParcelGeoJson) : null; } catch { return null; } })();
+    const _origFirst  = (() => { try { const f = validPolygonalFeaturesFromValue(parcelGeoJson)[0]; return f?.geometry?.coordinates?.[0]?.[0] ?? null; } catch { return null; } })();
+    const _adjFirst   = (() => { try { const f = validPolygonalFeaturesFromValue(effectiveParcelGeoJson)[0]; return f?.geometry?.coordinates?.[0]?.[0] ?? null; } catch { return null; } })();
+    const _payloadBbox  = (() => { try { return typeof turf !== 'undefined' ? turf.bbox(payload.parcelGeoJson) : null; } catch { return null; } })();
+    const _payloadFirst = (() => { try { const f = validPolygonalFeaturesFromValue(payload.parcelGeoJson)[0]; return f?.geometry?.coordinates?.[0]?.[0] ?? null; } catch { return null; } })();
+    console.log('[ALIGNMENT TRACE] calibration object', window._globalAlignmentCalibration);
+    console.log('[ALIGNMENT TRACE] frontend parcel geometry', {
+      hasCalibration: Boolean(_acal),
+      calibrationApplied: effectiveParcelGeoJson !== parcelGeoJson,
+      originalParcelBbox: _origBbox,
+      adjustedParcelBbox: _adjBbox,
+      originalFirstCoord: _origFirst,
+      adjustedFirstCoord: _adjFirst,
+      payloadParcelBbox: _payloadBbox,
+      payloadFirstCoord: _payloadFirst,
+      parcelSource: detectionBoundarySource,
+      bboxDelta: _origBbox && _adjBbox ? [
+        +(_adjBbox[0] - _origBbox[0]).toFixed(7),
+        +(_adjBbox[1] - _origBbox[1]).toFixed(7),
+        +(_adjBbox[2] - _origBbox[2]).toFixed(7),
+        +(_adjBbox[3] - _origBbox[3]).toFixed(7),
+      ] : null,
+    });
+  }
 
   stopToolModes();
   setAiDetectMowableStatus('');
@@ -433,6 +593,8 @@ async function aiDetectMowableArea() {
 
   try {
     const token = localStorage.getItem('turflynk.authToken') || '';
+    const _liveTraceNocache = Date.now();
+    console.log(`[LIVE TRACE] browser sending aiRequestId=${aiRequestId} nocache=${_liveTraceNocache}`);
     const response = await fetch('/api/ai/detect-mowable', {
       method: 'POST',
       headers: {
@@ -456,6 +618,27 @@ async function aiDetectMowableArea() {
 
     const data = await response.json();
     console.log('[AI Detect] response json', data);
+    console.log(`[LIVE TRACE] browser received aiResponseTraceId=${data.aiResponseTraceId ?? 'MISSING'} samRequestId=${data.samRequestId ?? 'MISSING'} backendBuildId=${data.backendBuildId ?? 'MISSING'} nodePid=${data.nodePid ?? 'MISSING'} nodeGitCommit=${data.nodeGitCommit ?? 'MISSING'} nodeGitBranch=${data.nodeGitBranch ?? 'MISSING'} samWorkerUrl=${data.samWorkerUrl ?? data.visionWorkerUrl ?? 'MISSING'} canonicalImageUrl=${data.canonicalImageUrl ?? 'MISSING'} canonicalImageSize=${data.canonicalImageWidth ?? '?'}x${data.canonicalImageHeight ?? '?'} samWorkerHealth=${JSON.stringify(data.samWorkerHealth ?? null)} a5000CacheUsed=${data.a5000CacheUsed ?? 'MISSING'}`);
+    {
+      const _rcvBboxOf = (f) => { const fc=f?.geometry?.coordinates?.[0]; if(!Array.isArray(fc)||!fc.length) return null; let la=Infinity,lb=Infinity,lc=-Infinity,ld=-Infinity; for(const p of fc){la=Math.min(la,p[0]);lb=Math.min(lb,p[1]);lc=Math.max(lc,p[0]);ld=Math.max(ld,p[1]);} return [+la.toFixed(6),+lb.toFixed(6),+lc.toFixed(6),+ld.toFixed(6)]; };
+      const _rcvFeats = Array.isArray(data.features) ? data.features : (Array.isArray(data.featureCollection?.features) ? data.featureCollection.features : []);
+      console.log('[AI RESPONSE TRACE] received', JSON.stringify({
+        aiResponseTraceId: data.aiResponseTraceId ?? null,
+        samWorkerSource: data.samWorkerSource ?? null,
+        samWorkerVersion: data.samWorkerVersion ?? null,
+        featuresLength: Array.isArray(data.features) ? data.features.length : 0,
+        featureCollectionLength: Array.isArray(data.featureCollection?.features) ? data.featureCollection.features.length : 0,
+        detectionMode: data.detectionMode || data.detection_mode || data.mode || null,
+        areaSqft: data.mowableAreaSqft ?? data.areaSqft ?? null,
+        source: data.source ?? null,
+        first10Features: _rcvFeats.slice(0, 10).map((f, i) => ({
+          i,
+          source: f?.properties?.source ?? null,
+          componentId: f?.properties?.componentId ?? null,
+          bbox: _rcvBboxOf(f),
+        })),
+      }));
+    }
     const diag = data.diagnostics || data.diagnostic || {};
     console.log('[AI Detect] diagnostics', JSON.stringify({
       failureStage: diag.failureStage,
@@ -494,8 +677,44 @@ async function aiDetectMowableArea() {
     });
 
     renderAiSemanticDiagPanel(data);
+    renderCanonicalRasterDebugOverlay(data.diagnostics || data.diagnostic || {});
 
-    let features = sanitizeAiMowableFeatures(data, parcelGeoJson, constraintGeoJson);
+    // Use effectiveParcelGeoJson (calibrated) so client clip matches backend geometry.
+    // constraintGeoJson (human-drawn) is not re-transformed — it was drawn on the calibrated map.
+    let features = sanitizeAiMowableFeatures(data, effectiveParcelGeoJson, constraintGeoJson);
+    {
+      const _sanBboxOf = (f) => { const fc=f?.geometry?.coordinates?.[0]; if(!Array.isArray(fc)||!fc.length) return null; let la=Infinity,lb=Infinity,lc=-Infinity,ld=-Infinity; for(const p of fc){la=Math.min(la,p[0]);lb=Math.min(lb,p[1]);lc=Math.max(lc,p[0]);ld=Math.max(ld,p[1]);} return [+la.toFixed(6),+lb.toFixed(6),+lc.toFixed(6),+ld.toFixed(6)]; };
+      const _sanParcel = effectiveParcelGeoJson !== parcelGeoJson ? 'calibrated' : 'original';
+      const _sanClipSrc = constraintGeoJson ? 'constraint' : _sanParcel;
+      console.log('[AI RESPONSE TRACE] sanitized', JSON.stringify({
+        sanitizedCount: features.length,
+        clipSource: _sanClipSrc,
+        first10Features: features.slice(0, 10).map((f, i) => ({
+          i,
+          source: f?.properties?.source ?? null,
+          componentId: f?.properties?.componentId ?? null,
+          areaSqft: (() => { try { return typeof turf !== 'undefined' ? Math.round(turf.area(f) * 10.7639) : null; } catch { return null; } })(),
+          bbox: _sanBboxOf(f),
+        })),
+      }));
+    }
+    {
+      const _origBbox = (() => { try { return typeof turf !== 'undefined' ? turf.bbox(parcelGeoJson) : null; } catch { return null; } })();
+      const _effBbox  = (() => { try { return typeof turf !== 'undefined' ? turf.bbox(effectiveParcelGeoJson) : null; } catch { return null; } })();
+      const _clipSrc  = constraintGeoJson || effectiveParcelGeoJson;
+      const _clipBbox = (() => { try { return typeof turf !== 'undefined' ? turf.bbox(_clipSrc) : null; } catch { return null; } })();
+      const _usesEff  = effectiveParcelGeoJson !== parcelGeoJson;
+      if (_usesEff && !constraintGeoJson) {
+        console.log('[ALIGNMENT CALIBRATION] using calibrated parcel for client clip');
+      }
+      console.log('[ALIGNMENT TRACE] client clip boundary', {
+        originalParcelBbox:  _origBbox,
+        effectiveParcelBbox: _effBbox,
+        clipBoundaryBbox:    _clipBbox,
+        usesEffectiveParcel: _usesEff,
+        clipSource: constraintGeoJson ? 'constraint (human-drawn)' : (_usesEff ? 'effectiveParcel (calibrated)' : 'parcel (uncalibrated)'),
+      });
+    }
     const serverFeaturesCount = Array.isArray(data.features) ? data.features.length
       : (Array.isArray(data.featureCollection?.features) ? data.featureCollection.features.length : 0);
     console.log('[MowNWA AI State] server features count', serverFeaturesCount, '| sanitized features count', features.length);
@@ -514,6 +733,17 @@ async function aiDetectMowableArea() {
           properties: { ...(f.properties || {}), source: 'ai-detect-beta-low-manual-review' },
           geometry: f.geometry,
         }));
+      features.forEach((feature) => {
+        if (typeof logGeomContractAi === 'function') {
+          logGeomContractAi('frontend forced raw server GeoJSON before setData', feature, {
+            source: feature.properties?.source || data.source || 'vision',
+            isRawPixelMask: false,
+            conversionApplied: 'none',
+            clippedToParcel: false,
+            outsideParcelRatio: null,
+          });
+        }
+      });
       console.log('[MowNWA AI State] forced features count after override:', features.length);
     }
 
@@ -523,15 +753,12 @@ async function aiDetectMowableArea() {
       const rejectionReason = data.reason || diag.reason || diag.guardrailReason || '';
       const failureStage = diag.failureStage || '';
 
-      // Clear any stale mowable polygon so no shape remains on the map when AI finds nothing.
-      // This prevents a prior lasso draw or previous AI result from confusing the user.
-      const staleFeaturesCleared = getMowableFeatureCount() > 0;
-      if (staleFeaturesCleared) clearMowableFeatures();
-      // Belt-and-suspenders: ensure any in-progress lasso temp line is also gone.
+      const preservedExistingFeatures = getMowableFeatureCount() > 0;
+      // Ensure any in-progress lasso temp line is gone without discarding a valid manual area.
       if (typeof setLassoTempLine === 'function') setLassoTempLine([]);
 
       console.warn('[MowNWA AI State] no usable features after server + client pipeline',
-        { serverFeaturesCount, rejectionReason, failureStage, staleFeaturesCleared });
+        { serverFeaturesCount, rejectionReason, failureStage, preservedExistingFeatures });
 
       // Reset helper text to prompt manual lasso so the user knows what to do next.
       const _noFeatForm = byId('quoteForm');
@@ -551,8 +778,35 @@ async function aiDetectMowableArea() {
 
     // Commit features into the same mowable-area state used by manual lasso selection.
     console.log('[MowNWA AI State] committing', features.length, 'feature(s) to mowable state');
+    features.forEach((feature) => {
+      if (typeof logGeomContractAi === 'function') {
+        logGeomContractAi('frontend AI commit to MapLibre mowable source', feature, {
+          source: feature.properties?.source || data.source || 'vision',
+          isRawPixelMask: false,
+          conversionApplied: 'none',
+          clippedToParcel: true,
+          outsideParcelRatio: null,
+        });
+      }
+    });
     state.mowUndoStack = [];
     state.selectedMowableFeatureId = null;
+    {
+      const _renBboxOf = (f) => { const fc=f?.geometry?.coordinates?.[0]; if(!Array.isArray(fc)||!fc.length) return null; let la=Infinity,lb=Infinity,lc=-Infinity,ld=-Infinity; for(const p of fc){la=Math.min(la,p[0]);lb=Math.min(lb,p[1]);lc=Math.max(lc,p[0]);ld=Math.max(ld,p[1]);} return [+la.toFixed(6),+lb.toFixed(6),+lc.toFixed(6),+ld.toFixed(6)]; };
+      console.log('[AI RESPONSE TRACE] render', JSON.stringify({
+        renderedCount: features.length,
+        aiResponseTraceId: data.aiResponseTraceId ?? null,
+        features: features.map((f, i) => ({
+          i,
+          source: f?.properties?.source ?? null,
+          componentId: f?.properties?.componentId ?? null,
+          areaSqft: (() => { try { return typeof turf !== 'undefined' ? Math.round(turf.area(f) * 10.7639) : null; } catch { return null; } })(),
+          bbox: _renBboxOf(f),
+        })),
+        mapSourceUpdated: 'mowable-source',
+        mowLayerId: 'mowable-fill',
+      }));
+    }
     setMowableFeatures(features);
     clearCutoutFeatures();
     reorderMapOverlays();
@@ -763,6 +1017,165 @@ function renderAiSemanticDiagPanel(data) {
     </div>`;
 }
 
+// ── Detection-base state helpers ─────────────────────────────────────────────
+// These keep the detection base anchored to human-defined geometry so repeated
+// Auto Detect clicks never recurse into prior AI output.
+
+// Call after any human lasso/draw/edit completes.  Records the current mowable
+// layers as the authoritative detection base and resets the AI undo snapshot.
+// Guard: if all current features are AI-generated, skip recording to prevent
+// recursive shrink when Edit → Save Area is clicked without real edits.
+function recordHumanDefinedMowableArea(source) {
+  const features = getAllMowLayers();
+  if (_allFeaturesAreAiGenerated(features)) {
+    console.log('[AI DETECT BASE] skipped recording AI-generated geometry', {
+      source,
+      featureCount: features.length,
+      featureSources: features.map(f => f?.properties?.source || 'unknown'),
+    });
+    return;
+  }
+  const geoJson = features.length
+    ? { type: 'FeatureCollection', features: features.map(f => cloneGeoJson(f)) }
+    : null;
+  state.detectionBaseGeoJson = geoJson;
+  state.detectionBaseSource = geoJson ? (source || 'human') : null;
+  state.lastHumanDefinedGeoJson = geoJson;
+  state.lastHumanDefinedSource = geoJson ? (source || 'human') : null;
+  state.previousMowableBeforeAi = null; // human change resets AI undo
+}
+window.recordHumanDefinedMowableArea = recordHumanDefinedMowableArea;
+
+// Call when the user clears all mowable areas so next AI detect starts from parcel.
+function clearAiDetectionBase() {
+  state.detectionBaseGeoJson = null;
+  state.detectionBaseSource = null;
+  state.previousMowableBeforeAi = null;
+}
+window.clearAiDetectionBase = clearAiDetectionBase;
+
+// Restore the mowable state that existed just before the last AI detect.
+function aiDetectUndoMowable() {
+  if (!state.previousMowableBeforeAi) {
+    showResult('parcelInfo', '<strong>No AI detect to undo.</strong>');
+    return;
+  }
+  const prev = state.previousMowableBeforeAi;
+  state.previousMowableBeforeAi = null;
+  setMowableFeatures(prev);
+  syncMowAreaFromLayers();
+  reorderMapOverlays();
+  updateQuoteFlowState();
+  showResult('parcelInfo', '<strong>AI Detect undone.</strong><br>Previous mowable area restored.');
+  showToast('AI Detect undone.', 'info', { duration: 4000 });
+  saveQuoteDraft();
+  refreshEstimate({ force: true }).catch(() => {});
+}
+window.aiDetectUndoMowable = aiDetectUndoMowable;
+
+// ── Canonical Raster Alignment Debug Overlay ─────────────────────────────────
+// Renders the exact canonical_naip.png used by SAM as a semi-transparent raster
+// layer on the map so you can visually compare it against:
+//   1. Esri satellite tiles (background)
+//   2. Parcel GeoJSON outline
+//   3. Final SAM/mowable polygon
+//
+// ONLY runs when one of:
+//   ?debugCanonical=1 in URL
+//   localStorage.MOWNWA_DEBUG_CANONICAL === "1"
+//   isAdmin() && state.adminAiDiagnosticsEnabled
+//
+// Never shown to normal customers.
+
+function _isCanonicalDebugEnabled() {
+  try {
+    if (new URLSearchParams(window.location.search).get('debugCanonical') === '1') return true;
+    if (localStorage.getItem('MOWNWA_DEBUG_CANONICAL') === '1') return true;
+  } catch {}
+  if (typeof isAdmin === 'function' && isAdmin() &&
+      typeof state !== 'undefined' && state.adminAiDiagnosticsEnabled) return true;
+  return false;
+}
+
+function renderCanonicalRasterDebugOverlay(diagnostics) {
+  if (!_isCanonicalDebugEnabled()) return;
+  if (!diagnostics || !diagnostics.canonicalImageUrl || !diagnostics.canonicalImageBoundsWgs84) return;
+  if (!state.map) return;
+
+  const b = diagnostics.canonicalImageBoundsWgs84; // [minLng, minLat, maxLng, maxLat]
+  if (!Array.isArray(b) || b.length < 4) return;
+  const [west, south, east, north] = b;
+
+  // Route canonical PNG through Node server proxy — vision service is not publicly exposed
+  const proxyUrl = '/api/admin/ai/vision-asset?path=' + encodeURIComponent(diagnostics.canonicalImageUrl);
+
+  console.log(
+    '[Canonical Raster Overlay]',
+    '\ncanonicalImageUrl:', diagnostics.canonicalImageUrl,
+    '\nproxyUrl:', proxyUrl,
+    '\ncanonicalImageWidth:', diagnostics.canonicalImageWidth,
+    '\ncanonicalImageHeight:', diagnostics.canonicalImageHeight,
+    '\ncanonicalImageBoundsWgs84:', b,
+    '\ncanonicalImageBounds3857:', diagnostics.canonicalImageBounds3857,
+    '\ncanonicalImageTransform:', diagnostics.canonicalImageTransform,
+    '\nsamImageSource:', diagnostics.samImageSource,
+    '\nsamPixelToGeoMode:', diagnostics.samPixelToGeoMode
+  );
+
+  withMapReady(() => {
+    const imgSrcId = 'canonical-naip-debug-img';
+    const imgLayerId = 'canonical-naip-debug-raster';
+    const bndSrcId = 'canonical-naip-debug-bounds';
+    const bndLayerId = 'canonical-naip-debug-bounds-line';
+
+    // MapLibre image source corner order: [topLeft, topRight, bottomRight, bottomLeft]
+    const coords = [
+      [west, north],
+      [east, north],
+      [east, south],
+      [west, south],
+    ];
+
+    if (state.map.getSource(imgSrcId)) {
+      state.map.getSource(imgSrcId).updateImage({ url: proxyUrl, coordinates: coords });
+    } else {
+      state.map.addSource(imgSrcId, { type: 'image', url: proxyUrl, coordinates: coords });
+    }
+    if (!state.map.getLayer(imgLayerId)) {
+      const beforeId = state.map.getLayer('parcel-fill') ? 'parcel-fill' : undefined;
+      state.map.addLayer(
+        { id: imgLayerId, type: 'raster', source: imgSrcId, paint: { 'raster-opacity': 0.45 } },
+        beforeId
+      );
+    }
+
+    const boundsGeoJson = {
+      type: 'FeatureCollection',
+      features: [{
+        type: 'Feature',
+        geometry: {
+          type: 'Polygon',
+          coordinates: [[[west, south], [east, south], [east, north], [west, north], [west, south]]],
+        },
+        properties: {},
+      }],
+    };
+    if (state.map.getSource(bndSrcId)) {
+      state.map.getSource(bndSrcId).setData(boundsGeoJson);
+    } else {
+      state.map.addSource(bndSrcId, { type: 'geojson', data: boundsGeoJson });
+    }
+    if (!state.map.getLayer(bndLayerId)) {
+      state.map.addLayer({
+        id: bndLayerId,
+        type: 'line',
+        source: bndSrcId,
+        paint: { 'line-color': '#ff00ff', 'line-width': 2, 'line-dasharray': [4, 2] },
+      });
+    }
+  });
+}
+
 // Event listeners — wired here; app.js no longer registers these
 function bindAiDetectOnce(id, key, handler) {
   const target = byId(id);
@@ -779,6 +1192,7 @@ function bindAiDetectOnce(id, key, handler) {
 
 bindAiDetectOnce('aiDetectPrimaryBtn', 'ai-detect-primary', aiDetectMowableArea);
 bindAiDetectOnce('aiDetectMowableBtn', 'ai-detect-mowable', aiDetectMowableArea);
+bindAiDetectOnce('aiDetectUndoBtn', 'ai-detect-undo', aiDetectUndoMowable);
 bindAiDetectOnce('aiRefineMowableBtn', 'ai-refine-mowable', aiRefineMowableArea);
 bindAiDetectOnce('applyAiCutoutsBtn', 'apply-ai-cutouts', applyAiCutouts);
 bindAiDetectOnce('editAiCutoutsBtn', 'edit-ai-cutouts', startEditAiCutouts);

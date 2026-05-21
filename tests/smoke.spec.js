@@ -1095,14 +1095,15 @@ test('manual quote request opens form and verifies phone before submit', async (
 });
 
 test('manual quote screen has fancy day scheduler and secondary summary', async ({ page }) => {
+  const _d = (offset) => { const d = new Date(); d.setDate(d.getDate() + offset); return d.toISOString().slice(0, 10); };
   const mockWeatherDays = [
-    { date: '2026-05-09', code: 0, summary: 'Clear', highF: 78, lowF: 55, rainChance: 5, mowRisk: 'low' },
-    { date: '2026-05-10', code: 1, summary: 'Partly cloudy', highF: 72, lowF: 58, rainChance: 15, mowRisk: 'low' },
-    { date: '2026-05-11', code: 63, summary: 'Rain', highF: 65, lowF: 52, rainChance: 80, mowRisk: 'high' },
-    { date: '2026-05-12', code: 0, summary: 'Clear', highF: 75, lowF: 54, rainChance: 10, mowRisk: 'low' },
-    { date: '2026-05-13', code: 2, summary: 'Partly cloudy', highF: 77, lowF: 57, rainChance: 20, mowRisk: 'low' },
-    { date: '2026-05-14', code: 0, summary: 'Clear', highF: 80, lowF: 60, rainChance: 5, mowRisk: 'low' },
-    { date: '2026-05-15', code: 1, summary: 'Cloudy', highF: 73, lowF: 55, rainChance: 30, mowRisk: 'medium' },
+    { date: _d(1), code: 0, summary: 'Clear', highF: 78, lowF: 55, rainChance: 5, mowRisk: 'low' },
+    { date: _d(2), code: 1, summary: 'Partly cloudy', highF: 72, lowF: 58, rainChance: 15, mowRisk: 'low' },
+    { date: _d(3), code: 63, summary: 'Rain', highF: 65, lowF: 52, rainChance: 80, mowRisk: 'high' },
+    { date: _d(4), code: 0, summary: 'Clear', highF: 75, lowF: 54, rainChance: 10, mowRisk: 'low' },
+    { date: _d(5), code: 2, summary: 'Partly cloudy', highF: 77, lowF: 57, rainChance: 20, mowRisk: 'low' },
+    { date: _d(6), code: 0, summary: 'Clear', highF: 80, lowF: 60, rainChance: 5, mowRisk: 'low' },
+    { date: _d(7), code: 1, summary: 'Cloudy', highF: 73, lowF: 55, rainChance: 30, mowRisk: 'medium' },
   ];
 
   await page.route('**/api/weather?**', async (route) => {
