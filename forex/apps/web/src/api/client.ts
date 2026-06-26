@@ -734,6 +734,16 @@ export interface SchedulerStatus {
   latestCompletedJob: IntelligenceJob | null;
 }
 
+export interface RecommendationAnalytics {
+  openBySeverity: { CRITICAL: number; WARNING: number; INFO: number };
+  openByType: Partial<Record<RecommendationType, number>>;
+  totalOpen: number;
+  totalResolved: number;
+  totalDismissed: number;
+  recentHistory: PortfolioRecommendation[];
+  resolvedHistory: PortfolioRecommendation[];
+}
+
 export interface Phase18RunResult extends Phase18LatestState {
   ranAt: string;
   summary: Phase18AnalysisSummary;
@@ -2702,4 +2712,18 @@ export const apiClient = {
     request<IntelligenceJob[]>(`/portfolio-intelligence/jobs/history?limit=${limit}`),
   getPortfolioSchedulerStatus: () =>
     request<SchedulerStatus>("/portfolio-intelligence/scheduler/status"),
+
+  // --- Phase 18.3: History / visualization ---
+  getSnapshotHistory: (limit = 100) =>
+    request<PortfolioSnapshot[]>(`/portfolio-intelligence/history/snapshots?limit=${limit}`),
+  getRegimeTimeline: (limit = 100) =>
+    request<RegimeSnapshot[]>(`/portfolio-intelligence/history/regimes/timeline?limit=${limit}`),
+  getHealthHistory: (deploymentId: string, limit = 100) =>
+    request<HealthSnapshot[]>(`/portfolio-intelligence/history/health/${encodeURIComponent(deploymentId)}?limit=${limit}`),
+  getAllocationHistory: (deploymentId: string, limit = 100) =>
+    request<AllocationRecommendation[]>(`/portfolio-intelligence/history/allocations/${encodeURIComponent(deploymentId)}?limit=${limit}`),
+  getCorrelationHistory: (limit = 100) =>
+    request<CorrelationRow[]>(`/portfolio-intelligence/history/correlations?limit=${limit}`),
+  getRecommendationAnalytics: (limit = 50) =>
+    request<RecommendationAnalytics>(`/portfolio-intelligence/recommendations/analytics?limit=${limit}`),
 };

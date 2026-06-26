@@ -351,6 +351,14 @@ export function getLatestHealth(deploymentId: string): HealthSnapshot | null {
   return row ? mapRow(row) : null;
 }
 
+/** Health history for a specific deployment, newest first. */
+export function listHealthHistory(deploymentId: string, limit = 100): HealthSnapshot[] {
+  const rows = db
+    .prepare(`SELECT * FROM strategy_health WHERE deployment_id = ? ORDER BY calculated_at DESC LIMIT ?`)
+    .all(deploymentId, Math.min(limit, 200)) as HealthRow[];
+  return rows.map(mapRow);
+}
+
 /** Latest health snapshot for every deployment (one row per deployment). */
 export function listLatestHealthSnapshots(): HealthSnapshot[] {
   const rows = db

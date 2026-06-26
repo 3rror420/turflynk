@@ -284,6 +284,61 @@ export function listRecommendations(status?: RecommendationStatus, limit = 100):
   return rows.map(mapRow);
 }
 
+export interface RecommendationAnalytics {
+  openBySeverity: { CRITICAL: number; WARNING: number; INFO: number };
+  openByType: Partial<Record<RecommendationType, number>>;
+  totalOpen: number;
+  totalResolved: number;
+  totalDismissed: number;
+  recentHistory: Recommendation[];
+  resolvedHistory: Recommendation[];
+}
+
+/** Aggregated recommendation analytics for dashboard display. */
+export function getRecommendationAnalytics(historyLimit = 50): RecommendationAnalytics {
+  const safeLimit = Math.min(historyLimit, 200);
+
+  const open = db
+    .prepare(`SELECT * FROM recommendations WHERE status = 'OPEN' ORDER BY created_at DESC`)
+    .all() as RecommendationRow[];
+
+  const bySeverity = { CRITICAL: 0, WARNING: 0, INFO: 0 };
+  const byType: Partial<Record<RecommendationType, number>> = {};
+  for (const r of open) {
+    const sev = r.severity as keyof typeof bySeverity;
+    if (sev in bySeverity) bySeverity[sev]++;
+    const t = r.type as RecommendationType;
+    byType[t] = (byType[t] ?? 0) + 1;
+  }
+
+  const totalResolved = (
+    db.prepare(`SELECT COUNT(*) AS c FROM recommendations WHERE status = 'RESOLVED'`).get() as { c: number }
+  ).c;
+  const totalDismissed = (
+    db.prepare(`SELECT COUNT(*) AS c FROM recommendations WHERE status = 'DISMISSED'`).get() as { c: number }
+  ).c;
+
+  const recentHistory = (
+    db.prepare(`SELECT * FROM recommendations ORDER BY created_at DESC LIMIT ?`).all(safeLimit) as RecommendationRow[]
+  ).map(mapRow);
+
+  const resolvedHistory = (
+    db
+      .prepare(`SELECT * FROM recommendations WHERE status IN ('RESOLVED','DISMISSED') ORDER BY resolved_at DESC LIMIT ?`)
+      .all(safeLimit) as RecommendationRow[]
+  ).map(mapRow);
+
+  return {
+    openBySeverity: bySeverity,
+    openByType: byType,
+    totalOpen: open.length,
+    totalResolved,
+    totalDismissed,
+    recentHistory,
+    resolvedHistory,
+  };
+}
+
 /** Dismiss or resolve a recommendation. Safe human-action endpoint. */
 export function resolveRecommendation(
   id: string,

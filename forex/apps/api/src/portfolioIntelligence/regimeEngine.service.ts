@@ -398,6 +398,14 @@ export function listRegimeHistory(symbol: string, granularity: string, limit = 5
   return rows.map(mapRow);
 }
 
+/** All recent regime snapshots across all symbol/granularity pairs, newest first. */
+export function listAllRecentRegimes(limit = 100): RegimeSnapshot[] {
+  const rows = db
+    .prepare(`SELECT * FROM market_regimes ORDER BY detected_at DESC LIMIT ?`)
+    .all(Math.min(limit, 500)) as RegimeRow[];
+  return rows.map(mapRow);
+}
+
 /** All latest regime snapshots — one per symbol/granularity combination. */
 export function listCurrentRegimes(): RegimeSnapshot[] {
   const rows = db

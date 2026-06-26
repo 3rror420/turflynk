@@ -9,12 +9,12 @@
  */
 import { Router } from "express";
 import { getLatestAnalysisState } from "../portfolioIntelligence/analysis.service.js";
-import { listCurrentRegimes, listRegimeHistory, getLatestRegime } from "../portfolioIntelligence/regimeEngine.service.js";
-import { listLatestHealthSnapshots, getLatestHealth } from "../portfolioIntelligence/healthEngine.service.js";
-import { listLatestCorrelations } from "../portfolioIntelligence/correlationEngine.service.js";
-import { listLatestAllocations } from "../portfolioIntelligence/allocationEngine.service.js";
+import { listCurrentRegimes, listRegimeHistory, getLatestRegime, listAllRecentRegimes } from "../portfolioIntelligence/regimeEngine.service.js";
+import { listLatestHealthSnapshots, getLatestHealth, listHealthHistory } from "../portfolioIntelligence/healthEngine.service.js";
+import { listLatestCorrelations, listCorrelationHistory } from "../portfolioIntelligence/correlationEngine.service.js";
+import { listLatestAllocations, listAllocationHistory } from "../portfolioIntelligence/allocationEngine.service.js";
 import { getLatestPortfolioSnapshot, listPortfolioSnapshots } from "../portfolioIntelligence/portfolioSnapshot.service.js";
-import { listRecommendations, resolveRecommendation, type RecommendationStatus } from "../portfolioIntelligence/recommendationEngine.service.js";
+import { listRecommendations, resolveRecommendation, getRecommendationAnalytics, type RecommendationStatus } from "../portfolioIntelligence/recommendationEngine.service.js";
 import { runAnalysisJob, getLatestJob, listJobs } from "../portfolioIntelligence/jobStore.service.js";
 import { portfolioScheduler } from "../portfolioIntelligence/scheduler.service.js";
 import { recordAudit } from "../audit/audit.store.js";
@@ -155,4 +155,42 @@ portfolioIntelligenceRoutes.get("/jobs/history", (req, res) => {
 /** GET /api/portfolio-intelligence/scheduler/status — config, freshness, latest completed job. */
 portfolioIntelligenceRoutes.get("/scheduler/status", (_req, res) => {
   res.json(portfolioScheduler.status());
+});
+
+// ── Phase 18.3 — History / visualization endpoints ───────────────────────────
+
+/** GET /api/portfolio-intelligence/history/snapshots?limit=100 */
+portfolioIntelligenceRoutes.get("/history/snapshots", (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 100, 500);
+  res.json(listPortfolioSnapshots(limit));
+});
+
+/** GET /api/portfolio-intelligence/history/regimes/timeline?limit=100 */
+portfolioIntelligenceRoutes.get("/history/regimes/timeline", (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 100, 500);
+  res.json(listAllRecentRegimes(limit));
+});
+
+/** GET /api/portfolio-intelligence/history/health/:deploymentId?limit=100 */
+portfolioIntelligenceRoutes.get("/history/health/:deploymentId", (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 100, 200);
+  res.json(listHealthHistory(req.params.deploymentId, limit));
+});
+
+/** GET /api/portfolio-intelligence/history/allocations/:deploymentId?limit=100 */
+portfolioIntelligenceRoutes.get("/history/allocations/:deploymentId", (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 100, 200);
+  res.json(listAllocationHistory(req.params.deploymentId, limit));
+});
+
+/** GET /api/portfolio-intelligence/history/correlations?limit=100 */
+portfolioIntelligenceRoutes.get("/history/correlations", (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 100, 500);
+  res.json(listCorrelationHistory(limit));
+});
+
+/** GET /api/portfolio-intelligence/recommendations/analytics?limit=50 */
+portfolioIntelligenceRoutes.get("/recommendations/analytics", (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 50, 200);
+  res.json(getRecommendationAnalytics(limit));
 });

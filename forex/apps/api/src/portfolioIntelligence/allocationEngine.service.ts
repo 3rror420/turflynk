@@ -258,6 +258,14 @@ export function computeAllocations(
   return results;
 }
 
+/** Allocation history for a specific deployment, newest first. */
+export function listAllocationHistory(deploymentId: string, limit = 100): AllocationRecommendation[] {
+  const rows = db
+    .prepare(`SELECT * FROM strategy_allocations WHERE deployment_id = ? ORDER BY calculated_at DESC LIMIT ?`)
+    .all(deploymentId, Math.min(limit, 200)) as AllocationRow[];
+  return rows.map(mapRow);
+}
+
 /** Latest allocation for every deployment (one per deployment). */
 export function listLatestAllocations(): AllocationRecommendation[] {
   const rows = db

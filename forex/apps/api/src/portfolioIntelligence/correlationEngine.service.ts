@@ -193,6 +193,14 @@ function buildCorrelationRecommendation(correlation: number, overlapScore: numbe
   return "Low correlation — good diversification";
 }
 
+/** Recent correlation history across all pairs, newest first. */
+export function listCorrelationHistory(limit = 100): CorrelationRow[] {
+  const rows = db
+    .prepare(`SELECT * FROM deployment_correlations ORDER BY calculated_at DESC LIMIT ?`)
+    .all(Math.min(limit, 500)) as CorrelationDbRow[];
+  return rows.map(mapRow);
+}
+
 /** Latest correlation matrix (one row per A/B pair). */
 export function listLatestCorrelations(): CorrelationRow[] {
   const rows = db

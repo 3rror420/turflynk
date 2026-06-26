@@ -3,6 +3,12 @@ import { apiClient } from "../api/client.js";
 import type {
   Phase18LatestState,
   PortfolioRecommendation,
+  PortfolioSnapshot,
+  HealthSnapshot,
+  AllocationRecommendation,
+  CorrelationRow,
+  RegimeSnapshot,
+  RecommendationAnalytics,
   StrategyDeployment,
   SchedulerStatus,
 } from "../api/client.js";
@@ -13,12 +19,30 @@ import { CorrelationMatrix } from "../components/portfolioIntelligence/Correlati
 import { RecommendationsPanel } from "../components/portfolioIntelligence/RecommendationsPanel.js";
 import { PortfolioSnapshotCard } from "../components/portfolioIntelligence/PortfolioSnapshotCard.js";
 import { JobStatusPanel } from "../components/portfolioIntelligence/JobStatusPanel.js";
+import { PortfolioChartsPanel } from "../components/portfolioIntelligence/PortfolioChartsPanel.js";
+import { RegimeTimeline } from "../components/portfolioIntelligence/RegimeTimeline.js";
+import { HealthTrendPanel } from "../components/portfolioIntelligence/HealthTrendPanel.js";
+import { AllocationHistoryPanel } from "../components/portfolioIntelligence/AllocationHistoryPanel.js";
+import { CorrelationHistoryPanel } from "../components/portfolioIntelligence/CorrelationHistoryPanel.js";
+import { RecommendationAnalyticsPanel } from "../components/portfolioIntelligence/RecommendationAnalyticsPanel.js";
+
+type Tab = "current" | "history";
 
 export function PortfolioIntelligence() {
   const [state, setState] = useState<Phase18LatestState | null>(null);
   const [allRecs, setAllRecs] = useState<PortfolioRecommendation[]>([]);
   const [deploymentNames, setDeploymentNames] = useState<Map<string, string>>(new Map());
   const [schedulerStatus, setSchedulerStatus] = useState<SchedulerStatus | null>(null);
+
+  // Phase 18.3 — history data
+  const [snapshotHistory, setSnapshotHistory] = useState<PortfolioSnapshot[]>([]);
+  const [regimeTimeline, setRegimeTimeline] = useState<RegimeSnapshot[]>([]);
+  const [healthHistory, setHealthHistory] = useState<HealthSnapshot[]>([]);
+  const [allocationHistory, setAllocationHistory] = useState<AllocationRecommendation[]>([]);
+  const [correlationHistory, setCorrelationHistory] = useState<CorrelationRow[]>([]);
+  const [recAnalytics, setRecAnalytics] = useState<RecommendationAnalytics | null>(null);
+
+  const [tab, setTab] = useState<Tab>("current");
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -48,9 +72,31 @@ export function PortfolioIntelligence() {
     }
   }, []);
 
+  const loadHistory = useCallback(async () => {
+    try {
+      const [snaps, timeline, health, alloc, corr, analytics] = await Promise.all([
+        apiClient.getSnapshotHistory(100),
+        apiClient.getRegimeTimeline(100),
+        apiClient.getPortfolioHealth(),
+        apiClient.getPortfolioAllocations(),
+        apiClient.getCorrelationHistory(100),
+        apiClient.getRecommendationAnalytics(50),
+      ]);
+      setSnapshotHistory(snaps);
+      setRegimeTimeline(timeline);
+      setHealthHistory(health);
+      setAllocationHistory(alloc);
+      setCorrelationHistory(corr);
+      setRecAnalytics(analytics);
+    } catch {
+      // history errors are non-fatal
+    }
+  }, []);
+
   useEffect(() => {
     void loadState();
-  }, [loadState]);
+    void loadHistory();
+  }, [loadState, loadHistory]);
 
   async function handleRunAnalysis() {
     setRunning(true);
@@ -58,7 +104,7 @@ export function PortfolioIntelligence() {
     try {
       const result = await apiClient.runPhase18Analysis();
       setRunSummary(result.summary as unknown as Record<string, unknown>);
-      await loadState();
+      await Promise.all([loadState(), loadHistory()]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Analysis failed");
     } finally {
@@ -156,27 +202,74 @@ export function PortfolioIntelligence() {
         </div>
       )}
 
-      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-        <JobStatusPanel
-          schedulerStatus={schedulerStatus}
-          onRefresh={() => void loadState()}
-        />
-
-        <PortfolioSnapshotCard snapshot={state?.portfolioSnapshot ?? null} />
-
-        <RecommendationsPanel
-          recommendations={allRecs}
-          onResolved={() => void loadState()}
-        />
-
-        <RegimePanel regimes={state?.regimes ?? []} />
-
-        <HealthTable snapshots={state?.healthSnapshots ?? []} deploymentNames={deploymentNames} />
-
-        <AllocationTable allocations={state?.allocations ?? []} deploymentNames={deploymentNames} />
-
-        <CorrelationMatrix correlations={state?.correlations ?? []} deploymentNames={deploymentNames} />
+      {/* Tab navigation */}
+      <div style={{ display: "flex", gap: 0, marginBottom: 20, borderBottom: "1px solid var(--border)" }}>
+        {(["current", "history"] as Tab[]).map((t) => (
+          <button
+            key={t}
+            type="button"
+            onClick={() => setTab(t)}
+            style={{
+              background: "none",
+              border: "none",
+              borderBottom: tab === t ? "2px solid var(--accent)" : "2px solid transparent",
+              color: tab === t ? "var(--accent)" : "var(--text-dim)",
+              padding: "6px 16px",
+              fontSize: 13,
+              fontWeight: tab === t ? 600 : 400,
+              cursor: "pointer",
+              marginBottom: -1,
+              textTransform: "capitalize",
+            }}
+          >
+            {t === "current" ? "Current State" : "Historical View"}
+          </button>
+        ))}
       </div>
+
+      {tab === "current" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          <JobStatusPanel
+            schedulerStatus={schedulerStatus}
+            onRefresh={() => void loadState()}
+          />
+
+          <PortfolioSnapshotCard snapshot={state?.portfolioSnapshot ?? null} />
+
+          <RecommendationsPanel
+            recommendations={allRecs}
+            onResolved={() => void loadState()}
+          />
+
+          <RegimePanel regimes={state?.regimes ?? []} />
+
+          <HealthTable snapshots={state?.healthSnapshots ?? []} deploymentNames={deploymentNames} />
+
+          <AllocationTable allocations={state?.allocations ?? []} deploymentNames={deploymentNames} />
+
+          <CorrelationMatrix correlations={state?.correlations ?? []} deploymentNames={deploymentNames} />
+        </div>
+      )}
+
+      {tab === "history" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          <PortfolioChartsPanel snapshots={snapshotHistory} />
+
+          <RecommendationAnalyticsPanel analytics={recAnalytics} />
+
+          <RegimeTimeline regimes={regimeTimeline} />
+
+          <HealthTrendPanel snapshots={healthHistory} deploymentNames={deploymentNames} />
+
+          <AllocationHistoryPanel allocations={allocationHistory} deploymentNames={deploymentNames} />
+
+          <CorrelationHistoryPanel
+            current={state?.correlations ?? []}
+            history={correlationHistory}
+            deploymentNames={deploymentNames}
+          />
+        </div>
+      )}
     </div>
   );
 }
