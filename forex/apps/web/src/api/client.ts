@@ -706,6 +706,40 @@ export interface Phase18LatestState {
   recommendations: PortfolioRecommendation[];
 }
 
+// Phase 18.2 — Job tracking + scheduler types
+export type JobStatus = "RUNNING" | "COMPLETED" | "FAILED" | "SKIPPED";
+export type JobTrigger = "MANUAL" | "SCHEDULED";
+export type Freshness = "FRESH" | "STALE" | "UNKNOWN";
+
+export interface IntelligenceJob {
+  id: string;
+  startedAt: string;
+  finishedAt: string | null;
+  status: JobStatus;
+  trigger: JobTrigger;
+  durationMs: number | null;
+  errorMessage: string | null;
+  summary: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface SchedulerStatus {
+  enabled: boolean;
+  intervalMinutes: number;
+  freshnessThresholdMinutes: number;
+  isRunning: boolean;
+  lastRunAt: string | null;
+  nextRunAt: string | null;
+  freshness: Freshness;
+  latestCompletedJob: IntelligenceJob | null;
+}
+
+export interface Phase18RunResult extends Phase18LatestState {
+  ranAt: string;
+  summary: Phase18AnalysisSummary;
+  job: IntelligenceJob;
+}
+
 export interface EngineStatus {
   running: boolean;
   intervalMs: number;
@@ -2632,7 +2666,7 @@ export const apiClient = {
   getPortfolioIntelligenceStatus: () =>
     request<Phase18LatestState>("/portfolio-intelligence/status"),
   runPhase18Analysis: () =>
-    request<Phase18AnalysisResult>("/portfolio-intelligence/run-analysis", { method: "POST" }),
+    request<Phase18RunResult>("/portfolio-intelligence/run-analysis", { method: "POST" }),
   getPortfolioRegimes: () =>
     request<RegimeSnapshot[]>("/portfolio-intelligence/regimes"),
   getRegimeHistory: (symbol: string, granularity: string, limit = 50) =>
@@ -2660,4 +2694,12 @@ export const apiClient = {
       method: "POST",
       body: JSON.stringify({ action, note }),
     }),
+
+  // --- Phase 18.2: Job tracking + scheduler ---
+  getLatestIntelligenceJob: () =>
+    request<IntelligenceJob>("/portfolio-intelligence/jobs/latest"),
+  getIntelligenceJobHistory: (limit = 20) =>
+    request<IntelligenceJob[]>(`/portfolio-intelligence/jobs/history?limit=${limit}`),
+  getPortfolioSchedulerStatus: () =>
+    request<SchedulerStatus>("/portfolio-intelligence/scheduler/status"),
 };

@@ -8,13 +8,15 @@
  * Route prefix: /api/portfolio-intelligence
  */
 import { Router } from "express";
-import { runPhase18Analysis, getLatestAnalysisState } from "../portfolioIntelligence/analysis.service.js";
+import { getLatestAnalysisState } from "../portfolioIntelligence/analysis.service.js";
 import { listCurrentRegimes, listRegimeHistory, getLatestRegime } from "../portfolioIntelligence/regimeEngine.service.js";
 import { listLatestHealthSnapshots, getLatestHealth } from "../portfolioIntelligence/healthEngine.service.js";
 import { listLatestCorrelations } from "../portfolioIntelligence/correlationEngine.service.js";
 import { listLatestAllocations } from "../portfolioIntelligence/allocationEngine.service.js";
 import { getLatestPortfolioSnapshot, listPortfolioSnapshots } from "../portfolioIntelligence/portfolioSnapshot.service.js";
 import { listRecommendations, resolveRecommendation, type RecommendationStatus } from "../portfolioIntelligence/recommendationEngine.service.js";
+import { runAnalysisJob, getLatestJob, listJobs } from "../portfolioIntelligence/jobStore.service.js";
+import { portfolioScheduler } from "../portfolioIntelligence/scheduler.service.js";
 import { recordAudit } from "../audit/audit.store.js";
 
 export const portfolioIntelligenceRoutes = Router();
@@ -27,6 +29,9 @@ portfolioIntelligenceRoutes.get("/status", (_req, res) => {
 /** POST /api/portfolio-intelligence/run-analysis — trigger a fresh analysis run. */
 portfolioIntelligenceRoutes.post("/run-analysis", (req, res) => {
   const username = (req.session as { user?: { username: string } })?.user?.username ?? "unknown";
+  const job = runAnalysisJob("MANUAL", username);
+
+  // Always audit the attempt (success is defined by job.status, not by whether it threw)
   recordAudit({
     username,
     role: (req.session as { user?: { role: string } })?.user?.role ?? null,
@@ -34,15 +39,17 @@ portfolioIntelligenceRoutes.post("/run-analysis", (req, res) => {
     route: req.path,
     method: req.method,
     ip: req.ip,
-    success: true,
-    metadata: { triggeredBy: username },
+    success: job.status !== "FAILED",
+    metadata: { jobId: job.id, status: job.status, triggeredBy: username },
   });
-  try {
-    const result = runPhase18Analysis(username);
-    res.json(result);
-  } catch (err) {
-    res.status(500).json({ error: err instanceof Error ? err.message : "Analysis failed" });
+
+  if (job.status === "FAILED") {
+    return res.status(500).json({ error: job.errorMessage ?? "Analysis failed", job });
   }
+
+  // For COMPLETED or SKIPPED, include the job record alongside the current state
+  const state = getLatestAnalysisState();
+  return res.json({ ...state, ranAt: job.finishedAt ?? job.startedAt, summary: job.summary, job });
 });
 
 /** GET /api/portfolio-intelligence/regimes — current regime per symbol/timeframe. */
@@ -128,4 +135,24 @@ portfolioIntelligenceRoutes.post("/recommendations/:id/resolve", (req, res) => {
   const updated = resolveRecommendation(id, action as "DISMISSED" | "RESOLVED", note);
   if (!updated) return res.status(404).json({ error: "Recommendation not found or already resolved" });
   return res.json(updated);
+});
+
+// ── Phase 18.2 — Job tracking + scheduler endpoints ──────────────────────────
+
+/** GET /api/portfolio-intelligence/jobs/latest — most recent job (any status). */
+portfolioIntelligenceRoutes.get("/jobs/latest", (_req, res) => {
+  const job = getLatestJob();
+  if (!job) return res.status(404).json({ error: "No jobs recorded yet" });
+  return res.json(job);
+});
+
+/** GET /api/portfolio-intelligence/jobs/history?limit=20 */
+portfolioIntelligenceRoutes.get("/jobs/history", (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 20, 100);
+  res.json(listJobs(limit));
+});
+
+/** GET /api/portfolio-intelligence/scheduler/status — config, freshness, latest completed job. */
+portfolioIntelligenceRoutes.get("/scheduler/status", (_req, res) => {
+  res.json(portfolioScheduler.status());
 });

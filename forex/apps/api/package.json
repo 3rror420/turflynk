@@ -24,6 +24,7 @@
     "qa:phase177": "npm run build && rm -f ./data/qa-phase177.sqlite* && DATABASE_FILE=./data/qa-phase177.sqlite node dist/qa/phase177Smoke.js",
     "qa:research": "npm run build && rm -f ./data/qa-research.sqlite* && DATABASE_FILE=./data/qa-research.sqlite node dist/qa/researchSmoke.js",
     "qa:phase18": "npm run build && rm -f ./data/qa-phase18.sqlite* && DATABASE_FILE=./data/qa-phase18.sqlite node dist/qa/phase18Smoke.js",
+    "qa:phase182": "npm run build && rm -f ./data/qa-phase182.sqlite* && DATABASE_FILE=./data/qa-phase182.sqlite node dist/qa/phase182Smoke.js",
     "qa:research-review": "npm run build && rm -f ./data/qa-research-review.sqlite* && DATABASE_FILE=./data/qa-research-review.sqlite node dist/qa/researchReviewSmoke.js",
     "qa:users": "npm run build && rm -f ./data/qa-users.sqlite* && DATABASE_FILE=./data/qa-users.sqlite node dist/qa/userManagerSmoke.js",
     "admin:user": "tsx src/cli/adminUser.ts"

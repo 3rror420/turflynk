@@ -963,3 +963,20 @@ CREATE INDEX IF NOT EXISTS idx_recommendations_status ON recommendations (status
 CREATE INDEX IF NOT EXISTS idx_recommendations_deployment_id ON recommendations (deployment_id);
 CREATE INDEX IF NOT EXISTS idx_recommendations_created_at ON recommendations (created_at);
 CREATE INDEX IF NOT EXISTS idx_recommendations_severity ON recommendations (severity);
+
+-- Phase 18.2 — Portfolio Intelligence Job Tracking
+CREATE TABLE IF NOT EXISTS portfolio_intelligence_jobs (
+  id TEXT PRIMARY KEY,
+  started_at TEXT NOT NULL,
+  finished_at TEXT,
+  status TEXT NOT NULL CHECK (status IN ('RUNNING', 'COMPLETED', 'FAILED', 'SKIPPED')),
+  trigger TEXT NOT NULL CHECK (trigger IN ('MANUAL', 'SCHEDULED')),
+  duration_ms INTEGER,
+  error_message TEXT,
+  summary_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_pi_jobs_status ON portfolio_intelligence_jobs (status);
+CREATE INDEX IF NOT EXISTS idx_pi_jobs_created_at ON portfolio_intelligence_jobs (created_at);
+CREATE INDEX IF NOT EXISTS idx_pi_jobs_trigger ON portfolio_intelligence_jobs (trigger);

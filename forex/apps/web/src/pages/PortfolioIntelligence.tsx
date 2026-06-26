@@ -4,6 +4,7 @@ import type {
   Phase18LatestState,
   PortfolioRecommendation,
   StrategyDeployment,
+  SchedulerStatus,
 } from "../api/client.js";
 import { RegimePanel } from "../components/portfolioIntelligence/RegimePanel.js";
 import { HealthTable } from "../components/portfolioIntelligence/HealthTable.js";
@@ -11,26 +12,29 @@ import { AllocationTable } from "../components/portfolioIntelligence/AllocationT
 import { CorrelationMatrix } from "../components/portfolioIntelligence/CorrelationMatrix.js";
 import { RecommendationsPanel } from "../components/portfolioIntelligence/RecommendationsPanel.js";
 import { PortfolioSnapshotCard } from "../components/portfolioIntelligence/PortfolioSnapshotCard.js";
+import { JobStatusPanel } from "../components/portfolioIntelligence/JobStatusPanel.js";
 
 export function PortfolioIntelligence() {
   const [state, setState] = useState<Phase18LatestState | null>(null);
   const [allRecs, setAllRecs] = useState<PortfolioRecommendation[]>([]);
   const [deploymentNames, setDeploymentNames] = useState<Map<string, string>>(new Map());
+  const [schedulerStatus, setSchedulerStatus] = useState<SchedulerStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [lastRunAt, setLastRunAt] = useState<string | null>(null);
   const [runSummary, setRunSummary] = useState<Record<string, unknown> | null>(null);
 
   const loadState = useCallback(async () => {
     try {
-      const [s, recs, deps] = await Promise.all([
+      const [s, recs, deps, sched] = await Promise.all([
         apiClient.getPortfolioIntelligenceStatus(),
         apiClient.getPortfolioRecommendations(undefined, 200),
         apiClient.getDeployments(),
+        apiClient.getPortfolioSchedulerStatus(),
       ]);
       setState(s);
       setAllRecs(recs);
+      setSchedulerStatus(sched);
       const nameMap = new Map<string, string>();
       for (const d of deps as StrategyDeployment[]) {
         nameMap.set(d.id, d.name);
@@ -53,7 +57,6 @@ export function PortfolioIntelligence() {
     setError(null);
     try {
       const result = await apiClient.runPhase18Analysis();
-      setLastRunAt(result.ranAt);
       setRunSummary(result.summary as unknown as Record<string, unknown>);
       await loadState();
     } catch (err) {
@@ -61,10 +64,6 @@ export function PortfolioIntelligence() {
     } finally {
       setRunning(false);
     }
-  }
-
-  async function handleRecResolved() {
-    await loadState();
   }
 
   if (loading) {
@@ -125,9 +124,11 @@ export function PortfolioIntelligence() {
         >
           {running ? "Running analysis…" : "Run Analysis"}
         </button>
-        {lastRunAt && (
+        {schedulerStatus && (
           <span style={{ fontSize: 12, color: "var(--text-dim)" }}>
-            Last run: {new Date(lastRunAt).toLocaleString()}
+            {schedulerStatus.enabled
+              ? `Auto-refresh every ${schedulerStatus.intervalMinutes}m`
+              : "Auto-refresh disabled"}
           </span>
         )}
         {runSummary && (
@@ -156,9 +157,17 @@ export function PortfolioIntelligence() {
       )}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        <JobStatusPanel
+          schedulerStatus={schedulerStatus}
+          onRefresh={() => void loadState()}
+        />
+
         <PortfolioSnapshotCard snapshot={state?.portfolioSnapshot ?? null} />
 
-        <RecommendationsPanel recommendations={allRecs} onResolved={() => void handleRecResolved()} />
+        <RecommendationsPanel
+          recommendations={allRecs}
+          onResolved={() => void loadState()}
+        />
 
         <RegimePanel regimes={state?.regimes ?? []} />
 
