@@ -74,6 +74,13 @@ assert(historyRows.length >= 1, "listRegimeHistory must return at least 1 row");
 
 const currentRegimes = listCurrentRegimes();
 assert(currentRegimes.some((r) => r.symbol === "EUR_USD"), "listCurrentRegimes must include EUR_USD");
+
+// Deduplication: calling detectRegime again for the same symbol/TF must not create a new row
+const rowCountBefore = (db.prepare("SELECT COUNT(*) AS c FROM market_regimes WHERE symbol = 'EUR_USD' AND granularity = 'M5'").get() as { c: number }).c;
+detectRegime("EUR_USD", "M5");
+const rowCountAfter = (db.prepare("SELECT COUNT(*) AS c FROM market_regimes WHERE symbol = 'EUR_USD' AND granularity = 'M5'").get() as { c: number }).c;
+assert(rowCountAfter === rowCountBefore, "detectRegime must not insert duplicate rows for the same candle_time");
+
 console.log("[phase18] Regime detection ok");
 
 // ── 3. Compatibility matrix ───────────────────────────────────────────────
@@ -135,6 +142,17 @@ const allHealth = listLatestHealthSnapshots();
 assert(allHealth.some((h) => h.deploymentId === depA.id), "listLatestHealthSnapshots must include depA");
 console.log("[phase18] Health snapshots ok");
 
+// ── 5b. Single-deployment edge case: health must work with zero-score ─────
+// Health with no paper data should produce a valid 0–100 score
+assert(healthA.healthScore >= 0 && healthA.healthScore <= 100, "no-data health score must be in [0, 100]");
+assert(healthB.healthScore >= 0 && healthB.healthScore <= 100, "no-data health score must be in [0, 100]");
+// Allocations with a single deployment must produce weight ≈ 100%
+const singleDepAlloc = computeAllocations([healthA], []);
+if (singleDepAlloc.length === 1) {
+  assert(Math.abs(singleDepAlloc[0].recommendedWeight - 1.0) < 0.001, "single-deployment weight must be ~100%");
+}
+console.log("[phase18] Single-deployment edge case ok");
+
 // ── 6. Correlations ───────────────────────────────────────────────────────
 const correlations = computeAllCorrelations(30);
 assert(correlations.length >= 1, "at least 1 correlation pair must be computed for 2 deployments");
@@ -161,7 +179,12 @@ for (const a of allocations) {
   assert(a.recommendedWeight >= 0 && a.recommendedWeight <= 1, "weight must be in [0, 1]");
   assert(Array.isArray(a.reasons), "allocation reasons must be array");
 }
-console.log("[phase18] Allocations ok");
+
+// Weights must sum to ~100% (two-pass normalization guarantee)
+const totalWeight = allocations.reduce((s, a) => s + a.recommendedWeight, 0);
+assert(Math.abs(totalWeight - 1.0) < 0.001, `allocation weights must sum to ~1.0 (got ${totalWeight.toFixed(4)})`);
+
+console.log(`[phase18] Allocations ok — total weight = ${(totalWeight * 100).toFixed(2)}%`);
 
 // ── 8. Portfolio snapshot ─────────────────────────────────────────────────
 const portfolioSnap = computePortfolioSnapshot(listCurrentRegimes(), allocations);

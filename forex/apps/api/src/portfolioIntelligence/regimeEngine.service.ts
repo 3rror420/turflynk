@@ -256,11 +256,20 @@ export function detectRegime(symbol: string, granularity: string, lookback = 100
     .all(symbol, granularity, lookback) as CandleRow[];
 
   if (rows.length < 30) {
+    // Use the latest available candle time as the key, or a stable per-symbol
+    // sentinel when there are no candles at all. This prevents duplicate rows
+    // when detectRegime is called multiple times before new candles arrive.
+    const candleTime = rows[0]?.time ?? `NO_DATA:${symbol}:${granularity}`;
+    const existing = db
+      .prepare(`SELECT * FROM market_regimes WHERE symbol = ? AND granularity = ? AND candle_time = ? LIMIT 1`)
+      .get(symbol, granularity, candleTime) as RegimeRow | undefined;
+    if (existing) return mapRow(existing);
+
     const snap: RegimeSnapshot = {
       id: randomUUID(),
       symbol,
       granularity,
-      candleTime: rows[0]?.time ?? now,
+      candleTime,
       detectedAt: now,
       regime: "UNKNOWN",
       trendStrength: null,
@@ -336,6 +345,13 @@ export function detectRegime(symbol: string, granularity: string, lookback = 100
 }
 
 function persistRegime(snap: RegimeSnapshot): void {
+  // Skip insert when a snapshot for the same candle bar already exists — prevents
+  // unbounded table growth when analysis is run repeatedly on the same candle data.
+  const existing = db
+    .prepare(`SELECT id FROM market_regimes WHERE symbol = ? AND granularity = ? AND candle_time = ? LIMIT 1`)
+    .get(snap.symbol, snap.granularity, snap.candleTime);
+  if (existing) return;
+
   db.prepare(
     `INSERT INTO market_regimes
      (id, symbol, granularity, candle_time, detected_at, regime, trend_strength, volatility_score,

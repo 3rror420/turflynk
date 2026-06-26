@@ -90,12 +90,13 @@ function getDailyPl(deploymentId: string, lookbackDays: number): Map<string, num
 /** Instrument overlap: same base currency pair → high overlap. */
 function instrumentOverlap(instrA: string, instrB: string): number {
   if (instrA === instrB) return 1;
-  const [a1, a2] = instrA.replace("_", "/").split("/");
-  const [b1, b2] = instrB.replace("_", "/").split("/");
-  const aSet = new Set([a1, a2]);
-  const bSet = new Set([b1, b2]);
+  const partsA = instrA.split("_").filter(Boolean);
+  const partsB = instrB.split("_").filter(Boolean);
+  const aSet = new Set(partsA);
+  const bSet = new Set(partsB);
   const shared = [...aSet].filter((c) => bSet.has(c)).length;
-  return shared / 2;
+  const maxPossible = Math.max(aSet.size, bSet.size);
+  return maxPossible > 0 ? shared / maxPossible : 0;
 }
 
 /** Timeframe overlap score (1 for same, decreasing for distance). */

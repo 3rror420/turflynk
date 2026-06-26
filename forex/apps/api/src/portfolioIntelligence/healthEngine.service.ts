@@ -113,10 +113,10 @@ function getPaperStats(deploymentId: string): PaperAgg | null {
       ? Math.max(0, (run.starting_balance - run.current_equity) / run.starting_balance)
       : 0;
 
-  // Recent (last 10) trades
+  // Recent (last 10) trades — subquery required; LIMIT inside COUNT(*) is a no-op
   const recentCount = (
     db
-      .prepare(`SELECT COUNT(*) AS c FROM paper_trades WHERE run_id = ? ORDER BY created_at DESC LIMIT 10`)
+      .prepare(`SELECT COUNT(*) AS c FROM (SELECT id FROM paper_trades WHERE run_id = ? ORDER BY created_at DESC LIMIT 10)`)
       .get(run.id) as { c: number }
   ).c;
 

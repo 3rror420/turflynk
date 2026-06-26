@@ -242,8 +242,16 @@ export function generateRecommendations(
   }
 
   // --- Allocation-based recommendations ---
+  // Only fire REDUCE_ALLOCATION when the deployment isn't already flagged by a
+  // health-based recommendation — avoids duplicate noise for low-scoring deployments.
+  const healthFlaggedIds = new Set(
+    results
+      .filter((r) => r.type === "PAUSE_DEPLOYMENT" || r.type === "LOW_HEALTH")
+      .map((r) => r.deploymentId)
+      .filter((id): id is string => id !== null)
+  );
   for (const a of allocations) {
-    if (a.recommendedWeight < 0.03) {
+    if (a.recommendedWeight < 0.03 && !healthFlaggedIds.has(a.deploymentId)) {
       const name = depNames.get(a.deploymentId) ?? a.deploymentId.slice(0, 8);
       results.push(
         insertRecommendation({
@@ -253,7 +261,7 @@ export function generateRecommendations(
           symbol: null,
           granularity: null,
           title: `Low recommended allocation: ${name}`,
-          message: `Deployment "${name}" scored a recommended weight of ${(a.recommendedWeight * 100).toFixed(1)}% — near minimum. Consider reviewing or deactivating.`,
+          message: `Deployment "${name}" scored a recommended weight of ${(a.recommendedWeight * 100).toFixed(1)}%. Consider reviewing or deactivating if underperforming.`,
           reasons: a.reasons,
         })
       );

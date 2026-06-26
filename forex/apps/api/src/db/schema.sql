@@ -867,6 +867,7 @@ CREATE TABLE IF NOT EXISTS market_regimes (
 CREATE INDEX IF NOT EXISTS idx_market_regimes_symbol_granularity ON market_regimes (symbol, granularity);
 CREATE INDEX IF NOT EXISTS idx_market_regimes_detected_at ON market_regimes (detected_at);
 CREATE INDEX IF NOT EXISTS idx_market_regimes_regime ON market_regimes (regime);
+CREATE INDEX IF NOT EXISTS idx_market_regimes_symbol_gran_detected ON market_regimes (symbol, granularity, detected_at);
 
 CREATE TABLE IF NOT EXISTS strategy_health (
   id TEXT PRIMARY KEY,
@@ -890,6 +891,7 @@ CREATE TABLE IF NOT EXISTS strategy_health (
 CREATE INDEX IF NOT EXISTS idx_strategy_health_deployment_id ON strategy_health (deployment_id);
 CREATE INDEX IF NOT EXISTS idx_strategy_health_calculated_at ON strategy_health (calculated_at);
 CREATE INDEX IF NOT EXISTS idx_strategy_health_health_score ON strategy_health (health_score);
+CREATE INDEX IF NOT EXISTS idx_strategy_health_dep_calculated ON strategy_health (deployment_id, calculated_at);
 
 CREATE TABLE IF NOT EXISTS deployment_correlations (
   id TEXT PRIMARY KEY,
@@ -907,6 +909,7 @@ CREATE TABLE IF NOT EXISTS deployment_correlations (
 CREATE INDEX IF NOT EXISTS idx_deployment_correlations_a ON deployment_correlations (deployment_a_id);
 CREATE INDEX IF NOT EXISTS idx_deployment_correlations_b ON deployment_correlations (deployment_b_id);
 CREATE INDEX IF NOT EXISTS idx_deployment_correlations_calculated_at ON deployment_correlations (calculated_at);
+CREATE INDEX IF NOT EXISTS idx_deployment_correlations_pair_calculated ON deployment_correlations (deployment_a_id, deployment_b_id, calculated_at);
 
 CREATE TABLE IF NOT EXISTS strategy_allocations (
   id TEXT PRIMARY KEY,
@@ -921,6 +924,7 @@ CREATE TABLE IF NOT EXISTS strategy_allocations (
 
 CREATE INDEX IF NOT EXISTS idx_strategy_allocations_deployment_id ON strategy_allocations (deployment_id);
 CREATE INDEX IF NOT EXISTS idx_strategy_allocations_calculated_at ON strategy_allocations (calculated_at);
+CREATE INDEX IF NOT EXISTS idx_strategy_allocations_dep_calculated ON strategy_allocations (deployment_id, calculated_at);
 
 CREATE TABLE IF NOT EXISTS portfolio_snapshots (
   id TEXT PRIMARY KEY,

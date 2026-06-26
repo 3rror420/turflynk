@@ -52,6 +52,71 @@ const MIN_WEIGHT = 0.02;
 const MAX_WEIGHT = 0.40;
 
 /**
+ * Two-pass weight normalization: apply MAX cap and MIN floor iteratively until
+ * convergence, then renormalize to exactly 1.0. This guarantees total allocated
+ * weight equals 100% regardless of how many deployments are capped or floored.
+ *
+ * Infeasible when n * MIN_WEIGHT > 1.0 (> 50 deployments at 2% min). In that
+ * case the floor is relaxed automatically by the final renormalization pass.
+ */
+function normalizeWeights(proportional: Map<string, number>): Map<string, number> {
+  const ids = [...proportional.keys()];
+  const weights = new Map(proportional);
+
+  for (let iter = 0; iter < 30; iter++) {
+    let changed = false;
+
+    // Cap at MAX_WEIGHT and redistribute excess to uncapped
+    let excessSum = 0;
+    for (const [id, w] of weights) {
+      if (w > MAX_WEIGHT + 1e-9) {
+        excessSum += w - MAX_WEIGHT;
+        weights.set(id, MAX_WEIGHT);
+        changed = true;
+      }
+    }
+    if (excessSum > 0) {
+      const uncappedSum = ids.reduce((s, id) => s + (weights.get(id)! < MAX_WEIGHT - 1e-9 ? weights.get(id)! : 0), 0);
+      if (uncappedSum > 0) {
+        for (const id of ids) {
+          const w = weights.get(id)!;
+          if (w < MAX_WEIGHT - 1e-9) weights.set(id, w + (w / uncappedSum) * excessSum);
+        }
+      }
+    }
+
+    // Floor at MIN_WEIGHT and reclaim shortfall from those above floor
+    let shortfallSum = 0;
+    for (const [id, w] of weights) {
+      if (w < MIN_WEIGHT - 1e-9) {
+        shortfallSum += MIN_WEIGHT - w;
+        weights.set(id, MIN_WEIGHT);
+        changed = true;
+      }
+    }
+    if (shortfallSum > 0) {
+      const aboveFloorSum = ids.reduce((s, id) => s + (weights.get(id)! > MIN_WEIGHT + 1e-9 ? weights.get(id)! : 0), 0);
+      if (aboveFloorSum > 0) {
+        for (const id of ids) {
+          const w = weights.get(id)!;
+          if (w > MIN_WEIGHT + 1e-9) weights.set(id, Math.max(MIN_WEIGHT, w - (w / aboveFloorSum) * shortfallSum));
+        }
+      }
+    }
+
+    if (!changed) break;
+  }
+
+  // Final renormalize to exactly 1.0
+  const totalFinal = ids.reduce((s, id) => s + weights.get(id)!, 0);
+  if (totalFinal > 0) {
+    for (const id of ids) weights.set(id, weights.get(id)! / totalFinal);
+  }
+
+  return weights;
+}
+
+/**
  * Compute correlation penalty for a deployment.
  * If it is highly correlated with any other deployment that has a higher score,
  * apply a reduction.
@@ -137,31 +202,37 @@ export function computeAllocations(
     }
   }
 
-  // Normalise scores to weights (sum to 1)
-  const total = [...rawScores.values()].reduce((a, b) => a + b, 0);
+  // Proportional weights from scores (sum to 1 before caps)
+  const totalScore = [...rawScores.values()].reduce((a, b) => a + b, 0);
+  const proportionalWeights = new Map<string, number>();
+  for (const h of healthSnapshots) {
+    const score = rawScores.get(h.deploymentId) ?? 0;
+    proportionalWeights.set(h.deploymentId, totalScore > 0 ? score / totalScore : 1 / healthSnapshots.length);
+  }
+
+  // Two-pass normalization: apply MIN/MAX caps iteratively, renormalize to 100%
+  const finalWeights = normalizeWeights(proportionalWeights);
   const results: AllocationRecommendation[] = [];
 
   for (const h of healthSnapshots) {
     const rawScore = rawScores.get(h.deploymentId) ?? 0;
-    const rawWeight = total > 0 ? rawScore / total : 1 / healthSnapshots.length;
-    const cappedWeight = Math.max(MIN_WEIGHT, Math.min(MAX_WEIGHT, rawWeight));
+    const rawWeight = proportionalWeights.get(h.deploymentId) ?? 0;
+    const finalWeight = finalWeights.get(h.deploymentId) ?? MIN_WEIGHT;
 
     const reasons = reasonsMap.get(h.deploymentId) ?? [];
-    if (rawWeight !== cappedWeight) {
-      reasons.push(
-        rawWeight > MAX_WEIGHT
-          ? `Raw weight ${(rawWeight * 100).toFixed(1)}% capped at ${(MAX_WEIGHT * 100).toFixed(0)}%`
-          : `Raw weight ${(rawWeight * 100).toFixed(1)}% floored to ${(MIN_WEIGHT * 100).toFixed(0)}%`
-      );
+    if (rawWeight > MAX_WEIGHT + 1e-6) {
+      reasons.push(`Raw weight ${(rawWeight * 100).toFixed(1)}% capped at ${(MAX_WEIGHT * 100).toFixed(0)}%`);
+    } else if (rawWeight < MIN_WEIGHT - 1e-6) {
+      reasons.push(`Raw weight ${(rawWeight * 100).toFixed(1)}% floored to ${(MIN_WEIGHT * 100).toFixed(0)}%`);
     }
 
     const rec: AllocationRecommendation = {
       id: randomUUID(),
       calculatedAt: now,
       deploymentId: h.deploymentId,
-      recommendedWeight: Number(cappedWeight.toFixed(4)),
+      recommendedWeight: Number(finalWeight.toFixed(4)),
       rawScore: Number(rawScore.toFixed(4)),
-      cappedScore: Number(cappedWeight.toFixed(4)),
+      cappedScore: Number(finalWeight.toFixed(4)),
       reasons,
       createdAt: now,
     };
