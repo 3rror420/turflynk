@@ -1,0 +1,52 @@
+{
+  "name": "@forex/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc -p tsconfig.json && mkdir -p dist/db && cp src/db/schema.sql dist/db/schema.sql",
+    "start": "node dist/server.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "qa:phase15": "npm run build && rm -f ./data/qa-phase15.sqlite* && DATABASE_FILE=./data/qa-phase15.sqlite node dist/qa/phase15ClosureSmoke.js",
+    "qa:phase163": "npm run build && rm -f ./data/qa-phase163.sqlite* && DATABASE_FILE=./data/qa-phase163.sqlite node dist/qa/phase163Smoke.js",
+    "qa:phase164": "npm run build && rm -f ./data/qa-phase164.sqlite* && DATABASE_FILE=./data/qa-phase164.sqlite node dist/qa/phase164Smoke.js",
+    "qa:phase165": "npm run build && rm -f ./data/qa-phase165.sqlite* && DATABASE_FILE=./data/qa-phase165.sqlite node dist/qa/phase165Smoke.js",
+    "qa:phase166": "npm run build && rm -f ./data/qa-phase166.sqlite* && DATABASE_FILE=./data/qa-phase166.sqlite node dist/qa/phase166Smoke.js",
+    "qa:phase167": "npm run build && rm -f ./data/qa-phase167.sqlite* && DATABASE_FILE=./data/qa-phase167.sqlite node dist/qa/phase167Smoke.js",
+    "qa:phase168": "npm run build && rm -f ./data/qa-phase168.sqlite* && DATABASE_FILE=./data/qa-phase168.sqlite node dist/qa/phase168Smoke.js",
+    "qa:phase169": "npm run build && rm -f ./data/qa-phase169.sqlite* && DATABASE_FILE=./data/qa-phase169.sqlite node dist/qa/phase169Smoke.js",
+    "qa:phase170": "npm run build && rm -f ./data/qa-phase170.sqlite* && DATABASE_FILE=./data/qa-phase170.sqlite node dist/qa/phase170Smoke.js",
+    "qa:phase173": "npm run build && rm -f ./data/qa-phase173.sqlite* && DATABASE_FILE=./data/qa-phase173.sqlite node dist/qa/phase173Smoke.js",
+    "qa:phase174": "npm run build && rm -f ./data/qa-phase174.sqlite* && DATABASE_FILE=./data/qa-phase174.sqlite node dist/qa/phase174Smoke.js",
+    "qa:phase175": "npm run build && rm -f ./data/qa-phase175.sqlite* && DATABASE_FILE=./data/qa-phase175.sqlite node dist/qa/phase175Smoke.js",
+    "qa:phase176": "npm run build && rm -f ./data/qa-phase176.sqlite* && DATABASE_FILE=./data/qa-phase176.sqlite node dist/qa/phase176Smoke.js",
+    "qa:phase177": "npm run build && rm -f ./data/qa-phase177.sqlite* && DATABASE_FILE=./data/qa-phase177.sqlite node dist/qa/phase177Smoke.js",
+    "qa:research": "npm run build && rm -f ./data/qa-research.sqlite* && DATABASE_FILE=./data/qa-research.sqlite node dist/qa/researchSmoke.js",
+    "qa:phase18": "npm run build && rm -f ./data/qa-phase18.sqlite* && DATABASE_FILE=./data/qa-phase18.sqlite node dist/qa/phase18Smoke.js",
+    "qa:research-review": "npm run build && rm -f ./data/qa-research-review.sqlite* && DATABASE_FILE=./data/qa-research-review.sqlite node dist/qa/researchReviewSmoke.js",
+    "qa:users": "npm run build && rm -f ./data/qa-users.sqlite* && DATABASE_FILE=./data/qa-users.sqlite node dist/qa/userManagerSmoke.js",
+    "admin:user": "tsx src/cli/adminUser.ts"
+  },
+  "dependencies": {
+    "@forex/analysis": "*",
+    "@forex/engine": "*",
+    "bcryptjs": "^3.0.3",
+    "better-sqlite3": "^11.3.0",
+    "better-sqlite3-session-store": "^0.1.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "express-session": "^1.19.0"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/better-sqlite3": "^7.6.10",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/express-session": "^1.19.0",
+    "@types/node": "^20.14.0",
+    "tsx": "^4.16.2",
+    "typescript": "^5.4.5"
+  }
+}
